@@ -1,0 +1,12 @@
+{
+    "version": 4,
+    "configurations": [
+        {
+            "name": "Dev Container",
+            "includePath": [
+                "/home/mooncake/postgresql-16.4/src/**",
+                "${workspaceFolder}/**"
+            ]
+        }
+    ]
+}

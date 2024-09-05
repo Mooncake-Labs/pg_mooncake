@@ -1,0 +1,14 @@
+{
+    "build": {
+        "dockerfile": "Dockerfile"
+    },
+    "postStartCommand": "bash .devcontainer/postStartCommand.sh",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "ms-vscode.cpptools",
+                "eamodio.gitlens"
+            ]
+        }
+    }
+}

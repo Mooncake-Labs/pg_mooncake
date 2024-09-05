@@ -1,0 +1,20 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "type": "cppdbg",
+            "request": "attach",
+            "name": "Attach Postgres",
+            "processId": "${command:pickProcess}",
+            "program": "/usr/local/pgsql/bin/postgres",
+            "additionalSOLibSearchPath": "/usr/local/pgsql/lib",
+            "setupCommands": [
+                {
+                    "text": "-enable-pretty-printing",
+                    "description": "enable pretty printing",
+                    "ignoreFailures": true
+                }
+            ]
+        }
+    ]
+}

@@ -4,6 +4,7 @@ Columnstore Table in Postgres
 ## Installation
 Compile and install the extension (supports Postgres 16+)
 ```bash
+git submodule update --init --recursive
 make
 make install
 ```

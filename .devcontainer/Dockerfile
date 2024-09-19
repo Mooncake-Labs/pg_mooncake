@@ -6,6 +6,7 @@ RUN apt update \
  && apt install -y \
     bzip2 \
     clang-format \
+    cmake \
     curl \
     g++ \
     gdb \
@@ -13,7 +14,6 @@ RUN apt update \
     libicu-dev \
     libreadline-dev \
     locales \
-    make \
     man \
     pkg-config \
     sudo \

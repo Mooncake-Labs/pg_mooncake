@@ -14,14 +14,35 @@ else
     $(error Invalid BUILD_TYPE)
 endif
 
-PG_CPPFLAGS = -Isrc
+LIBDUCKDB_SO := third_party/duckdb/build/$(BUILD_TYPE)/src/libduckdb.so
+PG_CPPFLAGS = -Isrc \
+              -Ithird_party/duckdb/src/include
 PG_CXXFLAGS += -Werror
+SHLIB_PREREQS = $(PG_LIB)/libduckdb.so
+SHLIB_LINK = -L$(PG_LIB) -Wl,-rpath,$(PG_LIB) -lduckdb
 
 PG_CONFIG ?= pg_config
+PG_LIB := $(shell $(PG_CONFIG) --pkglibdir)
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 include $(PGXS)
 
-.PHONY: format
+.PHONY: format clean-duckdb duckdb install-duckdb
 
 format:
 	find src -name '*.c' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' | xargs clang-format -i
+
+clean-duckdb:
+	$(MAKE) -C third_party/duckdb clean
+
+duckdb: $(LIBDUCKDB_SO)
+
+install-duckdb: $(PG_LIB)/libduckdb.so
+
+$(LIBDUCKDB_SO):
+	$(MAKE) -C third_party/duckdb $(BUILD_TYPE) DISABLE_SANITIZER=1 ENABLE_UBSAN=0 BUILD_UNITTESTS=OFF
+	if [ "$(BUILD_TYPE)" = "debug" ]; then gdb-add-index $(LIBDUCKDB_SO); fi
+
+$(PG_LIB)/libduckdb.so: $(LIBDUCKDB_SO)
+	$(install_bin) -m 755 $(LIBDUCKDB_SO) $(PG_LIB)
+
+install: install-duckdb

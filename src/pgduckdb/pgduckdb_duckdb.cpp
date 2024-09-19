@@ -75,8 +75,8 @@ DuckDBManager::DuckDBManager() {
 
 	auto &context = *connection->context;
 	LoadFunctions(context);
-	LoadSecrets(context);
-	LoadExtensions(context);
+	// LoadSecrets(context);
+	// LoadExtensions(context);
 }
 
 void

@@ -4,10 +4,15 @@ extern "C" {
 #include "fmgr.h"
 }
 
+#include "duckdb_scan.hpp"
 #include "lib.hpp"
 
 extern "C" {
 PG_MODULE_MAGIC;
+
+void _PG_init(void) {
+    InitDuckdbScan();
+}
 
 PG_FUNCTION_INFO_V1(add_nums);
 Datum add_nums(PG_FUNCTION_ARGS) {

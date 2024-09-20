@@ -1,5 +1,4 @@
-CREATE FUNCTION add_nums(int, int) RETURNS int
+CREATE FUNCTION columnstore_handler(internal) RETURNS table_am_handler
     AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
 
-CREATE FUNCTION sub_nums(int, int) RETURNS int
-    AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
+CREATE ACCESS METHOD columnstore TYPE TABLE HANDLER columnstore_handler;

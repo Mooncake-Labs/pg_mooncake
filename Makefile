@@ -16,7 +16,10 @@ endif
 
 LIBDUCKDB_SO := third_party/duckdb/build/$(BUILD_TYPE)/src/libduckdb.so
 PG_CPPFLAGS = -Isrc \
-              -Ithird_party/duckdb/src/include
+              -Ithird_party/duckdb/extension/parquet/include \
+              -Ithird_party/duckdb/src/include \
+              -Ithird_party/duckdb/third_party/parquet \
+              -Ithird_party/duckdb/third_party/thrift
 PG_CXXFLAGS += -Werror -Wno-sign-compare
 SHLIB_PREREQS = $(PG_LIB)/libduckdb.so
 SHLIB_LINK = -L$(PG_LIB) -Wl,-rpath,$(PG_LIB) -lduckdb

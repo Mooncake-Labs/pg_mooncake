@@ -27,6 +27,8 @@ extern "C" {
 #include "pgduckdb/scan/postgres_scan.hpp"
 #include "pgduckdb/pgduckdb_types.hpp"
 
+#include "columnstore/columnstore.hpp"
+
 namespace pgduckdb {
 
 void
@@ -211,6 +213,8 @@ PostgresReplacementScan(duckdb::ClientContext &context, duckdb::ReplacementScanI
 		    duckdb::make_uniq<duckdb::FunctionExpression>("postgres_index_scan", std::move(children));
 		table_function->alias = table_name;
 		return std::move(table_function);
+	} else if (IsColumnstore(relid)) {
+		return ColumnstoreReplacementScan(table_name);
 	} else {
 		auto children = CreateFunctionSeqScanArguments(nodeCardinality, relid, GetActiveSnapshot());
 		auto table_function = duckdb::make_uniq<duckdb::TableFunctionRef>();

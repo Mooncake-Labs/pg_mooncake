@@ -14,11 +14,19 @@ Enable the extension
 ```sql
 CREATE EXTENSION pg_mooncake;
 ```
-Add two ints
+Create a columnstore table
 ```sql
-SELECT add_nums(1, 2);
+CREATE TABLE t (a int) USING columnstore;
+COPY t FROM PROGRAM 'seq 5';
+SELECT * FROM t;
 ```
-Sub two ints
+Create a regular table
 ```sql
-SELECT sub_nums(1, 2);
+CREATE TABLE s (b int);
+INSERT INTO s VALUES (1), (2), (3);
+SELECT * FROM s;
+```
+Join two tables
+```sql
+SELECT * FROM t JOIN s ON t.a = s.b;
 ```

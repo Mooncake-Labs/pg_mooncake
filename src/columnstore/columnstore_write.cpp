@@ -1,5 +1,6 @@
 #include "duckdb.hpp"
 
+#include "duckdb/common/types/uuid.hpp"
 #include "parquet_writer.hpp"
 
 extern "C" {
@@ -13,15 +14,18 @@ extern "C" {
 #include "pgduckdb/pgduckdb_duckdb.hpp"
 #include "pgduckdb/pgduckdb_types.hpp"
 
+#include "columnstore/columnstore.hpp"
+
 class ParquetWriter {
   public:
-    ParquetWriter(duckdb::ClientContext &context, duckdb::string file_name, duckdb::vector<duckdb::LogicalType> types,
+    ParquetWriter(duckdb::ClientContext &context, Oid relid, duckdb::vector<duckdb::LogicalType> types,
                   duckdb::vector<duckdb::string> names)
-        : m_collection(context, types, duckdb::ColumnDataAllocatorType::HYBRID),
-          m_writer(context, duckdb::FileSystem::GetFileSystem(context), std::move(file_name), std::move(types),
-                   std::move(names), duckdb_parquet::format::CompressionCodec::SNAPPY /*codec*/, {} /*field_ids*/,
-                   {} /*kv_metadata*/, {} /*encryption_config*/, 1.0 /*dictionary_compression_ratio_threshold*/,
-                   {} /*compression_level*/, true /*debug_use_openssl*/) {
+        : m_relid(relid), m_file_name(duckdb::UUID::GenerateRandomUUID().ToString() + ".parquet"),
+          m_collection(context, types, duckdb::ColumnDataAllocatorType::HYBRID),
+          m_writer(context, duckdb::FileSystem::GetFileSystem(context), m_file_name, std::move(types), std::move(names),
+                   duckdb_parquet::format::CompressionCodec::SNAPPY /*codec*/, {} /*field_ids*/, {} /*kv_metadata*/,
+                   {} /*encryption_config*/, 1.0 /*dictionary_compression_ratio_threshold*/, {} /*compression_level*/,
+                   true /*debug_use_openssl*/) {
         m_collection.InitializeAppend(m_append_state);
     }
 
@@ -37,12 +41,15 @@ class ParquetWriter {
     void Finalize() {
         m_writer.Flush(m_collection);
         m_writer.Finalize();
+        DataFilesAdd(m_relid, m_file_name.c_str());
     }
 
   private:
     static const idx_t x_row_group_size = duckdb::Storage::ROW_GROUP_SIZE;
     static const idx_t x_row_group_size_bytes = x_row_group_size * 1024;
 
+    Oid m_relid;
+    duckdb::string m_file_name;
     duckdb::ColumnDataCollection m_collection;
     duckdb::ColumnDataAppendState m_append_state;
     duckdb::ParquetWriter m_writer;
@@ -52,7 +59,7 @@ class ColumnstoreWriter {
   public:
     ColumnstoreWriter() : m_con(pgduckdb::DuckDBManager::Get().GetDatabase()) {}
 
-    void LazyInit(TupleDesc desc, duckdb::string table_name) {
+    void LazyInit(Oid relid, TupleDesc desc) {
         duckdb::vector<duckdb::LogicalType> types;
         duckdb::vector<duckdb::string> names;
         for (int col = 0; col < desc->natts; col++) {
@@ -61,14 +68,13 @@ class ColumnstoreWriter {
             names.push_back(NameStr(attr->attname));
         }
         m_chunk.Initialize(*m_con.context, types);
-        m_writer = duckdb::make_uniq<ParquetWriter>(*m_con.context, table_name + ".parquet", std::move(types),
-                                                    std::move(names));
+        m_writer = duckdb::make_uniq<ParquetWriter>(*m_con.context, relid, std::move(types), std::move(names));
     }
 
     void Insert(Relation rel, TupleTableSlot **slots, int nslots) {
         TupleDesc desc = RelationGetDescr(rel);
         if (!m_writer) {
-            LazyInit(desc, RelationGetRelationName(rel));
+            LazyInit(RelationGetRelid(rel), desc);
         }
 
         for (int row = 0; row < nslots; row++) {

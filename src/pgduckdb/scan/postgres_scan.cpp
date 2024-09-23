@@ -214,7 +214,7 @@ PostgresReplacementScan(duckdb::ClientContext &context, duckdb::ReplacementScanI
 		table_function->alias = table_name;
 		return std::move(table_function);
 	} else if (IsColumnstore(relid)) {
-		return ColumnstoreReplacementScan(table_name);
+		return ColumnstoreReplacementScan(relid, table_name);
 	} else {
 		auto children = CreateFunctionSeqScanArguments(nodeCardinality, relid, GetActiveSnapshot());
 		auto table_function = duckdb::make_uniq<duckdb::TableFunctionRef>();

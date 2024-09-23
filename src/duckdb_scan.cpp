@@ -20,6 +20,8 @@ extern "C" {
 #include "pgduckdb/pgduckdb_types.hpp"
 #include "pgduckdb/vendor/pg_list.hpp"
 
+#include "columnstore/columnstore.hpp"
+
 struct DuckdbScanState {
     CustomScanState css; /* must be first field */
     duckdb::Connection *duckdb_connection;
@@ -272,17 +274,30 @@ PlannedStmt *DuckdbPlanner(Query *parse, int cursor_options, ParamListInfo bound
     return plan;
 }
 
-bool IsCatalogTable(List *tables) {
+bool HasColumnstore(List *tables) {
     foreach_node(RangeTblEntry, table, tables) {
         if (table->rtekind == RTE_SUBQUERY) {
-            /* Check Subquery rtable list if any table is from PG catalog */
-            if (IsCatalogTable(table->subquery->rtable)) {
+            if (HasColumnstore(table->subquery->rtable)) {
+                return true;
+            }
+        }
+        if (table->relid && IsColumnstore(table->relid)) {
+            return true;
+        }
+    }
+    return false;
+}
+
+bool HasCatalog(List *tables) {
+    foreach_node(RangeTblEntry, table, tables) {
+        if (table->rtekind == RTE_SUBQUERY) {
+            if (HasCatalog(table->subquery->rtable)) {
                 return true;
             }
         }
         if (table->relid) {
-            auto rel = RelationIdGetRelation(table->relid);
-            auto namespace_oid = RelationGetNamespace(rel);
+            Relation rel = RelationIdGetRelation(table->relid);
+            Oid namespace_oid = RelationGetNamespace(rel);
             if (namespace_oid == PG_CATALOG_NAMESPACE || namespace_oid == PG_TOAST_NAMESPACE) {
                 RelationClose(rel);
                 return true;
@@ -293,74 +308,21 @@ bool IsCatalogTable(List *tables) {
     return false;
 }
 
-bool IsAllowedStatement(Query *query) {
-    /* DuckDB does not support modifying CTEs INSERT/UPDATE/DELETE */
-    if (query->hasModifyingCTE) {
-        return false;
-    }
-
-    /* We don't support modifying statements yet */
-    if (query->commandType != CMD_SELECT) {
-        return false;
-    }
-
-    /*
-     * If there's no rtable, we're only selecting constants. There's no point
-     * in using DuckDB for that.
-     */
-    if (!query->rtable) {
-        return false;
-    }
-
-    /*
-     * If any table is from pg_catalog, we don't want to use DuckDB. This is
-     * because DuckDB has its own pg_catalog tables that contain different data
-     * then Postgres its pg_catalog tables.
-     */
-    if (IsCatalogTable(query->rtable)) {
-        return false;
-    }
-
-    /* Anything else is hopefully fine... */
-    return true;
-}
-
-bool ContainsDuckdbFunctions(Node *node, void *context) {
-    if (node == NULL)
-        return false;
-
-    if (IsA(node, Query)) {
-        Query *query = (Query *)node;
-        return query_tree_walker(query, ContainsDuckdbFunctions, context, 0);
-    }
-
-    if (IsA(node, FuncExpr)) {
-        FuncExpr *func = castNode(FuncExpr, node);
-        if (pgduckdb::IsDuckdbOnlyFunction(func->funcid)) {
-            return true;
-        }
-    }
-
-    return expression_tree_walker(node, ContainsDuckdbFunctions, context);
-}
-
-bool NeedsDuckdbExecution(Query *query) {
-    return query_tree_walker(query, ContainsDuckdbFunctions, NULL, 0);
-}
-
 planner_hook_type prev_planner_hook = NULL;
 
 PlannedStmt *PlannerHook(Query *parse, const char *query_string, int cursor_options, ParamListInfo bound_params) {
-    if (pgduckdb::IsExtensionRegistered()) {
-        if (IsAllowedStatement(parse)) {
-            PlannedStmt *plan = DuckdbPlanner(parse, cursor_options, bound_params);
-            if (plan) {
-                return plan;
-            }
+    if (pgduckdb::IsExtensionRegistered() && parse->commandType == CMD_SELECT && HasColumnstore(parse->rtable)) {
+        if (parse->hasModifyingCTE) {
+            elog(ERROR, "DuckDB does not support modifying CTEs INSERT/UPDATE/DELETE");
         }
-        if (NeedsDuckdbExecution(parse)) {
-            elog(ERROR, "only SELECT statements involving DuckDB are supported");
+        if (HasCatalog(parse->rtable)) {
+            elog(ERROR, "DuckDB has its own pg_catalog tables that contain different data");
         }
+        PlannedStmt *plan = DuckdbPlanner(parse, cursor_options, bound_params);
+        if (!plan) {
+            elog(ERROR, "DuckDB does not support this query");
+        }
+        return plan;
     }
     return prev_planner_hook(parse, query_string, cursor_options, bound_params);
 }

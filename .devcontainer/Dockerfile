@@ -29,6 +29,8 @@ USER postgres
 WORKDIR /home/postgres
 RUN echo 'source /workspaces/pg_mooncake/.devcontainer/.bashrc' >> .bashrc
 
+RUN curl https://sh.rustup.rs | sh -s -- -y
+
 ENV PATH="/usr/local/pgsql/bin:${PATH}"
 RUN curl https://ftp.postgresql.org/pub/source/v16.4/postgresql-16.4.tar.bz2 | bzip2 -d | tar x \
  && cd postgresql-16.4 \

@@ -17,7 +17,7 @@ This will create an isolated Workspace in vscode, including all tools required t
 
 Now you can compile and install the extension
 ```bash
-make
+make debug
 make install
 ```
 then connect to Postgres using `psql`.

@@ -16,6 +16,8 @@ extern "C" {
 
 #include "columnstore/columnstore.hpp"
 
+#include "rust_extensions/delta.hpp"
+
 class ParquetWriter {
   public:
     ParquetWriter(duckdb::ClientContext &context, Oid relid, duckdb::vector<duckdb::LogicalType> types,
@@ -42,6 +44,7 @@ class ParquetWriter {
         m_writer.Flush(m_collection);
         m_writer.Finalize();
         DataFilesAdd(m_relid, m_file_name.c_str());
+        elog(NOTICE, "delta: %zu", delta("hello"));
     }
 
   private:

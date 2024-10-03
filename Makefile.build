@@ -1,0 +1,38 @@
+MODULE_big := pg_mooncake
+MODULES := libduckdb
+EXTENSION := ../../pg_mooncake
+DATA := ../../sql/pg_mooncake--0.0.1.sql
+
+SRCS_C := $(shell cd ../../src; find * -name '*.c')
+SRCS_CXX := $(shell cd ../../src; find * -name '*.cpp')
+SRCS := $(SRCS_C) $(SRCS_CXX)
+OBJS := $(SRCS:%=%.o) libduckdb.so libdelta.a
+DEPS := $(SRCS:%=%.d)
+
+PG_CONFIG ?= pg_config
+PG_LIB := $(shell $(PG_CONFIG) --pkglibdir)
+PGXS := $(shell $(PG_CONFIG) --pgxs)
+
+PG_CPPFLAGS := -I../../src \
+               -I../../third_party/duckdb/extension/parquet/include \
+               -I../../third_party/duckdb/src/include \
+               -I../../third_party/duckdb/third_party/parquet \
+               -I../../third_party/duckdb/third_party/thrift \
+               -I../src \
+               -MMD -MP
+PG_CFLAGS := $(if $(DEBUG),-ggdb3 -O0,-O2)
+PG_CXXFLAGS := $(if $(DEBUG),-ggdb3 -O0,-O2) -Werror -Wno-sign-compare
+SHLIB_LINK := -L. -Wl,-rpath,$(PG_LIB) -lduckdb
+
+override with_llvm := no
+include $(PGXS)
+
+$(SRCS_C:%=%.o): %.o: ../../src/%
+	@mkdir -p $(dir $@)
+	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
+
+$(SRCS_CXX:%=%.o): %.o: ../../src/%
+	@mkdir -p $(dir $@)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+-include $(DEPS)

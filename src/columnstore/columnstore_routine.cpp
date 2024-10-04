@@ -246,10 +246,10 @@ Datum columnstore_handler(PG_FUNCTION_ARGS) {
 }
 }
 
-bool IsColumnstore(Oid relid) {
-    Relation relation = RelationIdGetRelation(relid);
+bool IsColumnstore(Oid oid) {
+    Relation relation = RelationIdGetRelation(oid);
     if (!RelationIsValid(relation)) {
-        elog(ERROR, "Could not open relation with OID %u", relid);
+        elog(ERROR, "Could not open relation with OID %u", oid);
     }
     bool res = relation->rd_tableam == &columnstore_routine;
     RelationClose(relation);

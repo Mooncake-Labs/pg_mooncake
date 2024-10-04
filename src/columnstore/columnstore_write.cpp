@@ -6,7 +6,6 @@
 extern "C" {
 #include "postgres.h"
 
-#include "tcop/utility.h"
 #include "utils/rel.h"
 }
 
@@ -20,9 +19,9 @@ extern "C" {
 
 class ParquetWriter {
   public:
-    ParquetWriter(duckdb::ClientContext &context, Oid relid, duckdb::vector<duckdb::LogicalType> types,
-                  duckdb::vector<duckdb::string> names)
-        : m_relid(relid), m_file_name(duckdb::UUID::GenerateRandomUUID().ToString() + ".parquet"),
+    ParquetWriter(duckdb::ClientContext &context, Oid oid, const ColumnstoreOptions &options,
+                  duckdb::vector<duckdb::LogicalType> types, duckdb::vector<duckdb::string> names)
+        : m_oid(oid), m_file_name(options.path + duckdb::UUID::GenerateRandomUUID().ToString() + ".parquet"),
           m_collection(context, types, duckdb::ColumnDataAllocatorType::HYBRID),
           m_writer(context, duckdb::FileSystem::GetFileSystem(context), m_file_name, std::move(types), std::move(names),
                    duckdb_parquet::format::CompressionCodec::SNAPPY /*codec*/, {} /*field_ids*/, {} /*kv_metadata*/,
@@ -43,7 +42,7 @@ class ParquetWriter {
     void Finalize() {
         m_writer.Flush(m_collection);
         m_writer.Finalize();
-        DataFilesAdd(m_relid, m_file_name.c_str());
+        DataFilesAdd(m_oid, m_file_name.c_str());
         elog(NOTICE, "delta: %zu", delta("hello"));
     }
 
@@ -51,8 +50,8 @@ class ParquetWriter {
     static const idx_t x_row_group_size = duckdb::Storage::ROW_GROUP_SIZE;
     static const idx_t x_row_group_size_bytes = x_row_group_size * 1024;
 
-    Oid m_relid;
-    duckdb::string m_file_name;
+    Oid m_oid;
+    std::string m_file_name;
     duckdb::ColumnDataCollection m_collection;
     duckdb::ColumnDataAppendState m_append_state;
     duckdb::ParquetWriter m_writer;
@@ -62,7 +61,7 @@ class ColumnstoreWriter {
   public:
     ColumnstoreWriter() : m_con(pgduckdb::DuckDBManager::Get().GetDatabase()) {}
 
-    void LazyInit(Oid relid, TupleDesc desc) {
+    void LazyInit(Oid oid, TupleDesc desc) {
         duckdb::vector<duckdb::LogicalType> types;
         duckdb::vector<duckdb::string> names;
         for (int col = 0; col < desc->natts; col++) {
@@ -71,13 +70,21 @@ class ColumnstoreWriter {
             names.push_back(NameStr(attr->attname));
         }
         m_chunk.Initialize(*m_con.context, types);
-        m_writer = duckdb::make_uniq<ParquetWriter>(*m_con.context, relid, std::move(types), std::move(names));
+        ColumnstoreOptions options = TablesGet(oid);
+        m_writer = duckdb::make_uniq<ParquetWriter>(*m_con.context, oid, options, std::move(types), std::move(names));
     }
 
-    void Insert(Relation rel, TupleTableSlot **slots, int nslots) {
-        TupleDesc desc = RelationGetDescr(rel);
+    void CreateTable(Oid oid, const ColumnstoreOptions &options) {
+        if (strlen(options.path)) {
+            duckdb::FileSystem::GetFileSystem(*m_con.context).CreateDirectory(options.path);
+        }
+        TablesAdd(oid, options);
+    }
+
+    void Insert(Relation table, TupleTableSlot **slots, int nslots) {
+        TupleDesc desc = RelationGetDescr(table);
         if (!m_writer) {
-            LazyInit(RelationGetRelid(rel), desc);
+            LazyInit(RelationGetRelid(table), desc);
         }
 
         for (int row = 0; row < nslots; row++) {
@@ -131,30 +138,14 @@ class ColumnstoreWriter {
 
 ColumnstoreWriter columnstore_writer;
 
-ExecutorEnd_hook_type prev_executor_end_hook = NULL;
+void ColumnstoreCreateTable(Oid oid, const ColumnstoreOptions &options) {
+    columnstore_writer.CreateTable(oid, options);
+}
 
-void ExecutorEndHook(QueryDesc *query_desc) {
-    prev_executor_end_hook(query_desc);
+void ColumnstoreInsert(Relation table, TupleTableSlot **slots, int nslots) {
+    columnstore_writer.Insert(table, slots, nslots);
+}
+
+void ColumnstoreFinalize() {
     columnstore_writer.Finalize();
-}
-
-ProcessUtility_hook_type prev_process_utility_hook = NULL;
-
-void ProcessUtilityHook(PlannedStmt *pstmt, const char *queryString, bool readOnlyTree, ProcessUtilityContext context,
-                        ParamListInfo params, QueryEnvironment *queryEnv, DestReceiver *dest, QueryCompletion *qc) {
-    prev_process_utility_hook(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc);
-    columnstore_writer.Finalize();
-}
-
-void InitColumnstore() {
-    // INSERT, INSERT...SELECT
-    prev_executor_end_hook = ExecutorEnd_hook ? ExecutorEnd_hook : standard_ExecutorEnd;
-    ExecutorEnd_hook = ExecutorEndHook;
-    // COPY
-    prev_process_utility_hook = ProcessUtility_hook ? ProcessUtility_hook : standard_ProcessUtility;
-    ProcessUtility_hook = ProcessUtilityHook;
-}
-
-void ColumnstoreInsert(Relation rel, TupleTableSlot **slots, int nslots) {
-    columnstore_writer.Insert(rel, slots, nslots);
 }

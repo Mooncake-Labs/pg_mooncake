@@ -13,12 +13,24 @@ extern "C" {
 
 void InitColumnstore();
 
-void DataFilesAdd(Oid relid, const char *file_name);
+bool IsColumnstore(Oid oid);
 
-duckdb::vector<duckdb::Value> DataFilesGet(Oid relid);
+struct ColumnstoreOptions {
+    const char *path = "";
+};
 
-bool IsColumnstore(Oid relid);
+void TablesAdd(Oid oid, const ColumnstoreOptions &options);
 
-void ColumnstoreInsert(Relation rel, TupleTableSlot **slots, int nslots);
+ColumnstoreOptions TablesGet(Oid oid);
 
-duckdb::unique_ptr<duckdb::TableRef> ColumnstoreReplacementScan(Oid relid, const duckdb::string &table_name);
+void DataFilesAdd(Oid oid, const char *file_name);
+
+std::vector<const char *> DataFilesGet(Oid oid);
+
+void ColumnstoreCreateTable(Oid oid, const ColumnstoreOptions &options);
+
+void ColumnstoreInsert(Relation table, TupleTableSlot **slots, int nslots);
+
+void ColumnstoreFinalize();
+
+duckdb::unique_ptr<duckdb::TableRef> ColumnstoreReplacementScan(Oid oid, const duckdb::string &table_name);

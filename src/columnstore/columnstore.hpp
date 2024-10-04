@@ -11,6 +11,8 @@ extern "C" {
 #include "utils/relcache.h"
 }
 
+const char *x_columnstore_access_method = "columnstore";
+
 void InitColumnstore();
 
 void DataFilesAdd(Oid relid, const char *file_name);
@@ -22,3 +24,7 @@ bool IsColumnstore(Oid relid);
 void ColumnstoreInsert(Relation rel, TupleTableSlot **slots, int nslots);
 
 duckdb::unique_ptr<duckdb::TableRef> ColumnstoreReplacementScan(Oid relid, const duckdb::string &table_name);
+
+void TableInfoAdd(Oid relid, const char *storagePath, const char *lakeFormat);
+
+void TableInfoGet(Oid relid, const char **storage_path /*out*/, const char **lake_format /*out*/);

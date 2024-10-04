@@ -6,7 +6,10 @@
 extern "C" {
 #include "postgres.h"
 
+#include "catalog/namespace.h"
+#include "commands/defrem.h"
 #include "tcop/utility.h"
+#include "utils/lsyscache.h"
 #include "utils/rel.h"
 }
 
@@ -18,9 +21,10 @@ extern "C" {
 
 class ParquetWriter {
   public:
-    ParquetWriter(duckdb::ClientContext &context, Oid relid, duckdb::vector<duckdb::LogicalType> types,
-                  duckdb::vector<duckdb::string> names)
-        : m_relid(relid), m_file_name(duckdb::UUID::GenerateRandomUUID().ToString() + ".parquet"),
+    ParquetWriter(duckdb::ClientContext &context, Oid relid, const char *storage_path,
+                  duckdb::vector<duckdb::LogicalType> types, duckdb::vector<duckdb::string> names)
+        : m_relid(relid),
+          m_file_name(duckdb::string(storage_path) + duckdb::UUID::GenerateRandomUUID().ToString() + ".parquet"),
           m_collection(context, types, duckdb::ColumnDataAllocatorType::HYBRID),
           m_writer(context, duckdb::FileSystem::GetFileSystem(context), m_file_name, std::move(types), std::move(names),
                    duckdb_parquet::format::CompressionCodec::SNAPPY /*codec*/, {} /*field_ids*/, {} /*kv_metadata*/,
@@ -68,9 +72,18 @@ class ColumnstoreWriter {
             names.push_back(NameStr(attr->attname));
         }
         m_chunk.Initialize(*m_con.context, types);
-        m_writer = duckdb::make_uniq<ParquetWriter>(*m_con.context, relid, std::move(types), std::move(names));
+        const char *storage_location;
+        const char *lake_format;
+        TableInfoGet(relid, &storage_location, &lake_format);
+        m_writer = duckdb::make_uniq<ParquetWriter>(*m_con.context, relid, storage_location, std::move(types),
+                                                    std::move(names));
     }
 
+    void CreateTable(Oid relid, duckdb::string storage_path) {
+        if (!storage_path.empty()) {
+            duckdb::FileSystem::GetFileSystem(*m_con.context).CreateDirectory(storage_path);
+        }
+    }
     void Insert(Relation rel, TupleTableSlot **slots, int nslots) {
         TupleDesc desc = RelationGetDescr(rel);
         if (!m_writer) {
@@ -137,8 +150,40 @@ void ExecutorEndHook(QueryDesc *query_desc) {
 
 ProcessUtility_hook_type prev_process_utility_hook = NULL;
 
+static void ExtractColumnStoreOptions(CreateStmt *createStmt, duckdb::string &table_format,
+                                      duckdb::string &storage_path) {
+    ListCell *option;
+    foreach (option, createStmt->options) {
+        DefElem *def = (DefElem *)lfirst(option);
+        if (strcmp(def->defname, "table_format") == 0) {
+            table_format = defGetString(def);
+        } else if (strcmp(def->defname, "storage_path") == 0) {
+            storage_path = defGetString(def);
+            if (storage_path.back() != '/') {
+                storage_path += '/';
+            }
+        } else {
+            elog(ERROR, "unrecognized parameter \"%s\" for columnstore", def->defname);
+        }
+    }
+    list_free(createStmt->options);
+}
+
 void ProcessUtilityHook(PlannedStmt *pstmt, const char *queryString, bool readOnlyTree, ProcessUtilityContext context,
                         ParamListInfo params, QueryEnvironment *queryEnv, DestReceiver *dest, QueryCompletion *qc) {
+    if (IsA(pstmt->utilityStmt, CreateStmt)) {
+        CreateStmt *createStmt = (CreateStmt *)pstmt->utilityStmt;
+        if (createStmt->accessMethod != NULL && strcmp(createStmt->accessMethod, x_columnstore_access_method) == 0) {
+            duckdb::string table_format, storage_path;
+            ExtractColumnStoreOptions(createStmt, table_format, storage_path);
+            prev_process_utility_hook(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc);
+            Oid table_id = get_relname_relid(createStmt->relation->relname,
+                                             get_namespace_oid(createStmt->relation->schemaname, false));
+            columnstore_writer.CreateTable(table_id, storage_path);
+            TableInfoAdd(table_id, storage_path.c_str(), table_format.c_str());
+            return;
+        }
+    }
     prev_process_utility_hook(pstmt, queryString, readOnlyTree, context, params, queryEnv, dest, qc);
     columnstore_writer.Finalize();
 }
@@ -147,7 +192,7 @@ void InitColumnstore() {
     // INSERT, INSERT...SELECT
     prev_executor_end_hook = ExecutorEnd_hook ? ExecutorEnd_hook : standard_ExecutorEnd;
     ExecutorEnd_hook = ExecutorEndHook;
-    // COPY
+    // COPY, CREATE
     prev_process_utility_hook = ProcessUtility_hook ? ProcessUtility_hook : standard_ProcessUtility;
     ProcessUtility_hook = ProcessUtilityHook;
 }

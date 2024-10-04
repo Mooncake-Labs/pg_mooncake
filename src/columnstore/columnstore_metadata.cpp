@@ -9,6 +9,8 @@ extern "C" {
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
 #include "utils/builtins.h"
+#include "utils/fmgroids.h"
+#include "utils/jsonb.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
 #include "utils/snapmgr.h"
@@ -20,6 +22,14 @@ Oid MooncakeOid() {
 
 Oid DataFilesOid() {
     return get_relname_relid("data_files", MooncakeOid());
+}
+
+Oid TableInfoOid() {
+    return get_relname_relid("table_info", MooncakeOid());
+}
+
+Oid TableInfoIndexOid() {
+    return get_relname_relid("table_info_pkey", MooncakeOid());
 }
 
 const int x_data_files_natts = 2;
@@ -54,4 +64,41 @@ duckdb::vector<duckdb::Value> DataFilesGet(Oid relid) {
     systable_endscan(scan);
     table_close(relation, AccessShareLock);
     return file_names;
+}
+
+const int x_table_info_natts = 4;
+
+void TableInfoAdd(Oid relid, const char *storage_path, const char *lake_format) {
+    Relation relation = table_open(TableInfoOid(), RowExclusiveLock);
+    TupleDesc desc = RelationGetDescr(relation);
+    Datum values[x_table_info_natts] = {relid, CStringGetTextDatum(storage_path), CStringGetTextDatum(lake_format),
+                                        JsonbPGetDatum(NULL)};
+    bool nulls[x_table_info_natts] = {false, false, false, true};
+    HeapTuple tuple = heap_form_tuple(desc, values, nulls);
+    CatalogTupleInsert(relation, tuple);
+    CommandCounterIncrement();
+    table_close(relation, RowExclusiveLock);
+}
+
+void TableInfoGet(Oid relid, const char **storage_path, const char **lake_format) {
+    Relation relation = table_open(TableInfoOid(), AccessShareLock);
+    TupleDesc desc = RelationGetDescr(relation);
+    ScanKeyData scanKey[1];
+    ScanKeyInit(&scanKey[0], 1 /* AttrNum */, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(relid));
+
+    Relation index = index_open(TableInfoIndexOid(), AccessShareLock);
+
+    SysScanDesc scan = systable_beginscan_ordered(relation, index, NULL, 1, scanKey);
+    HeapTuple tuple = systable_getnext_ordered(scan, ForwardScanDirection);
+    Datum values[x_data_files_natts];
+    bool isnull[x_data_files_natts];
+
+    if (HeapTupleIsValid(tuple)) {
+        heap_deform_tuple(tuple, desc, values, isnull);
+        *storage_path = TextDatumGetCString(values[1]);
+        *lake_format = TextDatumGetCString(values[2]);
+    }
+    systable_endscan_ordered(scan);
+    index_close(index, AccessShareLock);
+    table_close(relation, AccessShareLock);
 }

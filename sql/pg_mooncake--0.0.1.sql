@@ -5,6 +5,13 @@ CREATE TABLE mooncake.data_files (
     file_name TEXT NOT NULL
 );
 
+CREATE TABLE mooncake.table_info (
+    relid OID NOT NULL primary key,
+    storage_path TEXT NOT NULL,
+    lake_format TEXT NOT NULL,
+    lakehouse_options JSONB
+);
+
 CREATE FUNCTION columnstore_handler(internal) RETURNS table_am_handler
     AS 'MODULE_PATHNAME' LANGUAGE C STRICT;
 

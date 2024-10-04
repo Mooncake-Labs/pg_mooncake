@@ -11,7 +11,7 @@ extern "C" {
 #include "utils/relcache.h"
 }
 
-const char *x_columnstore_access_method = "columnstore";
+constexpr const char *x_columnstore_access_method = "columnstore";
 
 void InitColumnstore();
 

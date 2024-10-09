@@ -4,6 +4,7 @@ extern "C" {
 #include "access/htup_details.h"
 #include "catalog/dependency.h"
 #include "catalog/namespace.h"
+#include "catalog/pg_am.h"
 #include "catalog/pg_type.h"
 #include "catalog/pg_proc.h"
 #include "commands/extension.h"
@@ -34,6 +35,8 @@ struct {
 	bool installed;
 	/* The Postgres OID of the pg_duckdb extension. */
 	Oid extension_oid;
+	/* The OID of the duckdb Table Access Method */
+	Oid table_am_oid;
 	/*
 	 * A list of Postgres OIDs of functions that can only be executed by DuckDB.
 	 * XXX: We're iterating over this list in IsDuckdbOnlyFunction. If this list
@@ -62,7 +65,12 @@ InvalidateCaches(Datum arg, int cache_id, uint32 hash_value) {
 		return;
 	}
 	cache.valid = false;
-	list_free(cache.duckdb_only_functions);
+	if (cache.installed) {
+		list_free(cache.duckdb_only_functions);
+		cache.duckdb_only_functions = NIL;
+		cache.extension_oid = InvalidOid;
+		cache.table_am_oid = InvalidOid;
+	}
 }
 
 /*
@@ -132,11 +140,12 @@ IsExtensionRegistered() {
 		CacheRegisterSyscacheCallback(NAMESPACENAME, InvalidateCaches, (Datum)0);
 	}
 
-	cache.extension_oid = get_extension_oid("pg_mooncake", true);
+	cache.extension_oid = get_extension_oid("pg_duckdb", true);
 	cache.installed = cache.extension_oid != InvalidOid;
 	if (cache.installed) {
 		/* If the extension is installed we can build the rest of the cache */
 		BuildDuckdbOnlyFunctions();
+		cache.table_am_oid = GetSysCacheOid1(AMNAME, Anum_pg_am_oid, CStringGetDatum("duckdb"));
 	}
 	cache.valid = true;
 
@@ -157,6 +166,12 @@ IsDuckdbOnlyFunction(Oid function_oid) {
 		}
 	}
 	return false;
+}
+
+Oid
+DuckdbTableAmOid() {
+	Assert(cache.valid);
+	return cache.table_am_oid;
 }
 
 } // namespace pgduckdb

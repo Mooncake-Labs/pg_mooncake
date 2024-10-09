@@ -3,6 +3,7 @@
 #include "duckdb/common/types/uuid.hpp"
 #include "parquet_reader.hpp"
 #include "parquet_writer.hpp"
+#include "lake/lake.hpp"
 
 namespace duckdb {
 
@@ -73,6 +74,8 @@ private:
         writer->Finalize();
         writer.reset();
         metadata.DataFilesInsert(oid, file_name.c_str());
+        idx_t size = 1;
+        LakeAddFile(oid, file_name.c_str(), size);
     }
 
 private:

@@ -4,6 +4,7 @@
 extern "C" {
 #include "postgres.h"
 
+#include "access/xact.h"
 #include "catalog/namespace.h"
 #include "commands/defrem.h"
 #include "executor/executor.h"
@@ -11,6 +12,7 @@ extern "C" {
 }
 
 using duckdb::string;
+#include "lake/lake.hpp"
 
 string ParseColumnstoreOptions(List *list) {
     string path;
@@ -49,7 +51,14 @@ void ProcessUtilityHook(PlannedStmt *pstmt, const char *query_string, bool read_
     prev_process_utility_hook(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc);
 }
 
+void XactHook(XactEvent event, void *arg) {
+    if (event == XactEvent::XACT_EVENT_PRE_COMMIT) {
+        LakeCommit();
+    }
+}
+
 void InitDuckdbHooks() {
     prev_process_utility_hook = ProcessUtility_hook ? ProcessUtility_hook : standard_ProcessUtility;
     ProcessUtility_hook = ProcessUtilityHook;
+    RegisterXactCallback(XactHook, NULL);
 }

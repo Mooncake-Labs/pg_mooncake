@@ -19,6 +19,8 @@ public:
 
     static void TruncateTable(Oid oid);
 
+    static string GetTableInfo(Oid oid);
+
     static unique_ptr<PhysicalOperator> PlanInsert(ClientContext &context, LogicalInsert &op,
                                                    unique_ptr<PhysicalOperator> plan);
 

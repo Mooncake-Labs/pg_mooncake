@@ -3,6 +3,7 @@
 extern "C" {
 #include "postgres.h"
 
+#include "access/xact.h"
 #include "catalog/namespace.h"
 #include "commands/defrem.h"
 #include "executor/executor.h"
@@ -10,6 +11,7 @@ extern "C" {
 }
 
 #include "columnstore/columnstore.hpp"
+#include "lake/lake.hpp"
 
 ColumnstoreOptions ParseColumnstoreOptions(List *list) {
     ColumnstoreOptions options;
@@ -57,9 +59,16 @@ void ExecutorEndHook(QueryDesc *query_desc) {
     ColumnstoreFinalize();
 }
 
+void XactHook(XactEvent event, void *arg) {
+    if (event == XactEvent::XACT_EVENT_PRE_COMMIT) {
+        LakeCommit();
+    }
+}
+
 void InitColumnstore() {
     prev_process_utility_hook = ProcessUtility_hook ? ProcessUtility_hook : standard_ProcessUtility;
     ProcessUtility_hook = ProcessUtilityHook;
     prev_executor_end_hook = ExecutorEnd_hook ? ExecutorEnd_hook : standard_ExecutorEnd;
     ExecutorEnd_hook = ExecutorEndHook;
+    RegisterXactCallback(XactHook, NULL);
 }

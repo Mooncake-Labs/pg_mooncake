@@ -14,19 +14,19 @@ extern "C" {
 #include "pgduckdb/pgduckdb_types.hpp"
 
 #include "columnstore/columnstore.hpp"
-
-#include "rust_extensions/delta.hpp"
+#include "lake/lake.hpp"
 
 class ParquetWriter {
   public:
-    ParquetWriter(duckdb::ClientContext &context, Oid oid, const ColumnstoreOptions &options,
-                  duckdb::vector<duckdb::LogicalType> types, duckdb::vector<duckdb::string> names)
-        : m_oid(oid), m_file_name(options.path + duckdb::UUID::GenerateRandomUUID().ToString() + ".parquet"),
+    ParquetWriter(duckdb::ClientContext &context, Oid oid, std::string path, duckdb::vector<duckdb::LogicalType> types,
+                  duckdb::vector<duckdb::string> names)
+        : m_context(context), m_oid(oid), m_path(std::move(path)),
+          m_file_name(duckdb::UUID::GenerateRandomUUID().ToString() + ".parquet"),
           m_collection(context, types, duckdb::ColumnDataAllocatorType::HYBRID),
-          m_writer(context, duckdb::FileSystem::GetFileSystem(context), m_file_name, std::move(types), std::move(names),
-                   duckdb_parquet::format::CompressionCodec::SNAPPY /*codec*/, {} /*field_ids*/, {} /*kv_metadata*/,
-                   {} /*encryption_config*/, 1.0 /*dictionary_compression_ratio_threshold*/, {} /*compression_level*/,
-                   true /*debug_use_openssl*/) {
+          m_writer(context, duckdb::FileSystem::GetFileSystem(context), m_path + m_file_name, std::move(types),
+                   std::move(names), duckdb_parquet::format::CompressionCodec::SNAPPY /*codec*/, {} /*field_ids*/,
+                   {} /*kv_metadata*/, {} /*encryption_config*/, 1.0 /*dictionary_compression_ratio_threshold*/,
+                   {} /*compression_level*/, true /*debug_use_openssl*/) {
         m_collection.InitializeAppend(m_append_state);
     }
 
@@ -43,14 +43,19 @@ class ParquetWriter {
         m_writer.Flush(m_collection);
         m_writer.Finalize();
         DataFilesAdd(m_oid, m_file_name.c_str());
-        elog(NOTICE, "delta: %zu", delta("hello"));
+        duckdb::idx_t size = duckdb::FileSystem::GetFileSystem(m_context)
+                                 .OpenFile(m_path + m_file_name, duckdb::FileFlags::FILE_FLAGS_READ)
+                                 ->GetFileSize();
+        LakeAddFile(m_oid, m_file_name.c_str(), size);
     }
 
   private:
     static const idx_t x_row_group_size = duckdb::Storage::ROW_GROUP_SIZE;
     static const idx_t x_row_group_size_bytes = x_row_group_size * 1024;
 
+    duckdb::ClientContext &m_context;
     Oid m_oid;
+    std::string m_path;
     std::string m_file_name;
     duckdb::ColumnDataCollection m_collection;
     duckdb::ColumnDataAppendState m_append_state;
@@ -71,13 +76,15 @@ class ColumnstoreWriter {
         }
         m_chunk.Initialize(*m_con.context, types);
         ColumnstoreOptions options = TablesGet(oid);
-        m_writer = duckdb::make_uniq<ParquetWriter>(*m_con.context, oid, options, std::move(types), std::move(names));
+        m_writer = duckdb::make_uniq<ParquetWriter>(*m_con.context, oid, std::move(options.path), std::move(types),
+                                                    std::move(names));
     }
 
     void CreateTable(Oid oid, const ColumnstoreOptions &options) {
         if (strlen(options.path)) {
             duckdb::FileSystem::GetFileSystem(*m_con.context).CreateDirectory(options.path);
         }
+        LakeCreateTable(oid, options.path);
         TablesAdd(oid, options);
     }
 

@@ -12,6 +12,7 @@ RUN apt update \
     git \
     libicu-dev \
     libreadline-dev \
+    libssl-dev \
     locales \
     man \
     pkg-config \

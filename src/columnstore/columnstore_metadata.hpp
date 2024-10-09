@@ -18,10 +18,19 @@ public:
     void TablesDelete(Oid oid);
     string TablesSearch(Oid oid);
 
-    void DataFilesInsert(Oid oid, const string &file_name);
-    void DataFilesDelete(const string &file_name);
+    int64_t DataFilesInsert(Oid oid, const string &file_name);
+    void DataFilesDelete(int64_t file_id);
     void DataFilesDelete(Oid oid);
-    vector<string> DataFilesSearch(Oid oid);
+    struct FileInfo {
+        int64_t file_id;
+        string file_path;
+        string file_name;
+    };
+
+    vector<FileInfo> DataFilesSearch(Oid oid);
+
+    string SecretGet();
+    string GenerateFullPath(Oid oid);
 
 private:
     Snapshot snapshot;

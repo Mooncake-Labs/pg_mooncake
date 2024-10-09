@@ -1,15 +1,17 @@
 #include "columnstore/columnstore.hpp"
 #include "columnstore_metadata.hpp"
 #include "duckdb/common/file_system.hpp"
-
+#include "lake/lake.hpp"
 namespace duckdb {
 
-void Columnstore::CreateTable(ClientContext &context, Oid oid, const string &path) {
-    if (!path.empty()) {
-        FileSystem::GetFileSystem(context).CreateDirectory(path);
-    }
+void Columnstore::CreateTable(Oid oid) {
     ColumnstoreMetadata metadata(NULL /*snapshot*/);
-    metadata.TablesInsert(oid, path);
+    string full_path = metadata.GenerateFullPath(oid);
+    if (!full_path.empty() && !duckdb::FileSystem::IsRemoteFile(full_path)) {
+        FileSystem::CreateLocal()->CreateDirectory(full_path);
+    }
+    metadata.TablesInsert(oid, full_path);
+    LakeCreateTable(oid, full_path.c_str());
 }
 
 // TODO
@@ -24,4 +26,16 @@ void Columnstore::TruncateTable(Oid oid) {
     metadata.DataFilesDelete(oid);
 }
 
+string Columnstore::GetTableInfo(Oid oid) {
+    ColumnstoreMetadata metadata(NULL /*snapshot*/);
+    return metadata.TablesSearch(oid);
+}
+
+string Columnstore::GetSecretForPath(const string &path) {
+    if (!duckdb::FileSystem::IsRemoteFile(path)) {
+        return "{}";
+    }
+    ColumnstoreMetadata metadata(NULL /*snapshot*/);
+    return metadata.SecretGet();
+}
 } // namespace duckdb

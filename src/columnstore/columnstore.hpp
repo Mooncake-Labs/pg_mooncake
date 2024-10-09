@@ -13,11 +13,15 @@ typedef unsigned int Oid;
 
 class Columnstore {
 public:
-    static void CreateTable(ClientContext &context, Oid oid, const string &path);
+    static void CreateTable(Oid oid);
 
     static void DropTable(Oid oid);
 
     static void TruncateTable(Oid oid);
+
+    static string GetTableInfo(Oid oid);
+
+    static string GetSecretForPath(const string &path);
 
     static unique_ptr<PhysicalOperator> PlanInsert(ClientContext &context, LogicalInsert &op,
                                                    unique_ptr<PhysicalOperator> plan);

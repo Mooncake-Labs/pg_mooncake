@@ -100,7 +100,7 @@ DuckDBManager::DuckDBManager() : secret_table_num_rows(0), secret_table_current_
 	auto &context = *connection->context;
 	context.Query("ATTACH DATABASE 'pgduckdb' (TYPE pgduckdb)", false);
 	LoadFunctions(context);
-	LoadExtensions(context);
+	// LoadExtensions(context);
 }
 
 void

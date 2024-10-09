@@ -1,9 +1,5 @@
 #pragma once
 
-#include "duckdb.hpp"
-
-#include "duckdb/parser/tableref.hpp"
-
 extern "C" {
 #include "postgres.h"
 
@@ -13,7 +9,7 @@ extern "C" {
 
 void InitColumnstore();
 
-bool IsColumnstore(Oid oid);
+bool IsColumnstore(Relation table);
 
 struct ColumnstoreOptions {
     const char *path = "";
@@ -32,5 +28,3 @@ void ColumnstoreCreateTable(Oid oid, const ColumnstoreOptions &options);
 void ColumnstoreInsert(Relation table, TupleTableSlot **slots, int nslots);
 
 void ColumnstoreFinalize();
-
-duckdb::unique_ptr<duckdb::TableRef> ColumnstoreReplacementScan(Oid oid, const duckdb::string &table_name);

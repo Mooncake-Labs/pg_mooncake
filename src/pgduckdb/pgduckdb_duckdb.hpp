@@ -20,12 +20,12 @@ public:
 
 	inline duckdb::DuckDB &
 	GetDatabase() {
-		if(CheckSecretsSeq()) {
-			auto connection = duckdb::make_uniq<duckdb::Connection>(*database);
-			auto &context = *connection->context;
-			DropSecrets(context);
-			LoadSecrets(context);
-		}
+		// if(CheckSecretsSeq()) {
+		// 	auto connection = duckdb::make_uniq<duckdb::Connection>(*database);
+		// 	auto &context = *connection->context;
+		// 	DropSecrets(context);
+		// 	LoadSecrets(context);
+		// }
 		return *database;
 	}
 

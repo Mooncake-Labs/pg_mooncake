@@ -4,5 +4,7 @@ extern "C" {
 }
 
 namespace pgduckdb {
-bool IsDuckdbTableAm(const TableAmRoutine *am);
+bool IsDuckdbTableAm(const TableAmRoutine *am) {
+    return false;
+}
 }

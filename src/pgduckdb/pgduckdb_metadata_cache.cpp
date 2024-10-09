@@ -140,7 +140,7 @@ IsExtensionRegistered() {
 		CacheRegisterSyscacheCallback(NAMESPACENAME, InvalidateCaches, (Datum)0);
 	}
 
-	cache.extension_oid = get_extension_oid("pg_duckdb", true);
+	cache.extension_oid = get_extension_oid("pg_mooncake", true);
 	cache.installed = cache.extension_oid != InvalidOid;
 	if (cache.installed) {
 		/* If the extension is installed we can build the rest of the cache */

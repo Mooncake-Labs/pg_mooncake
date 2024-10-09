@@ -26,6 +26,9 @@ extern "C" {
 #include "utils/rel.h"
 }
 
+#include "columnstore/columnstore.hpp"
+#include "columnstore/columnstore_read.hpp"
+
 namespace duckdb {
 
 PostgresTransaction::PostgresTransaction(TransactionManager &manager, ClientContext &context, PostgresCatalog &catalog,
@@ -83,7 +86,12 @@ SchemaItems::GetTable(const string &entry_name) {
 		return nullptr;
 	}
 	cardinality = PostgresTable::GetTableCardinality(rel);
-	table = make_uniq<PostgresHeapTable>(catalog, *schema, info, rel, cardinality, snapshot);
+	if (IsColumnstore(rel)) {
+		table = make_uniq<ColumnstoreTable>(catalog, *schema, info, rel, cardinality, snapshot);
+	}
+	else {
+		table = make_uniq<PostgresHeapTable>(catalog, *schema, info, rel, cardinality, snapshot);
+	}
 	tables[entry_name] = std::move(table);
 	return tables[entry_name].get();
 }

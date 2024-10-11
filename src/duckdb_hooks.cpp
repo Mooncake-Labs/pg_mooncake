@@ -1,4 +1,5 @@
-#include "duckdb.hpp"
+#include "columnstore/columnstore.hpp"
+#include "pgduckdb/pgduckdb_duckdb.hpp"
 
 extern "C" {
 #include "postgres.h"
@@ -9,23 +10,23 @@ extern "C" {
 #include "tcop/utility.h"
 }
 
-#include "columnstore/columnstore.hpp"
+using duckdb::string;
 
-ColumnstoreOptions ParseColumnstoreOptions(List *list) {
-    ColumnstoreOptions options;
+string ParseColumnstoreOptions(List *list) {
+    string path;
     ListCell *cell;
     foreach (cell, list) {
         DefElem *elem = castNode(DefElem, lfirst(cell));
         if (strcmp(elem->defname, "path") == 0) {
-            options.path = defGetString(elem);
-            if (options.path[strlen(options.path) - 1] != '/') {
-                options.path = psprintf("%s/", options.path);
+            path = defGetString(elem);
+            if (path.back() != '/') {
+                path += '/';
             }
         } else {
             elog(ERROR, "Unrecognized columnstore option \"%s\"", elem->defname);
         }
     }
-    return options;
+    return path;
 }
 
 ProcessUtility_hook_type prev_process_utility_hook = NULL;
@@ -36,30 +37,19 @@ void ProcessUtilityHook(PlannedStmt *pstmt, const char *query_string, bool read_
     if (IsA(pstmt->utilityStmt, CreateStmt)) {
         CreateStmt *stmt = castNode(CreateStmt, pstmt->utilityStmt);
         if (stmt->accessMethod && strcmp(stmt->accessMethod, "columnstore") == 0) {
-            ColumnstoreOptions options = ParseColumnstoreOptions(stmt->options);
+            string path = ParseColumnstoreOptions(stmt->options);
             stmt->options = NIL;
             prev_process_utility_hook(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc);
             Oid oid = RangeVarGetRelid(stmt->relation, AccessShareLock, false /*missing_ok*/);
-            ColumnstoreCreateTable(oid, options);
+            duckdb::Connection con(pgduckdb::DuckDBManager::Get().GetDatabase());
+            duckdb::Columnstore::CreateTable(*con.context, oid, path);
             return;
         }
     }
     prev_process_utility_hook(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc);
-    if (IsA(pstmt->utilityStmt, CopyStmt)) {
-        ColumnstoreFinalize();
-    }
 }
 
-ExecutorEnd_hook_type prev_executor_end_hook = NULL;
-
-void ExecutorEndHook(QueryDesc *query_desc) {
-    prev_executor_end_hook(query_desc);
-    ColumnstoreFinalize();
-}
-
-void InitColumnstore() {
+void InitDuckdbHooks() {
     prev_process_utility_hook = ProcessUtility_hook ? ProcessUtility_hook : standard_ProcessUtility;
     ProcessUtility_hook = ProcessUtilityHook;
-    prev_executor_end_hook = ExecutorEnd_hook ? ExecutorEnd_hook : standard_ExecutorEnd;
-    ExecutorEnd_hook = ExecutorEndHook;
 }

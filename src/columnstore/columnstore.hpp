@@ -1,30 +1,32 @@
 #pragma once
 
-extern "C" {
-#include "postgres.h"
+#include "duckdb/common/unique_ptr.hpp"
 
-#include "executor/tuptable.h"
-#include "utils/relcache.h"
-}
+namespace duckdb {
 
-void InitColumnstore();
+class ClientContext;
+class LogicalDelete;
+class LogicalInsert;
+class LogicalUpdate;
+class PhysicalOperator;
+typedef unsigned int Oid;
 
-bool IsColumnstore(Relation table);
+class Columnstore {
+public:
+    static void CreateTable(ClientContext &context, Oid oid, const string &path);
 
-struct ColumnstoreOptions {
-    const char *path = "";
+    static void DropTable(Oid oid);
+
+    static void TruncateTable(Oid oid);
+
+    static unique_ptr<PhysicalOperator> PlanInsert(ClientContext &context, LogicalInsert &op,
+                                                   unique_ptr<PhysicalOperator> plan);
+
+    static unique_ptr<PhysicalOperator> PlanDelete(ClientContext &context, LogicalDelete &op,
+                                                   unique_ptr<PhysicalOperator> plan);
+
+    static unique_ptr<PhysicalOperator> PlanUpdate(ClientContext &context, LogicalUpdate &op,
+                                                   unique_ptr<PhysicalOperator> plan);
 };
 
-void TablesAdd(Oid oid, const ColumnstoreOptions &options);
-
-ColumnstoreOptions TablesGet(Oid oid);
-
-void DataFilesAdd(Oid oid, const char *file_name);
-
-std::vector<const char *> DataFilesGet(Oid oid);
-
-void ColumnstoreCreateTable(Oid oid, const ColumnstoreOptions &options);
-
-void ColumnstoreInsert(Relation table, TupleTableSlot **slots, int nslots);
-
-void ColumnstoreFinalize();
+} // namespace duckdb

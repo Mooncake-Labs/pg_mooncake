@@ -360,18 +360,34 @@ bool HasCatalog(List *tables) {
 planner_hook_type prev_planner_hook = NULL;
 
 PlannedStmt *PlannerHook(Query *parse, const char *query_string, int cursor_options, ParamListInfo bound_params) {
-    if (pgduckdb::IsExtensionRegistered() && parse->commandType == CMD_SELECT && HasColumnstore(parse->rtable)) {
-        if (parse->hasModifyingCTE) {
-            elog(ERROR, "DuckDB does not support modifying CTEs INSERT/UPDATE/DELETE");
+    if (pgduckdb::IsExtensionRegistered()) {
+        if (parse->commandType == CMD_SELECT && HasColumnstore(parse->rtable)) {
+            if (parse->hasModifyingCTE) {
+                elog(ERROR, "DuckDB does not support modifying CTEs INSERT/UPDATE/DELETE");
+            }
+            if (HasCatalog(parse->rtable)) {
+                elog(ERROR, "DuckDB has its own pg_catalog tables that contain different data");
+            }
+            PlannedStmt *plan = DuckdbPlanner(parse, cursor_options);
+            if (!plan) {
+                elog(ERROR, "DuckDB does not support this query");
+            }
+            return plan;
         }
-        if (HasCatalog(parse->rtable)) {
-            elog(ERROR, "DuckDB has its own pg_catalog tables that contain different data");
+        // if (parse->commandType == CMD_INSERT && HasColumnstore(parse->rtable)) {
+        //     PlannedStmt *plan = DuckdbPlanner(parse, cursor_options);
+        //     if (!plan) {
+        //         elog(ERROR, "DuckDB does not support this query");
+        //     }
+        //     return plan;
+        // }
+        if (parse->commandType == CMD_UPDATE || parse->commandType == CMD_DELETE) {
+            PlannedStmt *plan = DuckdbPlanner(parse, cursor_options);
+            if (!plan) {
+                elog(ERROR, "DuckDB does not support this query");
+            }
+            return plan;
         }
-        PlannedStmt *plan = DuckdbPlanner(parse, cursor_options);
-        if (!plan) {
-            elog(ERROR, "DuckDB does not support this query");
-        }
-        return plan;
     }
     return prev_planner_hook(parse, query_string, cursor_options, bound_params);
 }

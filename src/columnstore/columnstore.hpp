@@ -1,5 +1,7 @@
 #pragma once
 
+#include "duckdb.hpp"
+
 extern "C" {
 #include "postgres.h"
 
@@ -24,6 +26,8 @@ void DataFilesAdd(Oid oid, const char *file_name);
 std::vector<const char *> DataFilesGet(Oid oid);
 
 void ColumnstoreCreateTable(Oid oid, const ColumnstoreOptions &options);
+
+void ColumnstoreInsert(Relation table, duckdb::DataChunk &chunk);
 
 void ColumnstoreInsert(Relation table, TupleTableSlot **slots, int nslots);
 

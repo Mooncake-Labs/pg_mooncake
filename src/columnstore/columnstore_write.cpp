@@ -110,20 +110,29 @@ public:
 
             m_chunk.SetCardinality(m_chunk.size() + 1);
             if (m_chunk.size() == STANDARD_VECTOR_SIZE) {
-                Flush();
+                Flush(m_chunk);
             }
         }
     }
 
-    void Flush() {
-        m_chunk.Verify();
-        m_writer->Append(m_chunk);
-        m_chunk.Reset();
+    void Insert(Relation table, duckdb::DataChunk &chunk) {
+        TupleDesc desc = RelationGetDescr(table);
+        if (!m_writer) {
+            LazyInit(RelationGetRelid(table), desc);
+        }
+
+        Flush(chunk);
+    }
+
+    void Flush(duckdb::DataChunk &chunk) {
+        chunk.Verify();
+        m_writer->Append(chunk);
+        chunk.Reset();
     }
 
     void Finalize() {
         if (m_writer) {
-            Flush();
+            Flush(m_chunk);
             m_writer->Finalize();
             m_chunk.Destroy();
             m_writer.reset();
@@ -144,6 +153,10 @@ void ColumnstoreCreateTable(Oid oid, const ColumnstoreOptions &options) {
 
 void ColumnstoreInsert(Relation table, TupleTableSlot **slots, int nslots) {
     columnstore_writer.Insert(table, slots, nslots);
+}
+
+void ColumnstoreInsert(Relation table, duckdb::DataChunk &chunk) {
+    columnstore_writer.Insert(table, chunk);
 }
 
 void ColumnstoreFinalize() {

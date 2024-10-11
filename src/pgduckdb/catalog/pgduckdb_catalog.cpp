@@ -69,21 +69,6 @@ PostgresCatalog::PlanCreateTableAs(ClientContext &context, LogicalCreateTable &o
 	throw NotImplementedException("PlanCreateTableAs not supported yet");
 }
 
-unique_ptr<PhysicalOperator>
-PostgresCatalog::PlanInsert(ClientContext &context, LogicalInsert &op, unique_ptr<PhysicalOperator> plan) {
-	throw NotImplementedException("PlanInsert not supported yet");
-}
-
-unique_ptr<PhysicalOperator>
-PostgresCatalog::PlanDelete(ClientContext &context, LogicalDelete &op, unique_ptr<PhysicalOperator> plan) {
-	throw NotImplementedException("PlanDelete not supported yet");
-}
-
-unique_ptr<PhysicalOperator>
-PostgresCatalog::PlanUpdate(ClientContext &context, LogicalUpdate &op, unique_ptr<PhysicalOperator> plan) {
-	throw NotImplementedException("PlanUpdate not supported yet");
-}
-
 unique_ptr<LogicalOperator>
 PostgresCatalog::BindCreateIndex(Binder &binder, CreateStatement &stmt, TableCatalogEntry &table,
                                  unique_ptr<LogicalOperator> plan) {

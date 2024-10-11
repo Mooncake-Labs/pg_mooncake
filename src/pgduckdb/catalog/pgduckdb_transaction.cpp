@@ -26,8 +26,7 @@ extern "C" {
 #include "utils/rel.h"
 }
 
-#include "columnstore/columnstore.hpp"
-#include "columnstore/columnstore_read.hpp"
+#include "columnstore/columnstore_table.hpp"
 
 namespace duckdb {
 
@@ -87,7 +86,7 @@ SchemaItems::GetTable(const string &entry_name) {
 	}
 	cardinality = PostgresTable::GetTableCardinality(rel);
 	if (IsColumnstore(rel)) {
-		table = make_uniq<ColumnstoreTable>(catalog, *schema, info, rel, cardinality, snapshot);
+		table = make_uniq<ColumnstoreTableCatalogEntry>(catalog, *schema, info, rel, cardinality, snapshot);
 	}
 	else {
 		table = make_uniq<PostgresHeapTable>(catalog, *schema, info, rel, cardinality, snapshot);

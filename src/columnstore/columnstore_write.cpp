@@ -18,7 +18,7 @@ extern "C" {
 #include "rust_extensions/delta.hpp"
 
 class ParquetWriter {
-  public:
+public:
     ParquetWriter(duckdb::ClientContext &context, Oid oid, const ColumnstoreOptions &options,
                   duckdb::vector<duckdb::LogicalType> types, duckdb::vector<duckdb::string> names)
         : m_oid(oid), m_file_name(options.path + duckdb::UUID::GenerateRandomUUID().ToString() + ".parquet"),
@@ -46,7 +46,7 @@ class ParquetWriter {
         elog(NOTICE, "delta: %zu", delta("hello"));
     }
 
-  private:
+private:
     static const idx_t x_row_group_size = duckdb::Storage::ROW_GROUP_SIZE;
     static const idx_t x_row_group_size_bytes = x_row_group_size * 1024;
 
@@ -58,7 +58,7 @@ class ParquetWriter {
 };
 
 class ColumnstoreWriter {
-  public:
+public:
     ColumnstoreWriter() : m_con(pgduckdb::DuckDBManager::Get().GetDatabase()) {}
 
     void LazyInit(Oid oid, TupleDesc desc) {
@@ -130,7 +130,7 @@ class ColumnstoreWriter {
         }
     }
 
-  private:
+private:
     duckdb::Connection m_con;
     duckdb::DataChunk m_chunk;
     duckdb::unique_ptr<ParquetWriter> m_writer;

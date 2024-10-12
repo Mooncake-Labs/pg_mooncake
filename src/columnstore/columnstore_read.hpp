@@ -5,11 +5,11 @@
 namespace duckdb {
 
 class ColumnstoreTable : public PostgresTable {
-  public:
+public:
     ColumnstoreTable(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info, ::Relation rel,
                      Cardinality cardinality, Snapshot snapshot);
 
-  public:
+public:
     unique_ptr<BaseStatistics> GetStatistics(ClientContext &context, column_t column_id) override;
 
     TableFunction GetScanFunction(ClientContext &context, unique_ptr<FunctionData> &bind_data) override;

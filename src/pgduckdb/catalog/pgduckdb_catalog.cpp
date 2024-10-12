@@ -1,4 +1,5 @@
 #include "pgduckdb/catalog/pgduckdb_catalog.hpp"
+#include "columnstore/columnstore.hpp"
 #include "duckdb/parser/parsed_data/attach_info.hpp"
 #include "duckdb/parser/parsed_data/create_schema_info.hpp"
 #include "pgduckdb/catalog/pgduckdb_storage.hpp"
@@ -71,17 +72,17 @@ PostgresCatalog::PlanCreateTableAs(ClientContext &context, LogicalCreateTable &o
 
 unique_ptr<PhysicalOperator>
 PostgresCatalog::PlanInsert(ClientContext &context, LogicalInsert &op, unique_ptr<PhysicalOperator> plan) {
-	throw NotImplementedException("PlanInsert not supported yet");
+	return Columnstore::PlanInsert(context, op, std::move(plan));
 }
 
 unique_ptr<PhysicalOperator>
 PostgresCatalog::PlanDelete(ClientContext &context, LogicalDelete &op, unique_ptr<PhysicalOperator> plan) {
-	throw NotImplementedException("PlanDelete not supported yet");
+	return Columnstore::PlanDelete(context, op, std::move(plan));
 }
 
 unique_ptr<PhysicalOperator>
 PostgresCatalog::PlanUpdate(ClientContext &context, LogicalUpdate &op, unique_ptr<PhysicalOperator> plan) {
-	throw NotImplementedException("PlanUpdate not supported yet");
+	return Columnstore::PlanUpdate(context, op, std::move(plan));
 }
 
 unique_ptr<LogicalOperator>

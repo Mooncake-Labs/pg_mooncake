@@ -38,7 +38,7 @@ DuckdbPrepare(const Query *query) {
         }
     }
 
-    elog(DEBUG2, "(PGDuckDB/DuckdbPrepare) Preparing: %s", query_string);
+    elog(DEBUG2, "(pg_mooncake/DuckdbPrepare) Preparing: %s", query_string);
 
     auto duckdb_connection = pgduckdb::DuckDBManager::Get().GetConnection();
     auto context = duckdb_connection->context;
@@ -49,7 +49,7 @@ DuckdbPrepare(const Query *query) {
 struct DuckdbScanState {
     CustomScanState css; /* must be first field */
     const Query *query;
-    ParamListInfo params;
+    EState *estate;
     duckdb::Connection *duckdb_connection;
     duckdb::PreparedStatement *prepared_statement;
     bool is_executed;
@@ -78,7 +78,7 @@ void BeginDuckdbScan(CustomScanState *cscanstate, EState *estate, int eflags) {
 
     duckdb_scan_state->duckdb_connection = duckdb_connection.release();
     duckdb_scan_state->prepared_statement = prepared_query.release();
-    duckdb_scan_state->params = estate->es_param_list_info;
+    duckdb_scan_state->estate = estate;
     duckdb_scan_state->is_executed = false;
     duckdb_scan_state->fetch_next = true;
     duckdb_scan_state->css.ss.ps.ps_ResultTupleDesc = duckdb_scan_state->css.ss.ss_ScanTupleSlot->tts_tupleDescriptor;
@@ -91,7 +91,7 @@ void ExecuteQuery(DuckdbScanState *state) {
     auto &prepared = *state->prepared_statement;
     auto &query_results = state->query_results;
     auto &connection = state->duckdb_connection;
-    auto pg_params = state->params;
+    auto pg_params = state->estate->es_param_list_info;
     const auto num_params = pg_params ? pg_params->numParams : 0;
     duckdb::vector<duckdb::Value> duckdb_params;
     for (int i = 0; i < num_params; i++) {
@@ -136,7 +136,7 @@ void ExecuteQuery(DuckdbScanState *state) {
     } while (!duckdb::PendingQueryResult::IsResultReady(execution_result));
     if (execution_result == duckdb::PendingExecutionResult::EXECUTION_ERROR) {
         CleanupDuckdbScanState(state);
-        elog(ERROR, "(PGDuckDB/ExecuteQuery) %s", pending->GetError().c_str());
+        elog(ERROR, "(pg_mooncake/ExecuteQuery) %s", pending->GetError().c_str());
     }
     query_results = pending->Execute();
     state->column_count = query_results->ColumnCount();
@@ -164,6 +164,11 @@ TupleTableSlot *ExecDuckdbScan(CustomScanState *node) {
         }
     }
 
+    if (duckdb_scan_state->query_results->properties.return_type == duckdb::StatementReturnType::CHANGED_ROWS) {
+        duckdb_scan_state->estate->es_processed =
+            duckdb_scan_state->current_data_chunk->GetValue(0, 0).GetValue<int64_t>();
+    }
+
     MemoryContextReset(duckdb_scan_state->css.ss.ps.ps_ExprContext->ecxt_per_tuple_memory);
     ExecClearTuple(slot);
 
@@ -179,7 +184,7 @@ TupleTableSlot *ExecDuckdbScan(CustomScanState *node) {
             slot->tts_isnull[col] = false;
             if (!pgduckdb::ConvertDuckToPostgresValue(slot, value, col)) {
                 CleanupDuckdbScanState(duckdb_scan_state);
-                elog(ERROR, "(PGDuckDB/Duckdb_ExecCustomScan) Value conversion failed");
+                elog(ERROR, "(pg_mooncake/Duckdb_ExecCustomScan) Value conversion failed");
             }
         }
     }
@@ -252,7 +257,7 @@ Plan *CreatePlan(Query *query) {
     auto prepared_query = std::move(std::get<0>(prepare_result));
 
     if (prepared_query->HasError()) {
-        elog(WARNING, "(PGDuckDB/CreatePlan) Prepared query returned an error: '%s",
+        elog(WARNING, "(pg_mooncake/CreatePlan) Prepared query returned an error: '%s",
              prepared_query->GetError().c_str());
         return nullptr;
     }
@@ -266,7 +271,7 @@ Plan *CreatePlan(Query *query) {
         Oid postgresColumnOid = pgduckdb::GetPostgresDuckDBType(column);
 
         if (!OidIsValid(postgresColumnOid)) {
-            elog(WARNING, "(PGDuckDB/CreatePlan) Cache lookup failed for type %u", postgresColumnOid);
+            elog(WARNING, "(pg_mooncake/CreatePlan) Cache lookup failed for type %u", postgresColumnOid);
             return nullptr;
         }
 
@@ -275,7 +280,7 @@ Plan *CreatePlan(Query *query) {
 
         tp = SearchSysCache1(TYPEOID, ObjectIdGetDatum(postgresColumnOid));
         if (!HeapTupleIsValid(tp)) {
-            elog(WARNING, "(PGDuckDB/CreatePlan) Cache lookup failed for type %u", postgresColumnOid);
+            elog(WARNING, "(pg_mooncake/CreatePlan) Cache lookup failed for type %u", postgresColumnOid);
             return nullptr;
         }
 
@@ -315,6 +320,8 @@ PlannedStmt *DuckdbPlanner(Query *parse, int cursor_options) {
     plan->stmt_len = parse->stmt_len;
     return plan;
 }
+
+bool IsColumnstore(Relation table);
 
 bool IsColumnstore(Oid oid) {
     Relation table = RelationIdGetRelation(oid);
@@ -360,7 +367,7 @@ bool HasCatalog(List *tables) {
 planner_hook_type prev_planner_hook = NULL;
 
 PlannedStmt *PlannerHook(Query *parse, const char *query_string, int cursor_options, ParamListInfo bound_params) {
-    if (pgduckdb::IsExtensionRegistered() && parse->commandType == CMD_SELECT && HasColumnstore(parse->rtable)) {
+    if (pgduckdb::IsExtensionRegistered() && HasColumnstore(parse->rtable)) {
         if (parse->hasModifyingCTE) {
             elog(ERROR, "DuckDB does not support modifying CTEs INSERT/UPDATE/DELETE");
         }

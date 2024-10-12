@@ -1,4 +1,4 @@
-#include "duckdb.hpp"
+#include "columnstore/columnstore.hpp"
 
 extern "C" {
 #include "postgres.h"
@@ -7,10 +7,8 @@ extern "C" {
 #include "fmgr.h"
 }
 
-#include "columnstore/columnstore.hpp"
-
 const TupleTableSlotOps *columnstore_slot_callbacks(Relation rel) {
-    return &TTSOpsVirtual;
+    elog(ERROR, "columnstore_slot_callbacks not implemented");
 }
 
 TableScanDesc columnstore_scan_begin(Relation rel, Snapshot snapshot, int nkeys, struct ScanKeyData *key,
@@ -82,7 +80,7 @@ TransactionId columnstore_index_delete_tuples(Relation rel, TM_IndexDeleteOp *de
 
 void columnstore_tuple_insert(Relation rel, TupleTableSlot *slot, CommandId cid, int options,
                               struct BulkInsertStateData *bistate) {
-    ColumnstoreInsert(rel, &slot, 1 /*nslots*/);
+    elog(ERROR, "columnstore_tuple_insert not implemented");
 }
 
 void columnstore_tuple_insert_speculative(Relation rel, TupleTableSlot *slot, CommandId cid, int options,
@@ -96,7 +94,7 @@ void columnstore_tuple_complete_speculative(Relation rel, TupleTableSlot *slot, 
 
 void columnstore_multi_insert(Relation rel, TupleTableSlot **slots, int nslots, CommandId cid, int options,
                               struct BulkInsertStateData *bistate) {
-    ColumnstoreInsert(rel, slots, nslots);
+    elog(ERROR, "columnstore_multi_insert not implemented");
 }
 
 TM_Result columnstore_tuple_delete(Relation rel, ItemPointer tid, CommandId cid, Snapshot snapshot, Snapshot crosscheck,
@@ -117,11 +115,11 @@ TM_Result columnstore_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapsho
 
 void columnstore_relation_set_new_filelocator(Relation rel, const RelFileLocator *newrlocator, char persistence,
                                               TransactionId *freezeXid, MultiXactId *minmulti) {
-    // TODO: elog(NOTICE, "columnstore_relation_set_new_filelocator not fully implemented");
+    duckdb::Columnstore::TruncateTable(rel->rd_id);
 }
 
 void columnstore_relation_nontransactional_truncate(Relation rel) {
-    elog(ERROR, "columnstore_relation_nontransactional_truncate not implemented");
+    duckdb::Columnstore::TruncateTable(rel->rd_id);
 }
 
 void columnstore_relation_copy_data(Relation rel, const RelFileLocator *newrlocator) {
@@ -170,7 +168,7 @@ bool columnstore_relation_needs_toast_table(Relation rel) {
 
 void columnstore_relation_estimate_size(Relation rel, int32 *attr_widths, BlockNumber *pages, double *tuples,
                                         double *allvisfrac) {
-    // TODO: elog(NOTICE, "columnstore_relation_estimate_size not fully implemented");
+    elog(ERROR, "columnstore_relation_estimate_size not implemented");
 }
 
 bool columnstore_scan_sample_next_block(TableScanDesc scan, struct SampleScanState *scanstate) {

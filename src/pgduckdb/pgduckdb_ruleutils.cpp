@@ -50,17 +50,21 @@ pgduckdb_relation_name(Oid relation_oid) {
 	const char *nspname = get_namespace_name_or_temp(relation->relnamespace);
 	const char *dbname;
 
-	if (relation->relam == pgduckdb::DuckdbTableAmOid()) {
-		dbname = "memory";
-	} else {
+	// if (relation->relam == pgduckdb::DuckdbTableAmOid()) {
+	// 	dbname = "memory";
+	// } else {
 		dbname = "pgduckdb";
-	}
+	// }
 
 	char *result = psprintf("%s.%s.%s", quote_identifier(dbname), quote_identifier(nspname), quote_identifier(relname));
 
 	ReleaseSysCache(tp);
 
 	return result;
+}
+
+char *pgduckdb_get_querydef(Query *query, bool pretty) {
+	return pgduckdb_pg_get_querydef(query, pretty);
 }
 
 /*

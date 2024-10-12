@@ -1,19 +1,17 @@
-#include "duckdb.hpp"
-
 extern "C" {
 #include "postgres.h"
 
 #include "fmgr.h"
 }
 
-#include "columnstore/columnstore.hpp"
-#include "duckdb_scan.hpp"
+void InitDuckdbHooks();
+void InitDuckdbScan();
 
 extern "C" {
 PG_MODULE_MAGIC;
 
 void _PG_init(void) {
-    InitColumnstore();
+    InitDuckdbHooks();
     InitDuckdbScan();
 }
 }

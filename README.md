@@ -1,6 +1,13 @@
 # pg_mooncake
 **pg_mooncake** is a PostgreSQL extension that brings columnstore tables, backed by open table formats: **Delta** and **Iceberg**.
 
+
+[![License](https://img.shields.io/badge/License-MIT-blue)](https://github.com/Mooncake-Labs/pg_mooncake/blob/main/LICENSE)
+[![Slack URL](https://img.shields.io/badge/Join%20Slack-purple?logo=slack&link=https%3A%2F%2Fjoin.slack.com%2Ft%2Fmooncakelabs%2Fshared_invite%2Fzt-2sepjh5hv-rb9jUtfYZ9bvbxTCUrsEEA)](https://join.slack.com/t/mooncakelabs/shared_invite/zt-2sepjh5hv-rb9jUtfYZ9bvbxTCUrsEEA)
+[![X URL](https://img.shields.io/twitter/url?url=https%3A%2F%2Fx.com%2Fmooncakelabs&label=Follow%20%40mooncakelabs)](https://x.com/mooncakelabs)
+
+---
+
 ## Key Features
 - **Column-oriented Storage**: Accelerate analytical and processing workloads. Queries on columnstore tables are executed by [**pg_duckdb**](https://github.com/duckdb/pg_duckdb) and [**duckdb**](https://github.com/duckdb/duckdb) for optimized performance.
 - **Open Table Formats**: Columnstore tables persist on object storage with Delta or Iceberg metadata. You can catalog and query these tables directly from Snowflake, Databricks, and BigQuery. 

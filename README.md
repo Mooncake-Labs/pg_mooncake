@@ -63,10 +63,11 @@ SELECT * FROM t JOIN s ON t.a = s.b;
 ```
 
 ## Built with ❤️ by Mooncake Labs 🥮
-**pg_mooncake** is the first project from our open-source software studio, **Mooncake Labs**. We are focused on creating simple interfaces for data intelligence infrastructure, making it accessible to every developer and application.
+**pg_mooncake** is the first project from our open-source software studio, **Mooncake Labs**. We are building the data intelligence stack for the next billion developers. We are obessed about simple and clean interfaces for this infrastructure. 
 
-## Disclaimer
-**pg_mooncake** is currently in alpha and under active development. It is not intended for production use cases. Some functionality may not continue to be supported.
+> [!CAUTION]
+> **pg_mooncake** is currently in alpha and under active development. It is not intended for production use cases.
+> Some functionality may not continue to be supported and some key features are not yet implemented.
 
 
 ## License

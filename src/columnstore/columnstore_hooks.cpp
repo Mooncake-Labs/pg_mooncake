@@ -60,7 +60,7 @@ void ExecutorEndHook(QueryDesc *query_desc) {
 }
 
 void XactHook(XactEvent event, void *arg) {
-    if (event == XactEvent::XACT_EVENT_PRE_COMMIT) {
+    if (event == XactEvent::XACT_EVENT_COMMIT) {
         LakeCommit();
     }
 }

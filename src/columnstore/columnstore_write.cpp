@@ -19,12 +19,12 @@ extern "C" {
 class ParquetWriter {
   public:
     ParquetWriter(duckdb::ClientContext &context, Oid oid, std::string path, duckdb::vector<duckdb::LogicalType> types,
-                  duckdb::vector<duckdb::string> names)
+                  duckdb::vector<duckdb::string> names, duckdb::ChildFieldIDs fieldIds)
         : m_context(context), m_oid(oid), m_path(std::move(path)),
           m_file_name(duckdb::UUID::GenerateRandomUUID().ToString() + ".parquet"),
           m_collection(context, types, duckdb::ColumnDataAllocatorType::HYBRID),
           m_writer(context, duckdb::FileSystem::GetFileSystem(context), m_path + m_file_name, std::move(types),
-                   std::move(names), duckdb_parquet::format::CompressionCodec::SNAPPY /*codec*/, {} /*field_ids*/,
+                   std::move(names), duckdb_parquet::format::CompressionCodec::SNAPPY /*codec*/, std::move(fieldIds),
                    {} /*kv_metadata*/, {} /*encryption_config*/, 1.0 /*dictionary_compression_ratio_threshold*/,
                    {} /*compression_level*/, true /*debug_use_openssl*/) {
         m_collection.InitializeAppend(m_append_state);
@@ -69,15 +69,17 @@ class ColumnstoreWriter {
     void LazyInit(Oid oid, TupleDesc desc) {
         duckdb::vector<duckdb::LogicalType> types;
         duckdb::vector<duckdb::string> names;
+        duckdb::ChildFieldIDs fieldIds;
         for (int col = 0; col < desc->natts; col++) {
             Form_pg_attribute attr = &desc->attrs[col];
             types.push_back(pgduckdb::ConvertPostgresToDuckColumnType(attr));
             names.push_back(NameStr(attr->attname));
+            fieldIds.ids->insert(std::make_pair(names[col], duckdb::FieldID(col)));
         }
         m_chunk.Initialize(*m_con.context, types);
         ColumnstoreOptions options = TablesGet(oid);
         m_writer = duckdb::make_uniq<ParquetWriter>(*m_con.context, oid, std::move(options.path), std::move(types),
-                                                    std::move(names));
+                                                    std::move(names), std::move(fieldIds));
     }
 
     void CreateTable(Oid oid, const ColumnstoreOptions &options) {

@@ -7,10 +7,11 @@
 #include "columnstore/columnstore.hpp"
 
 duckdb::unique_ptr<duckdb::TableRef> ColumnstoreReplacementScan(Oid oid, const duckdb::string &table_name) {
+    ColumnstoreOptions options = TablesGet(oid);
     std::vector<const char *> file_names = DataFilesGet(oid);
     duckdb::vector<duckdb::Value> values;
     for (const char *file_name : file_names) {
-        values.push_back(duckdb::Value(file_name));
+        values.push_back(duckdb::Value(duckdb::string(options.path) + file_name));
     }
     duckdb::vector<duckdb::unique_ptr<duckdb::ParsedExpression>> children;
     children.push_back(duckdb::make_uniq<duckdb::ConstantExpression>(duckdb::Value::LIST(values)));

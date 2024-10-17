@@ -11,6 +11,7 @@ use deltalake::{open_table_with_storage_options, TableProperty};
 #[cxx::bridge]
 mod ffi {
     extern "Rust" {
+        fn DeltaInit();
         fn DeltaCreateTable(
             table_name: &CxxString,
             location: &CxxString,
@@ -29,6 +30,13 @@ mod ffi {
 }
 
 #[allow(non_snake_case)]
+pub fn DeltaInit() {
+    // Register S3 handlers
+    //
+    register_handlers(None);
+}
+
+#[allow(non_snake_case)]
 pub fn DeltaCreateTable(
     table_name: &CxxString,
     location: &CxxString,
@@ -36,9 +44,6 @@ pub fn DeltaCreateTable(
     column_names: &CxxVector<CxxString>,
     column_types: &CxxVector<CxxString>,
 ) -> Result<(), Box<dyn std::error::Error>> {
-    // Register S3 handlers
-    //
-    register_handlers(None);
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {
         let metadata = vec![(

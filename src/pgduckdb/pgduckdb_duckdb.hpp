@@ -29,7 +29,7 @@ public:
 		return *database;
 	}
 
-	duckdb::unique_ptr<duckdb::Connection> GetConnection() const;
+	duckdb::unique_ptr<duckdb::Connection> GetConnection();
 
 private:
 	DuckDBManager();

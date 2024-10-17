@@ -12,6 +12,7 @@ extern "C" {
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/snapmgr.h"
 }
 
 namespace duckdb {
@@ -167,4 +168,31 @@ vector<string> ColumnstoreMetadata::DataFilesSearch(Oid oid) {
     return file_names;
 }
 
+Oid SecretsOid() {
+    return get_relname_relid("secrets", Mooncake());
+}
+
+const int x_secrets_natts = 3;
+
+string ColumnstoreMetadata::SecretGet() {
+    Relation table = table_open(SecretsOid(), AccessShareLock);
+    HeapTuple tuple;
+    Datum values[x_secrets_natts];
+    bool isnull[x_secrets_natts];
+    TupleDesc desc = RelationGetDescr(table);
+    SysScanDescData *scan = systable_beginscan(table, InvalidOid /*indexId*/, false /*indexOK*/,
+                                               GetTransactionSnapshot(), 0 /*nkeys*/, NULL /*key*/);
+    string ret = "{}";
+    while (HeapTupleIsValid(tuple = systable_getnext(scan))) {
+        heap_deform_tuple(tuple, desc, values, isnull);
+        // ToDo: support other types and multiple secret with same type
+        //
+        if (strcmp(TextDatumGetCString(values[1]), "S3")) {
+            ret = TextDatumGetCString(values[2]);
+        }
+    }
+    systable_endscan(scan);
+    table_close(table, AccessShareLock);
+    return ret;
+}
 } // namespace duckdb

@@ -5,7 +5,7 @@
 namespace duckdb {
 
 void Columnstore::CreateTable(ClientContext &context, Oid oid, const string &path) {
-    if (!path.empty()) {
+    if (!path.empty() && !duckdb::FileSystem::IsRemoteFile(path)) {
         FileSystem::GetFileSystem(context).CreateDirectory(path);
     }
     ColumnstoreMetadata metadata(NULL /*snapshot*/);
@@ -30,4 +30,11 @@ string Columnstore::GetTableInfo(Oid oid) {
     return metadata.TablesSearch(oid);
 }
 
+string Columnstore::GetSecretForPath(const string &path) {
+    if (!duckdb::FileSystem::IsRemoteFile(path)) {
+        return "{}";
+    }
+    ColumnstoreMetadata metadata(NULL /*snapshot*/);
+    return metadata.SecretGet();
+}
 } // namespace duckdb

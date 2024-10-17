@@ -22,7 +22,7 @@ namespace pgduckdb {
 
 static Oid
 GetDuckdbNamespace(void) {
-	return get_namespace_oid("duckdb", false);
+	return get_namespace_oid("mooncake_duckdb", false);
 }
 
 static Oid

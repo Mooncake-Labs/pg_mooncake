@@ -23,6 +23,8 @@ public:
     void DataFilesDelete(Oid oid);
     vector<string> DataFilesSearch(Oid oid);
 
+    string SecretGet();
+
 private:
     Snapshot snapshot;
 };

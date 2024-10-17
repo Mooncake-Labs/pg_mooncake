@@ -20,7 +20,7 @@ public:
     void CreateTable(std::string const &table_name, std::string const &path,
                      const std::vector<std::string> &column_names, const std::vector<std::string> &column_types) {
         try {
-            DeltaCreateTable(table_name, path, column_names, column_types);
+            DeltaCreateTable(table_name, path, duckdb::Columnstore::GetSecretForPath(path), column_names, column_types);
         } catch (const std::exception &e) {
             elog(ERROR, "Error in create delta table: %s", e.what());
         }
@@ -29,7 +29,8 @@ public:
     void AddFile(Oid oid, std::string const &file_id, int64 file_size) {
         m_current_xact_state.push_back({ADD_FILE, oid, file_id, file_size});
         if (m_table_info_cache.find(oid) == m_table_info_cache.end()) {
-            m_table_info_cache[oid] = duckdb::Columnstore::GetTableInfo(oid);
+            m_table_info_cache[oid] = {duckdb::Columnstore::GetTableInfo(oid),
+                                       duckdb::Columnstore::GetSecretForPath(duckdb::Columnstore::GetTableInfo(oid))};
         }
     }
 
@@ -51,7 +52,8 @@ public:
                 }
             }
             try {
-                DeltaAddFiles(m_table_info_cache[table_id].c_str(), append_files, file_sizes);
+                DeltaAddFiles(m_table_info_cache[table_id].table_path.c_str(),
+                              m_table_info_cache[table_id].secret.c_str(), append_files, file_sizes);
             } catch (const std::exception &e) {
                 elog(ERROR, "Error in exporting into delta table: %s", e.what());
             }
@@ -69,7 +71,12 @@ private:
         int64 file_size;
     };
     std::vector<LogEntry> m_current_xact_state;
-    std::unordered_map<Oid, std::string> m_table_info_cache;
+
+    struct TableInfoCacheEntry {
+        std::string table_path;
+        std::string secret;
+    };
+    std::unordered_map<Oid, TableInfoCacheEntry> m_table_info_cache;
 };
 
 LakeWriter lake_writer;

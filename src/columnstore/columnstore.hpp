@@ -21,6 +21,8 @@ public:
 
     static string GetTableInfo(Oid oid);
 
+    static string GetSecretForPath(const string &path);
+
     static unique_ptr<PhysicalOperator> PlanInsert(ClientContext &context, LogicalInsert &op,
                                                    unique_ptr<PhysicalOperator> plan);
 

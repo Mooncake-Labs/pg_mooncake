@@ -1,9 +1,12 @@
+use std::collections::HashMap;
+
 use cxx::{CxxString, CxxVector};
+use deltalake::aws::register_handlers;
 use deltalake::kernel::{Action, Add, ArrayType, DataType, PrimitiveType, StructField};
 use deltalake::operations::create::CreateBuilder;
 use deltalake::operations::transaction::CommitBuilder;
 use deltalake::protocol::{DeltaOperation, SaveMode};
-use deltalake::{open_table, TableProperty};
+use deltalake::{open_table_with_storage_options, TableProperty};
 
 #[cxx::bridge]
 mod ffi {
@@ -11,12 +14,14 @@ mod ffi {
         fn DeltaCreateTable(
             table_name: &CxxString,
             location: &CxxString,
+            storage_option: &CxxString,
             column_names: &CxxVector<CxxString>,
             column_types: &CxxVector<CxxString>,
         ) -> Result<()>;
 
         fn DeltaAddFiles(
             table_location: &CxxString,
+            storage_option: &CxxString,
             file_paths: &CxxVector<CxxString>,
             file_sizes: &CxxVector<i64>,
         ) -> Result<()>;
@@ -27,17 +32,27 @@ mod ffi {
 pub fn DeltaCreateTable(
     table_name: &CxxString,
     location: &CxxString,
+    storage_option: &CxxString,
     column_names: &CxxVector<CxxString>,
     column_types: &CxxVector<CxxString>,
 ) -> Result<(), Box<dyn std::error::Error>> {
+    // Register S3 handlers
+    //
+    register_handlers(None);
     let runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {
         let metadata = vec![(
             "creator".to_string(),
             serde_json::json!("pg_mooncake_extension"),
         )];
+        let mut storage_option_map: HashMap<String, String> =
+            serde_json::from_str(storage_option.to_str()?).expect("invalid storage options");
+        // Write directly to S3 without locking is safe since Mooncake will be the only writer.
+        //
+        storage_option_map.insert("AWS_S3_ALLOW_UNSAFE_RENAME".to_string(), "true".to_string());
         let _table = CreateBuilder::new()
             .with_location(location.to_str()?)
+            .with_storage_options(storage_option_map)
             .with_table_name(table_name.to_str()?)
             .with_configuration_property(TableProperty::MinReaderVersion, Some("3"))
             .with_configuration_property(TableProperty::MinWriterVersion, Some("7"))
@@ -52,12 +67,19 @@ pub fn DeltaCreateTable(
 #[allow(non_snake_case)]
 pub fn DeltaAddFiles(
     table_location: &CxxString,
+    storage_option: &CxxString,
     file_paths: &CxxVector<CxxString>,
     file_sizes: &CxxVector<i64>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let runtime: tokio::runtime::Runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {
-        let mut table: deltalake::DeltaTable = open_table(table_location.to_string()).await?;
+        let mut storage_option_map: HashMap<String, String> =
+            serde_json::from_str(storage_option.to_str()?).expect("invalid storage options");
+        // Write directly to S3 without locking is safe since Mooncake will be the only writer.
+        //
+        storage_option_map.insert("AWS_S3_ALLOW_UNSAFE_RENAME".to_string(), "true".to_string());
+        let mut table: deltalake::DeltaTable =
+            open_table_with_storage_options(table_location.to_string(), storage_option_map).await?;
         let mut actions = Vec::new();
         for (file_path, file_size) in file_paths.iter().zip(file_sizes.iter()) {
             let add = Add {

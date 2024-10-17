@@ -1,9 +1,10 @@
 #include "columnstore/columnstore_table.hpp"
 #include "columnstore/columnstore_metadata.hpp"
 #include "duckdb/common/types/uuid.hpp"
-#include "lake/lake.hpp"
 #include "parquet_reader.hpp"
 #include "parquet_writer.hpp"
+
+#include "lake/lake.hpp"
 
 namespace duckdb {
 

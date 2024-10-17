@@ -12,6 +12,7 @@ extern "C" {
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/snapmgr.h"
 }
 
 #include "columnstore/columnstore.hpp"
@@ -106,4 +107,36 @@ std::vector<const char *> DataFilesGet(Oid oid) {
     index_close(index, AccessShareLock);
     table_close(table, AccessShareLock);
     return file_names;
+}
+
+Oid SecretsOid() {
+    return get_relname_relid("secrets", MooncakeOid());
+}
+
+const int x_secrets_natts = 3;
+
+const char *SecretGetForPath(const char *path) {
+    if (!duckdb::FileSystem::IsRemoteFile(path)) {
+        return "{}";
+    }
+    bool isS3 = duckdb::StringUtil::StartsWith(path, "s3");
+    Relation table = table_open(SecretsOid(), AccessShareLock);
+    HeapTuple tuple;
+    Datum values[x_secrets_natts];
+    bool isnull[x_secrets_natts];
+    TupleDesc desc = RelationGetDescr(table);
+    SysScanDescData *scan = systable_beginscan(table, InvalidOid /*indexId*/, false /*indexOK*/,
+                                               GetTransactionSnapshot(), 0 /*nkeys*/, NULL /*key*/);
+    const char *ret = "{}";
+    while (HeapTupleIsValid(tuple = systable_getnext(scan))) {
+        heap_deform_tuple(tuple, desc, values, isnull);
+        // ToDo: support other types and multiple secret with same type
+        //
+        if (isS3 && strcmp(TextDatumGetCString(values[1]), "S3")) {
+            ret = TextDatumGetCString(values[2]);
+        }
+    }
+    systable_endscan(scan);
+    table_close(table, AccessShareLock);
+    return ret;
 }

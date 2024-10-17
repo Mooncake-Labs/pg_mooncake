@@ -1,6 +1,7 @@
 #include "duckdb.hpp"
 
 #include "duckdb/common/types/uuid.hpp"
+#include "httpfs_extension.hpp"
 #include "parquet_writer.hpp"
 
 extern "C" {
@@ -64,7 +65,9 @@ class ParquetWriter {
 
 class ColumnstoreWriter {
   public:
-    ColumnstoreWriter() : m_con(pgduckdb::DuckDBManager::Get().GetDatabase()) {}
+    ColumnstoreWriter() : m_con(pgduckdb::DuckDBManager::Get().GetDatabase()) {
+        pgduckdb::DuckDBManager::Get().GetDatabase().LoadStaticExtension<duckdb::HttpfsExtension>();
+    }
 
     void LazyInit(Oid oid, TupleDesc desc) {
         duckdb::vector<duckdb::LogicalType> types;
@@ -83,7 +86,7 @@ class ColumnstoreWriter {
     }
 
     void CreateTable(Oid oid, const ColumnstoreOptions &options) {
-        if (strlen(options.path)) {
+        if (strlen(options.path) && !duckdb::FileSystem::IsRemoteFile(options.path)) {
             duckdb::FileSystem::GetFileSystem(*m_con.context).CreateDirectory(options.path);
         }
         LakeCreateTable(oid, options.path);
@@ -93,6 +96,8 @@ class ColumnstoreWriter {
     void Insert(Relation table, TupleTableSlot **slots, int nslots) {
         TupleDesc desc = RelationGetDescr(table);
         if (!m_writer) {
+            m_con.BeginTransaction();
+            pgduckdb::DuckDBManager::Get().LoadSecretsIfNeeded();
             LazyInit(RelationGetRelid(table), desc);
         }
 
@@ -136,6 +141,7 @@ class ColumnstoreWriter {
             m_writer->Finalize();
             m_chunk.Destroy();
             m_writer.reset();
+            m_con.Commit();
         }
     }
 
@@ -145,6 +151,8 @@ class ColumnstoreWriter {
     duckdb::unique_ptr<ParquetWriter> m_writer;
 };
 
+// DevNote: this will be created before Create Extension finishes!
+//
 ColumnstoreWriter columnstore_writer;
 
 void ColumnstoreCreateTable(Oid oid, const ColumnstoreOptions &options) {

@@ -15,6 +15,7 @@ PGXS := $(shell $(PG_CONFIG) --pgxs)
 
 PG_CPPFLAGS := -I../../src \
                -I../../third_party/duckdb/extension/parquet/include \
+               -I../../third_party/duckdb/extension/httpfs/include \
                -I../../third_party/duckdb/src/include \
                -I../../third_party/duckdb/third_party/parquet \
                -I../../third_party/duckdb/third_party/thrift \

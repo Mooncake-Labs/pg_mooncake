@@ -20,7 +20,7 @@ class LakeWriter {
     void CreateTable(std::string const &table_name, std::string const &path,
                      const std::vector<std::string> &column_names, const std::vector<std::string> &column_types) {
         try {
-            DeltaCreateTable(table_name, path, column_names, column_types);
+            DeltaCreateTable(table_name, path, SecretGetForPath(path.c_str()), column_names, column_types);
         } catch (const std::exception &e) {
             elog(ERROR, "Error in create delta table: %s", e.what());
         }
@@ -30,7 +30,7 @@ class LakeWriter {
         m_current_xact_state.push_back({ADD_FILE, oid, file_id, file_size});
         if (m_table_info_cache.find(oid) == m_table_info_cache.end()) {
             ColumnstoreOptions options = TablesGet(oid);
-            m_table_info_cache[oid] = options.path;
+            m_table_info_cache[oid] = {options.path, SecretGetForPath(options.path)};
         }
     }
 
@@ -52,7 +52,8 @@ class LakeWriter {
                 }
             }
             try {
-                DeltaAddFiles(m_table_info_cache[table_id].c_str(), append_files, file_sizes);
+                DeltaAddFiles(m_table_info_cache[table_id].table_path.c_str(),
+                              m_table_info_cache[table_id].secret.c_str(), append_files, file_sizes);
             } catch (const std::exception &e) {
                 elog(ERROR, "Error in exporting into delta table: %s", e.what());
             }
@@ -70,7 +71,12 @@ class LakeWriter {
         int64 file_size;
     };
     std::vector<LogEntry> m_current_xact_state;
-    std::unordered_map<Oid, std::string> m_table_info_cache;
+
+    struct TableInfoCacheEntry {
+        std::string table_path;
+        std::string secret;
+    };
+    std::unordered_map<Oid, TableInfoCacheEntry> m_table_info_cache;
 };
 
 LakeWriter lake_writer;

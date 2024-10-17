@@ -29,6 +29,15 @@ public:
 		return *database;
 	}
 
+	inline void LoadSecretsIfNeeded() {
+		if(CheckSecretsSeq()) {
+			auto connection = duckdb::make_uniq<duckdb::Connection>(*database);
+			auto &context = *connection->context;
+			DropSecrets(context);
+			LoadSecrets(context);
+		}
+	}
+
 	duckdb::unique_ptr<duckdb::Connection> GetConnection() const;
 
 private:

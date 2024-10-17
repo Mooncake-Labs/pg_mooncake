@@ -118,7 +118,7 @@ DuckDBManager::LoadFunctions(duckdb::ClientContext &context) {
 
 bool
 DuckDBManager::CheckSecretsSeq() {
-	Oid duckdb_namespace = get_namespace_oid("duckdb", false);
+	Oid duckdb_namespace = get_namespace_oid("mooncake_duckdb", false);
 	Oid secret_table_seq_oid = get_relname_relid("secrets_table_seq", duckdb_namespace);
 	int64 seq =
 	    PostgresFunctionGuard<int64>(DirectFunctionCall1Coll, pg_sequence_last_value, InvalidOid, secret_table_seq_oid);

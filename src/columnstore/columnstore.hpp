@@ -28,3 +28,5 @@ void ColumnstoreCreateTable(Oid oid, const ColumnstoreOptions &options);
 void ColumnstoreInsert(Relation table, TupleTableSlot **slots, int nslots);
 
 void ColumnstoreFinalize();
+
+const char *SecretGetForPath(const char *path);

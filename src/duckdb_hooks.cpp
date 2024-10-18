@@ -21,9 +21,6 @@ string ParseColumnstoreOptions(List *list) {
         DefElem *elem = castNode(DefElem, lfirst(cell));
         if (strcmp(elem->defname, "path") == 0) {
             path = defGetString(elem);
-            if (path.back() != '/') {
-                path += '/';
-            }
         } else {
             elog(ERROR, "Unrecognized columnstore option \"%s\"", elem->defname);
         }

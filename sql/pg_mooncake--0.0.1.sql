@@ -118,3 +118,8 @@ BEGIN
     END IF;
 END;
 $create_secret$;
+
+CREATE VIEW mooncake.columnstore_tables as
+    select relname as table_name, path
+    from pg_class p join mooncake.tables m
+    on p.oid = m.oid;

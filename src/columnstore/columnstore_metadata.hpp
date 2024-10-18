@@ -24,6 +24,7 @@ public:
     vector<string> DataFilesSearch(Oid oid);
 
     string SecretGet();
+    string GenerateFullPath(Oid oid, const string& path);
 
 private:
     Snapshot snapshot;

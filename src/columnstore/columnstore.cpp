@@ -5,12 +5,13 @@
 namespace duckdb {
 
 void Columnstore::CreateTable(ClientContext &context, Oid oid, const string &path) {
-    if (!path.empty() && !duckdb::FileSystem::IsRemoteFile(path)) {
-        FileSystem::GetFileSystem(context).CreateDirectory(path);
-    }
     ColumnstoreMetadata metadata(NULL /*snapshot*/);
-    metadata.TablesInsert(oid, path);
-    LakeCreateTable(oid, path.c_str());
+    string full_path = metadata.GenerateFullPath(oid, path);
+    if (!full_path.empty() && !duckdb::FileSystem::IsRemoteFile(full_path)) {
+        FileSystem::GetFileSystem(context).CreateDirectory(full_path);
+    }
+    metadata.TablesInsert(oid, full_path);
+    LakeCreateTable(oid, full_path.c_str());
 }
 
 // TODO

@@ -12,6 +12,7 @@ extern "C" {
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/guc.h"
 #include "utils/snapmgr.h"
 }
 
@@ -193,6 +194,24 @@ string ColumnstoreMetadata::SecretGet() {
     }
     systable_endscan(scan);
     table_close(table, AccessShareLock);
+    return ret;
+}
+
+string ColumnstoreMetadata::GenerateFullPath(Oid oid, const string& path)
+{
+    string ret = path;
+    if (ret.empty()) {
+        Relation rel = RelationIdGetRelation(oid);
+        ret = psprintf("mooncake_%s_%d/", RelationGetRelationName(rel), oid);
+        RelationClose(rel);
+    }
+    if (ret.back() != '/') {
+        ret += "/";
+    }
+    if (ret[0] != '/') {
+        const char* data_directory = GetConfigOption("data_directory", false, false);
+        ret = string(data_directory) + "/" + ret.c_str();
+    }
     return ret;
 }
 } // namespace duckdb

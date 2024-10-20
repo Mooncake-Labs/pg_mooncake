@@ -11,11 +11,19 @@ CREATE TABLE mooncake.tables (
 );
 
 CREATE TABLE mooncake.data_files (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     oid OID NOT NULL,
     file_name TEXT NOT NULL
 );
 
 CREATE INDEX data_files_key ON mooncake.data_files (oid);
+
+CREATE UNLOGGED TABLE mooncake.cache(
+    oid OID NOT NULL,
+    data_file_id BIGINT PRIMARY KEY
+);
+
+CREATE INDEX cache_key ON mooncake.cache(oid, data_file_id);
 
 CREATE TABLE mooncake.secrets (
     secret_name NAME NOT NULL PRIMARY KEY,

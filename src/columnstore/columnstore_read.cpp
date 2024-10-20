@@ -27,10 +27,9 @@ unique_ptr<BaseStatistics> ColumnstoreTable::GetStatistics(ClientContext &contex
 
 TableFunction ColumnstoreTable::GetScanFunction(ClientContext &context, unique_ptr<FunctionData> &bind_data) {
     std::vector<const char *> file_names = DataFilesGet(RelationGetRelid(rel));
-    ColumnstoreOptions options = TablesGet(RelationGetRelid(rel));
     duckdb::vector<duckdb::Value> values;
     for (const char *file_name : file_names) {
-        values.push_back(duckdb::Value(duckdb::string(options.path) + file_name));
+        values.push_back(duckdb::Value(file_name));
     }
     duckdb::vector<duckdb::unique_ptr<duckdb::ParsedExpression>> children;
     children.push_back(duckdb::make_uniq<duckdb::ConstantExpression>(duckdb::Value::LIST(values)));

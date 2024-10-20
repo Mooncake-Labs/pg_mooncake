@@ -17,14 +17,54 @@ extern "C" {
 #include "columnstore/columnstore.hpp"
 #include "lake/lake.hpp"
 
+namespace duckdb
+{
+class SingleFileCachedWriteFileSystem : public FileSystem {
+public:
+    SingleFileCachedWriteFileSystem(ClientContext &context, const std::string& file_name)
+        :tmp_file_path("mooncake_tmp/" + file_name), file_size(0), internal(GetFileSystem(context)){}
+
+    unique_ptr<FileHandle> OpenFile(const string &path, FileOpenFlags flags, optional_ptr<FileOpener> opener = nullptr)
+    {
+        //if (FileSystem::IsRemoteFile(path))
+        {
+            tmp_file = internal.OpenFile(tmp_file_path, flags, opener);
+        }
+        return internal.OpenFile(path, flags, opener);
+    }                                   
+	int64_t Write(FileHandle &handle, void *buffer, int64_t nr_bytes) override{
+        file_size += nr_bytes;
+        if (tmp_file) {
+            int64_t written = internal.Write(*tmp_file, buffer, nr_bytes);
+            assert(written == nr_bytes);
+        }
+        return internal.Write(handle, buffer, nr_bytes);
+    }
+    void CacheFile(int64_t file_id) {
+        if (tmp_file) {
+            tmp_file->Close();
+            std::rename(tmp_file_path.c_str(), duckdb::StringUtil::Format("mooncake_cache/%ld.parquet", file_id).c_str());
+        }
+    }
+    std::string GetName() const { return "SingleFileCachedWriteFileSystem";}
+    idx_t GetCurrentFileSize() const { return file_size; }
+private:
+    std::string tmp_file_path;
+    idx_t file_size;
+    unique_ptr<FileHandle> tmp_file;
+    FileSystem& internal;
+};
+}
+
 class ParquetWriter {
   public:
     ParquetWriter(duckdb::ClientContext &context, Oid oid, std::string path, duckdb::vector<duckdb::LogicalType> types,
                   duckdb::vector<duckdb::string> names, duckdb::ChildFieldIDs fieldIds)
         : m_context(context), m_oid(oid), m_path(std::move(path)),
           m_file_name(duckdb::UUID::GenerateRandomUUID().ToString() + ".parquet"),
+          m_file_system(context, m_file_name),
           m_collection(context, types, duckdb::ColumnDataAllocatorType::HYBRID),
-          m_writer(context, duckdb::FileSystem::GetFileSystem(context), m_path + m_file_name, std::move(types),
+          m_writer(context, m_file_system, m_path + m_file_name, std::move(types),
                    std::move(names), duckdb_parquet::format::CompressionCodec::SNAPPY /*codec*/, std::move(fieldIds),
                    {} /*kv_metadata*/, {} /*encryption_config*/, 1.0 /*dictionary_compression_ratio_threshold*/,
                    {} /*compression_level*/, true /*debug_use_openssl*/) {
@@ -43,10 +83,10 @@ class ParquetWriter {
     void Finalize() {
         m_writer.Flush(m_collection);
         m_writer.Finalize();
-        DataFilesAdd(m_oid, m_file_name.c_str());
-        duckdb::idx_t size = duckdb::FileSystem::GetFileSystem(m_context)
-                                 .OpenFile(m_path + m_file_name, duckdb::FileFlags::FILE_FLAGS_READ)
-                                 ->GetFileSize();
+        int64_t file_id = DataFilesAdd(m_oid, (m_path + m_file_name).c_str());
+        CacheAdd(m_oid, file_id);
+        m_file_system.CacheFile(file_id);
+        duckdb::idx_t size = m_file_system.GetCurrentFileSize();
         LakeAddFile(m_oid, m_file_name.c_str(), size);
     }
 
@@ -58,6 +98,7 @@ class ParquetWriter {
     Oid m_oid;
     std::string m_path;
     std::string m_file_name;
+    duckdb::SingleFileCachedWriteFileSystem m_file_system;
     duckdb::ColumnDataCollection m_collection;
     duckdb::ColumnDataAppendState m_append_state;
     duckdb::ParquetWriter m_writer;

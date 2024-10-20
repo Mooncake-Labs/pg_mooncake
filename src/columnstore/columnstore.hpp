@@ -19,9 +19,11 @@ void TablesAdd(Oid oid, const ColumnstoreOptions &options);
 
 ColumnstoreOptions TablesGet(Oid oid);
 
-void DataFilesAdd(Oid oid, const char *file_name);
+int64_t DataFilesAdd(Oid oid, const char *file_name);
 
 std::vector<const char *> DataFilesGet(Oid oid);
+
+void CacheAdd(Oid oid, int64_t file_id);
 
 void ColumnstoreCreateTable(Oid oid, const ColumnstoreOptions &options);
 

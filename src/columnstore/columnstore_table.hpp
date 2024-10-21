@@ -2,15 +2,19 @@
 
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 
+struct SnapshotData;
+
 namespace duckdb {
 
+class ColumnstoreMetadata;
 class ColumnstoreWriter;
 class DataChunk;
+typedef struct SnapshotData *Snapshot;
 typedef unsigned int Oid;
 
 class ColumnstoreTable : public TableCatalogEntry {
 public:
-    ColumnstoreTable(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info, Oid oid);
+    ColumnstoreTable(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info, Oid oid, Snapshot snapshot);
 
     ~ColumnstoreTable();
 
@@ -32,6 +36,7 @@ public:
 
 private:
     Oid oid;
+    unique_ptr<ColumnstoreMetadata> metadata;
     unique_ptr<ColumnstoreWriter> writer;
 };
 

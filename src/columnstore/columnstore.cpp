@@ -8,17 +8,20 @@ void Columnstore::CreateTable(ClientContext &context, Oid oid, const string &pat
     if (!path.empty()) {
         FileSystem::GetFileSystem(context).CreateDirectory(path);
     }
-    ColumnstoreMetadata::TablesInsert(oid, path);
+    ColumnstoreMetadata metadata(NULL /*snapshot*/);
+    metadata.TablesInsert(oid, path);
 }
 
 // TODO
 void Columnstore::DropTable(Oid oid) {
-    ColumnstoreMetadata::DataFilesDelete(oid);
-    ColumnstoreMetadata::TablesDelete(oid);
+    ColumnstoreMetadata metadata(NULL /*snapshot*/);
+    metadata.DataFilesDelete(oid);
+    metadata.TablesDelete(oid);
 }
 
 void Columnstore::TruncateTable(Oid oid) {
-    ColumnstoreMetadata::DataFilesDelete(oid);
+    ColumnstoreMetadata metadata(NULL /*snapshot*/);
+    metadata.DataFilesDelete(oid);
 }
 
 } // namespace duckdb

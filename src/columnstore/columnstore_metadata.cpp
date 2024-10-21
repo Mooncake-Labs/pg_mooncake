@@ -46,7 +46,7 @@ void ColumnstoreMetadata::TablesDelete(Oid oid) {
     ::Relation index = index_open(TablesOid(), RowExclusiveLock);
     ScanKeyData key[1];
     ScanKeyInit(&key[0], 1 /*attributeNumber*/, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(oid));
-    SysScanDesc scan = systable_beginscan_ordered(table, index, NULL /*snapshot*/, 1 /*nkeys*/, key);
+    SysScanDesc scan = systable_beginscan_ordered(table, index, snapshot, 1 /*nkeys*/, key);
 
     HeapTuple tuple;
     if (HeapTupleIsValid(tuple = systable_getnext_ordered(scan, ForwardScanDirection))) {
@@ -64,7 +64,7 @@ string ColumnstoreMetadata::TablesSearch(Oid oid) {
     TupleDesc desc = RelationGetDescr(table);
     ScanKeyData key[1];
     ScanKeyInit(&key[0], 1 /*attributeNumber*/, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(oid));
-    SysScanDesc scan = systable_beginscan_ordered(table, index, NULL /*snapshot*/, 1 /*nkeys*/, key);
+    SysScanDesc scan = systable_beginscan_ordered(table, index, snapshot, 1 /*nkeys*/, key);
 
     string path;
     HeapTuple tuple;
@@ -113,7 +113,7 @@ void ColumnstoreMetadata::DataFilesDelete(const string &file_name) {
     ScanKeyData key[1];
     ScanKeyInit(&key[0], 2 /*attributeNumber*/, BTEqualStrategyNumber, F_TEXTEQ,
                 CStringGetTextDatum(file_name.c_str()));
-    SysScanDesc scan = systable_beginscan_ordered(table, index, NULL /*snapshot*/, 1 /*nkeys*/, key);
+    SysScanDesc scan = systable_beginscan_ordered(table, index, snapshot, 1 /*nkeys*/, key);
 
     HeapTuple tuple;
     while (HeapTupleIsValid(tuple = systable_getnext_ordered(scan, ForwardScanDirection))) {
@@ -131,7 +131,7 @@ void ColumnstoreMetadata::DataFilesDelete(Oid oid) {
     ::Relation index = index_open(DataFilesOid(), RowExclusiveLock);
     ScanKeyData key[1];
     ScanKeyInit(&key[0], 1 /*attributeNumber*/, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(oid));
-    SysScanDesc scan = systable_beginscan_ordered(table, index, NULL /*snapshot*/, 1 /*nkeys*/, key);
+    SysScanDesc scan = systable_beginscan_ordered(table, index, snapshot, 1 /*nkeys*/, key);
 
     HeapTuple tuple;
     while (HeapTupleIsValid(tuple = systable_getnext_ordered(scan, ForwardScanDirection))) {
@@ -150,7 +150,7 @@ vector<string> ColumnstoreMetadata::DataFilesSearch(Oid oid) {
     TupleDesc desc = RelationGetDescr(table);
     ScanKeyData key[1];
     ScanKeyInit(&key[0], 1 /*attributeNumber*/, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(oid));
-    SysScanDesc scan = systable_beginscan_ordered(table, index, NULL /*snapshot*/, 1 /*nkeys*/, key);
+    SysScanDesc scan = systable_beginscan_ordered(table, index, snapshot, 1 /*nkeys*/, key);
 
     vector<string> file_names;
     HeapTuple tuple;

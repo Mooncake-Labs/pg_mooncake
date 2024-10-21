@@ -87,7 +87,7 @@ SchemaItems::GetTable(const string &entry_name) {
 	}
 	if (IsColumnstore(rel)) {
 		RelationClose(rel);
-		table = make_uniq<ColumnstoreTable>(catalog, *schema, info, rel_oid);
+		table = make_uniq<ColumnstoreTable>(catalog, *schema, info, rel_oid, snapshot);
 	}
 	else {
 		cardinality = PostgresTable::GetTableCardinality(rel);

@@ -47,8 +47,9 @@ private:
 
 class ColumnstoreWriter {
 public:
-    ColumnstoreWriter(Oid oid, string path, vector<LogicalType> types, vector<string> names)
-        : oid(oid), path(std::move(path)), types(std::move(types)), names(std::move(names)) {}
+    ColumnstoreWriter(Oid oid, ColumnstoreMetadata &metadata, vector<LogicalType> types, vector<string> names)
+        : oid(oid), metadata(metadata), path(metadata.TablesSearch(oid)), types(std::move(types)),
+          names(std::move(names)) {}
 
 public:
     void Write(ClientContext &context, DataChunk &chunk) {
@@ -71,11 +72,12 @@ private:
     void FinalizeDataFile() {
         writer->Finalize();
         writer.reset();
-        ColumnstoreMetadata::DataFilesInsert(oid, file_name.c_str());
+        metadata.DataFilesInsert(oid, file_name.c_str());
     }
 
 private:
     Oid oid;
+    ColumnstoreMetadata &metadata;
     string path;
     string file_name;
     vector<LogicalType> types;
@@ -83,8 +85,9 @@ private:
     unique_ptr<DataFileWriter> writer;
 };
 
-ColumnstoreTable::ColumnstoreTable(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info, Oid oid)
-    : TableCatalogEntry(catalog, schema, info), oid(oid) {}
+ColumnstoreTable::ColumnstoreTable(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info, Oid oid,
+                                   Snapshot snapshot)
+    : TableCatalogEntry(catalog, schema, info), oid(oid), metadata(make_uniq<ColumnstoreMetadata>(snapshot)) {}
 
 ColumnstoreTable::~ColumnstoreTable() {
     D_ASSERT(!writer);
@@ -103,8 +106,7 @@ TableStorageInfo ColumnstoreTable::GetStorageInfo(ClientContext &context) {
 
 void ColumnstoreTable::Insert(ClientContext &context, DataChunk &chunk) {
     if (!writer) {
-        writer = make_uniq<ColumnstoreWriter>(oid, ColumnstoreMetadata::TablesSearch(oid), columns.GetColumnTypes(),
-                                              columns.GetColumnNames());
+        writer = make_uniq<ColumnstoreWriter>(oid, *metadata, columns.GetColumnTypes(), columns.GetColumnNames());
     }
     writer->Write(context, chunk);
 }
@@ -118,8 +120,8 @@ void ColumnstoreTable::FinalizeInsert() {
 
 void ColumnstoreTable::Delete(ClientContext &context, vector<row_t> &row_ids) {
     std::sort(row_ids.begin(), row_ids.end());
-    auto path = ColumnstoreMetadata::TablesSearch(oid);
-    auto data_files = ColumnstoreMetadata::DataFilesSearch(oid);
+    auto path = metadata->TablesSearch(oid);
+    auto data_files = metadata->DataFilesSearch(oid);
     for (idx_t row_ids_index = 0; row_ids_index < row_ids.size();) {
         int32_t file_number = row_ids[row_ids_index] >> 32;
         uint32_t next_file_row_number = row_ids[row_ids_index] & 0xFFFFFFFF;
@@ -159,7 +161,7 @@ void ColumnstoreTable::Delete(ClientContext &context, vector<row_t> &row_ids) {
             chunk.Reset();
             reader.Scan(state, chunk);
         }
-        ColumnstoreMetadata::DataFilesDelete(data_files[file_number]);
+        metadata->DataFilesDelete(data_files[file_number]);
     }
     FinalizeInsert();
 }

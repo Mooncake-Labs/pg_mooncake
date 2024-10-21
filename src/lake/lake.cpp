@@ -16,7 +16,7 @@ extern "C" {
 #include "rust_extensions/delta.hpp"
 
 class LakeWriter {
-  public:
+public:
     void CreateTable(std::string const &table_name, std::string const &path,
                      const std::vector<std::string> &column_names, const std::vector<std::string> &column_types) {
         try {
@@ -59,7 +59,7 @@ class LakeWriter {
         m_current_xact_state.clear();
     }
 
-  private:
+private:
     enum Operation { ADD_FILE, DELETE_FILE, PARTIAL_DELETE };
 
     struct LogEntry {

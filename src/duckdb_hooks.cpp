@@ -52,7 +52,7 @@ void ProcessUtilityHook(PlannedStmt *pstmt, const char *query_string, bool read_
 }
 
 void XactHook(XactEvent event, void *arg) {
-    if (event == XactEvent::XACT_EVENT_PRE_COMMIT) {
+    if (event == XactEvent::XACT_EVENT_COMMIT) {
         LakeCommit();
     }
 }

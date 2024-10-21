@@ -1,20 +1,21 @@
 #include "columnstore/columnstore_table.hpp"
 #include "columnstore/columnstore_metadata.hpp"
 #include "duckdb/common/types/uuid.hpp"
+#include "lake/lake.hpp"
 #include "parquet_reader.hpp"
 #include "parquet_writer.hpp"
-#include "lake/lake.hpp"
 
 namespace duckdb {
 
 class DataFileWriter {
 public:
-    DataFileWriter(ClientContext &context, string file_name, vector<LogicalType> types, vector<string> names)
+    DataFileWriter(ClientContext &context, string file_name, vector<LogicalType> types, vector<string> names,
+                   ChildFieldIDs fieldIds)
         : collection(context, types, ColumnDataAllocatorType::HYBRID),
           writer(context, FileSystem::GetFileSystem(context), std::move(file_name), std::move(types), std::move(names),
-                 duckdb_parquet::format::CompressionCodec::SNAPPY /*codec*/, {} /*field_ids*/, {} /*kv_metadata*/,
-                 {} /*encryption_config*/, 1.0 /*dictionary_compression_ratio_threshold*/, {} /*compression_level*/,
-                 true /*debug_use_openssl*/) {
+                 duckdb_parquet::format::CompressionCodec::SNAPPY /*codec*/, std::move(fieldIds) /*field_ids*/,
+                 {} /*kv_metadata*/, {} /*encryption_config*/, 1.0 /*dictionary_compression_ratio_threshold*/,
+                 {} /*compression_level*/, true /*debug_use_openssl*/) {
         collection.InitializeAppend(append_state);
     }
 
@@ -56,7 +57,11 @@ public:
     void Write(ClientContext &context, DataChunk &chunk) {
         if (!writer) {
             file_name = UUID::ToString(UUID::GenerateRandomUUID()) + ".parquet";
-            writer = make_uniq<DataFileWriter>(context, path + file_name, types, names);
+            ChildFieldIDs fieldIds;
+            for (int col = 0; col < names.size(); col++) {
+                fieldIds.ids->insert(std::make_pair(names[col], duckdb::FieldID(col)));
+            }
+            writer = make_uniq<DataFileWriter>(context, path + file_name, types, names, std::move(fieldIds));
         }
         if (writer->Write(chunk)) {
             FinalizeDataFile();

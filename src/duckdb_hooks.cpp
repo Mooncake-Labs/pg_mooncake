@@ -28,6 +28,10 @@ string ParseColumnstoreOptions(List *list) {
     return path;
 }
 
+bool IsColumnstore(Oid oid);
+
+bool DuckdbCopy(PlannedStmt *pstmt, const char *query_string, struct QueryEnvironment *query_env, uint64 *processed);
+
 ProcessUtility_hook_type prev_process_utility_hook = NULL;
 
 void ProcessUtilityHook(PlannedStmt *pstmt, const char *query_string, bool read_only_tree,
@@ -44,6 +48,22 @@ void ProcessUtilityHook(PlannedStmt *pstmt, const char *query_string, bool read_
             duckdb::Connection con(pgduckdb::DuckDBManager::Get().GetDatabase());
             duckdb::Columnstore::CreateTable(*con.context, oid, path);
             return;
+        }
+    } else if (IsA(pstmt->utilityStmt, CopyStmt)) {
+        CopyStmt *stmt = castNode(CopyStmt, pstmt->utilityStmt);
+        if (IsColumnstore(RangeVarGetRelid(stmt->relation, AccessShareLock, false /*missing_ok*/))) {
+            if (!stmt->filename) {
+                elog(ERROR, "DuckDB does not support this query");
+            }
+            uint64 processed;
+            if (DuckdbCopy(pstmt, query_string, query_env, &processed)) {
+                if (qc) {
+                    SetQueryCompletion(qc, CMDTAG_COPY, processed);
+                }
+                return;
+            } else {
+                elog(ERROR, "DuckDB does not support this query");
+            }
         }
     }
     prev_process_utility_hook(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc);

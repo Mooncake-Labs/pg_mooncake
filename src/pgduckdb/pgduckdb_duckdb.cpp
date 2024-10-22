@@ -98,7 +98,7 @@ DuckDBManager::DuckDBManager() : secret_table_num_rows(0), secret_table_current_
 	auto connection = duckdb::make_uniq<duckdb::Connection>(*database);
 
 	auto &context = *connection->context;
-	context.Query("SET threads = 1", false);
+	// context.Query("SET threads = 1", false);
 	context.Query("ATTACH DATABASE 'pgduckdb' (TYPE pgduckdb)", false);
 	LoadFunctions(context);
 	// LoadExtensions(context);

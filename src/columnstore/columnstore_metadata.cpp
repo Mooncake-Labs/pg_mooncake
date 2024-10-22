@@ -19,6 +19,9 @@ extern "C" {
 
 #include <sys/stat.h>
 
+extern bool allow_local_disk_table;
+extern char *default_storage_bucket;
+
 namespace duckdb {
 
 Oid Mooncake() {
@@ -283,8 +286,18 @@ string ColumnstoreMetadata::GenerateFullPath(Oid oid, const string &path, bool r
         ret += "/";
     }
     if (!remote && ret[0] != '/') {
-        const char *data_directory = GetConfigOption("data_directory", false, false);
-        ret = string(data_directory) + "/" + ret.c_str();
+        if (default_storage_bucket != NULL) {
+            ret = string(default_storage_bucket) + "/" + ret.c_str();
+        } else if (allow_local_disk_table) {
+            const char *data_directory = GetConfigOption("data_directory", false, false);
+            ret = string(data_directory) + "/" + ret.c_str();
+        } else {
+            elog(ERROR, "create columnstore table with local disk is not supported"
+                        ", provide a remote path or set pg_mooncake.default_storage_bucket");
+        }
+    } else if (!remote && !allow_local_disk_table) {
+        elog(ERROR, "create columnstore table with local disk is not supported"
+                    ", provide a remote path or set pg_mooncake.default_storage_bucket");
     }
     return ret;
 }

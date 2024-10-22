@@ -24,6 +24,7 @@ public:
     struct FileInfo {
         int64_t file_id;
         string file_path;
+        string file_name;
     };
 
     vector<FileInfo> DataFilesSearch(Oid oid, const string &path);

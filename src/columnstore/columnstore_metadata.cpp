@@ -237,7 +237,8 @@ vector<ColumnstoreMetadata::FileInfo> ColumnstoreMetadata::DataFilesSearch(Oid o
     bool isnull[x_data_files_natts];
     while (HeapTupleIsValid(tuple = systable_getnext_ordered(scan, ForwardScanDirection))) {
         heap_deform_tuple(tuple, desc, values, isnull);
-        files.push_back({DatumGetInt64(values[0]), path + TextDatumGetCString(values[2])});
+        files.push_back(
+            {DatumGetInt64(values[0]), path + TextDatumGetCString(values[2]), TextDatumGetCString(values[2])});
     }
 
     systable_endscan_ordered(scan);

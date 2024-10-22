@@ -17,6 +17,8 @@ extern "C" {
 
 class LakeWriter {
 public:
+    enum Operation { ADD_FILE, DELETE_FILE, PARTIAL_DELETE };
+
     LakeWriter() {
         DeltaInit();
     }
@@ -29,8 +31,8 @@ public:
         }
     }
 
-    void AddFile(Oid oid, std::string const &file_id, int64 file_size) {
-        m_current_xact_state.push_back({ADD_FILE, oid, file_id, file_size});
+    void ChangeFile(Oid oid, std::string const &file_name, int64 file_size, Operation op) {
+        m_current_xact_state.push_back({op, oid, file_name, file_size});
         if (m_table_info_cache.find(oid) == m_table_info_cache.end()) {
             m_table_info_cache[oid] = {duckdb::Columnstore::GetTableInfo(oid),
                                        duckdb::Columnstore::GetSecretForPath(duckdb::Columnstore::GetTableInfo(oid))};
@@ -48,15 +50,17 @@ public:
         for (auto table_id : tables_in_xact) {
             std::vector<std::string> append_files;
             std::vector<int64> file_sizes;
+            std::vector<int8> is_add_files;
             for (auto op : m_current_xact_state) {
                 if (op.table_id == table_id) {
-                    append_files.push_back(op.file_id);
+                    append_files.push_back(op.file_name);
                     file_sizes.push_back(op.file_size);
+                    is_add_files.push_back(op.operation == ADD_FILE);
                 }
             }
             try {
-                DeltaAddFiles(m_table_info_cache[table_id].table_path.c_str(),
-                              m_table_info_cache[table_id].secret.c_str(), append_files, file_sizes);
+                DeltaModifyFiles(m_table_info_cache[table_id].table_path.c_str(),
+                                 m_table_info_cache[table_id].secret.c_str(), append_files, file_sizes, is_add_files);
             } catch (const std::exception &e) {
                 elog(ERROR, "Error in exporting into delta table: %s", e.what());
             }
@@ -65,12 +69,10 @@ public:
     }
 
 private:
-    enum Operation { ADD_FILE, DELETE_FILE, PARTIAL_DELETE };
-
     struct LogEntry {
         Operation operation;
         Oid table_id;
-        std::string file_id;
+        std::string file_name;
         int64 file_size;
     };
     std::vector<LogEntry> m_current_xact_state;
@@ -99,8 +101,12 @@ void LakeCreateTable(Oid oid, const char *path) {
     RelationClose(relation);
 }
 
-void LakeAddFile(Oid oid, const char *file_id, int64 file_size) {
-    lake_writer.AddFile(oid, file_id, file_size);
+void LakeAddFile(Oid oid, const char *file_name, int64 file_size) {
+    lake_writer.ChangeFile(oid, file_name, file_size, LakeWriter::ADD_FILE);
+}
+
+void LakeDeleteFile(Oid oid, const char *file_name) {
+    lake_writer.ChangeFile(oid, file_name, 0, LakeWriter::DELETE_FILE);
 }
 
 void LakeCommit() {

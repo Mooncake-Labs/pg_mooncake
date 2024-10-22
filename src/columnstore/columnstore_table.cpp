@@ -28,12 +28,14 @@ public:
         }
         return internal.Write(handle, buffer, nr_bytes);
     }
-    void CacheFile(int64_t file_id) {
+    bool CacheFile(int64_t file_id) {
         if (tmp_file) {
             tmp_file->Close();
             std::rename(tmp_file_path.c_str(),
                         duckdb::StringUtil::Format("mooncake_cache/%ld.parquet", file_id).c_str());
+            return true;
         }
+        return false;
     }
     std::string GetName() const {
         return "SingleFileCachedWriteFileSystem";
@@ -123,8 +125,9 @@ private:
         writer->Finalize();
         writer.reset();
         int64_t file_id = metadata.DataFilesInsert(oid, file_name.c_str());
-        metadata.CacheAdd(oid, file_id);
-        m_file_system->CacheFile(file_id);
+        if (m_file_system->CacheFile(file_id)) {
+            metadata.CacheAdd(oid, file_id);
+        }
         duckdb::idx_t size = m_file_system->GetCurrentFileSize();
         LakeAddFile(oid, file_name.c_str(), size);
         m_file_system.reset();
@@ -218,6 +221,7 @@ void ColumnstoreTable::Delete(ClientContext &context, vector<row_t> &row_ids) {
             reader.Scan(state, chunk);
         }
         metadata->DataFilesDelete(data_files[file_number].file_id);
+        LakeDeleteFile(oid, data_files[file_number].file_name.c_str());
     }
     FinalizeInsert();
 }

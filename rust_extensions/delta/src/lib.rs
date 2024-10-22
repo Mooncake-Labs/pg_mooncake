@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use cxx::{CxxString, CxxVector};
 use deltalake::aws::register_handlers;
-use deltalake::kernel::{Action, Add, ArrayType, DataType, PrimitiveType, StructField};
+use deltalake::kernel::{Action, Add, ArrayType, DataType, PrimitiveType, Remove, StructField};
 use deltalake::operations::create::CreateBuilder;
 use deltalake::operations::transaction::CommitBuilder;
 use deltalake::protocol::{DeltaOperation, SaveMode};
@@ -20,11 +20,12 @@ mod ffi {
             column_types: &CxxVector<CxxString>,
         ) -> Result<()>;
 
-        fn DeltaAddFiles(
+        fn DeltaModifyFiles(
             table_location: &CxxString,
             storage_option: &CxxString,
             file_paths: &CxxVector<CxxString>,
             file_sizes: &CxxVector<i64>,
+            is_add_files: &CxxVector<i8>,
         ) -> Result<()>;
     }
 }
@@ -70,11 +71,12 @@ pub fn DeltaCreateTable(
 }
 
 #[allow(non_snake_case)]
-pub fn DeltaAddFiles(
+pub fn DeltaModifyFiles(
     table_location: &CxxString,
     storage_option: &CxxString,
     file_paths: &CxxVector<CxxString>,
     file_sizes: &CxxVector<i64>,
+    is_add_files: &CxxVector<i8>,
 ) -> Result<(), Box<dyn std::error::Error>> {
     let runtime: tokio::runtime::Runtime = tokio::runtime::Runtime::new()?;
     runtime.block_on(async {
@@ -86,14 +88,27 @@ pub fn DeltaAddFiles(
         let mut table: deltalake::DeltaTable =
             open_table_with_storage_options(table_location.to_string(), storage_option_map).await?;
         let mut actions = Vec::new();
-        for (file_path, file_size) in file_paths.iter().zip(file_sizes.iter()) {
-            let add = Add {
-                path: file_path.to_string(),
-                size: *file_size,
-                data_change: true,
-                ..Default::default()
-            };
-            actions.push(Action::Add(add));
+        for ((file_path, file_size), is_add) in file_paths
+            .iter()
+            .zip(file_sizes.iter())
+            .zip(is_add_files.iter())
+        {
+            if *is_add == 1 {
+                let add = Add {
+                    path: file_path.to_string(),
+                    size: *file_size,
+                    data_change: true,
+                    ..Default::default()
+                };
+                actions.push(Action::Add(add));
+            } else {
+                let rm = Remove {
+                    path: file_path.to_string(),
+                    data_change: true,
+                    ..Default::default()
+                };
+                actions.push(Action::Remove(rm));
+            }
         }
         let op = DeltaOperation::Write {
             mode: SaveMode::Append,

@@ -18,6 +18,7 @@ struct ColumnstoreScanMultiFileReaderGlobalState : public MultiFileReaderGlobalS
 
     idx_t row_id_index = DConstants::INVALID_INDEX;
     idx_t file_row_number_index = DConstants::INVALID_INDEX;
+    unique_ptr<Vector> row_ids;
 };
 
 struct ColumnstoreScanMultiFileReader : public MultiFileReader {
@@ -40,6 +41,7 @@ struct ColumnstoreScanMultiFileReader : public MultiFileReader {
         if (it != global_column_ids.end()) {
             global_state->row_id_index = NumericCast<idx_t>(std::distance(global_column_ids.begin(), it));
             global_state->file_row_number_index = global_column_ids.size();
+            global_state->row_ids = make_uniq<Vector>(LogicalType::BIGINT);
         }
         return std::move(global_state);
     }
@@ -72,13 +74,13 @@ struct ColumnstoreScanMultiFileReader : public MultiFileReader {
             auto &file_row_numbers = chunk.data[gstate.file_row_number_index];
             file_row_numbers.Flatten(chunk.size());
             auto file_row_numbers_data = FlatVector::GetData<int64_t>(file_row_numbers);
-            auto &row_ids = chunk.data[gstate.row_id_index];
-            row_ids.SetVectorType(VectorType::FLAT_VECTOR);
-            auto row_ids_data = FlatVector::GetData<row_t>(row_ids);
+            gstate.row_ids->SetVectorType(VectorType::FLAT_VECTOR);
+            auto row_ids_data = FlatVector::GetData<row_t>(*gstate.row_ids);
             const idx_t file_number = NumericCast<int32_t>(reader_data.file_list_idx.GetIndex());
             for (idx_t i = 0; i < chunk.size(); i++) {
                 row_ids_data[i] = (file_number << 32) + NumericCast<uint32_t>(file_row_numbers_data[i]);
             }
+            chunk.data[gstate.row_id_index].Reference(*gstate.row_ids);
         }
     }
 };

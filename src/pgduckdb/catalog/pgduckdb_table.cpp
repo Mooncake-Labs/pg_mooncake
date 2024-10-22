@@ -56,21 +56,6 @@ PostgresTable::SetTableInfo(CreateTableInfo &info, ::Relation rel) {
 		/* Log column name and type */
 		elog(DEBUG2, "(DuckDB/SetTableInfo) Column name: %s, Type: %s --", col_name.c_str(),
 		     duck_type.ToString().c_str());
-		// if (attr->atthasdef) {
-		// 	Node *default_value;
-		// 	for (int j = 0; j < tupleDesc->constr->num_defval; j++)
-		// 	{
-		// 		if (tupleDesc->constr->defval[j].adnum == i)
-		// 		{
-		// 			default_value = static_cast<Node *>(stringToNode(tupleDesc->constr->defval[j].adbin));
-		// 			break;
-		// 		}
-		// 	}
-		// 	if (default_value == NULL) {
-		// 		elog(ERROR, "default expression not found for attribute %d of relation \"%s\"",
-		// 			 i, RelationGetRelationName(rel));
-		// 	}
-		// }
 	}
 
 	return true;

@@ -12,11 +12,19 @@ CREATE TABLE mooncake.tables (
 CREATE UNIQUE INDEX tables_oid ON mooncake.tables (oid);
 
 CREATE TABLE mooncake.data_files (
+    id BIGINT GENERATED ALWAYS AS IDENTITY PRIMARY KEY,
     oid OID NOT NULL,
     file_name TEXT NOT NULL
 );
 CREATE INDEX data_files_oid ON mooncake.data_files (oid);
 CREATE UNIQUE INDEX data_files_file_name ON mooncake.data_files (file_name);
+
+CREATE UNLOGGED TABLE mooncake.cache(
+    oid OID NOT NULL,
+    data_file_id BIGINT PRIMARY KEY
+);
+
+CREATE INDEX cache_key ON mooncake.cache(oid, data_file_id);
 
 CREATE TABLE mooncake.secrets (
     secret_name NAME NOT NULL PRIMARY KEY,

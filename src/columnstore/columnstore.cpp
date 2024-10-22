@@ -6,7 +6,7 @@ namespace duckdb {
 
 void Columnstore::CreateTable(ClientContext &context, Oid oid, const string &path) {
     ColumnstoreMetadata metadata(NULL /*snapshot*/);
-    string full_path = metadata.GenerateFullPath(oid, path);
+    string full_path = metadata.GenerateFullPath(oid, path, duckdb::FileSystem::IsRemoteFile(path));
     if (!full_path.empty() && !duckdb::FileSystem::IsRemoteFile(full_path)) {
         FileSystem::GetFileSystem(context).CreateDirectory(full_path);
     }

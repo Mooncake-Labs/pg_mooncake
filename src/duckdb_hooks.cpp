@@ -37,6 +37,7 @@ void ProcessUtilityHook(PlannedStmt *pstmt, const char *query_string, bool read_
         CreateStmt *stmt = castNode(CreateStmt, pstmt->utilityStmt);
         if (stmt->accessMethod && strcmp(stmt->accessMethod, "columnstore") == 0) {
             string path = ParseColumnstoreOptions(stmt->options);
+
             stmt->options = NIL;
             prev_process_utility_hook(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc);
             Oid oid = RangeVarGetRelid(stmt->relation, AccessShareLock, false /*missing_ok*/);
@@ -58,4 +59,12 @@ void InitDuckdbHooks() {
     prev_process_utility_hook = ProcessUtility_hook ? ProcessUtility_hook : standard_ProcessUtility;
     ProcessUtility_hook = ProcessUtilityHook;
     RegisterXactCallback(XactHook, NULL);
+
+    duckdb::Connection con(pgduckdb::DuckDBManager::Get().GetDatabase());
+    if (!duckdb::FileSystem::GetFileSystem(*con.context).DirectoryExists("mooncake_cache")) {
+        duckdb::FileSystem::GetFileSystem(*con.context).CreateDirectory("mooncake_cache");
+    }
+    if (!duckdb::FileSystem::GetFileSystem(*con.context).DirectoryExists("mooncake_tmp")) {
+        duckdb::FileSystem::GetFileSystem(*con.context).CreateDirectory("mooncake_tmp");
+    }
 }

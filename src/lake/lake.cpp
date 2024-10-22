@@ -17,8 +17,7 @@ extern "C" {
 
 class LakeWriter {
 public:
-    LakeWriter()
-    {
+    LakeWriter() {
         DeltaInit();
     }
     void CreateTable(std::string const &table_name, std::string const &path,

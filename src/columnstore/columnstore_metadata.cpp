@@ -8,13 +8,16 @@ extern "C" {
 #include "access/xact.h"
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
+#include "commands/sequence.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
+#include "utils/guc.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
-#include "utils/guc.h"
 #include "utils/snapmgr.h"
 }
+
+#include <sys/stat.h>
 
 namespace duckdb {
 
@@ -84,7 +87,72 @@ string ColumnstoreMetadata::TablesSearch(Oid oid) {
     return path;
 }
 
-const int x_data_files_natts = 2;
+Oid CacheOid() {
+    return get_relname_relid("cache", Mooncake());
+}
+
+Oid CacheKeyOid() {
+    return get_relname_relid("cache_key", Mooncake());
+}
+
+const int x_cache_natts = 2;
+
+void ColumnstoreMetadata::CacheAdd(Oid oid, int64_t file_id) {
+    Relation table = table_open(CacheOid(), RowExclusiveLock);
+    TupleDesc desc = RelationGetDescr(table);
+    Datum values[x_cache_natts] = {oid, Int64GetDatum(file_id)};
+    bool isnull[x_cache_natts] = {false, false};
+    HeapTuple tuple = heap_form_tuple(desc, values, isnull);
+    CatalogTupleInsert(table, tuple);
+    CommandCounterIncrement();
+    table_close(table, RowExclusiveLock);
+}
+
+string GetCachedFile(int64_t file_id) {
+    struct stat info;
+    string cache_file_path = "mooncake_cache/" + std::to_string(file_id) + ".parquet";
+    // Check cache entry for safety
+    //
+    if (stat(cache_file_path.c_str(), &info) != 0) {
+        return "";
+    }
+    return cache_file_path;
+};
+
+void ReplaceRemoteFileWithCache(Oid oid, std::vector<ColumnstoreMetadata::FileInfo> &files) {
+    Relation table = table_open(CacheOid(), AccessShareLock);
+    Relation index = index_open(CacheKeyOid(), AccessShareLock);
+    TupleDesc desc = RelationGetDescr(table);
+    ScanKeyData key[1];
+    ScanKeyInit(&key[0], 1 /*attributeNumber*/, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(oid));
+    SysScanDesc scan = systable_beginscan_ordered(table, index, NULL /*snapshot*/, 1 /*nkeys*/, key);
+
+    HeapTuple tuple;
+    Datum values[x_cache_natts];
+    bool isnull[x_cache_natts];
+    int i = 0;
+    while (HeapTupleIsValid(tuple = systable_getnext_ordered(scan, ForwardScanDirection))) {
+        heap_deform_tuple(tuple, desc, values, isnull);
+        int64_t cached_file = DatumGetInt64(values[1]);
+        while (i < files.size() && files[i].file_id < cached_file) {
+            i++;
+        }
+        if (i == files.size()) {
+            break;
+        }
+        if (files[i].file_id == cached_file) {
+            string cached_file_path = GetCachedFile(cached_file);
+            if (!cached_file_path.empty()) {
+                files[i].file_path = cached_file_path;
+            }
+        }
+    }
+    systable_endscan_ordered(scan);
+    index_close(index, AccessShareLock);
+    table_close(table, AccessShareLock);
+}
+
+const int x_data_files_natts = 3;
 
 Oid DataFiles() {
     return get_relname_relid("data_files", Mooncake());
@@ -94,27 +162,33 @@ Oid DataFilesOid() {
     return get_relname_relid("data_files_oid", Mooncake());
 }
 
-Oid DataFilesFileName() {
-    return get_relname_relid("data_files_file_name", Mooncake());
+Oid DataFilesPK() {
+    return get_relname_relid("data_files_pkey", Mooncake());
 }
 
-void ColumnstoreMetadata::DataFilesInsert(Oid oid, const string &file_name) {
+Oid DataFilesSequenceOid() {
+    return get_relname_relid("data_files_id_seq", Mooncake());
+}
+
+int64_t ColumnstoreMetadata::DataFilesInsert(Oid oid, const string &file_name) {
     ::Relation table = table_open(DataFiles(), RowExclusiveLock);
     TupleDesc desc = RelationGetDescr(table);
-    Datum values[x_data_files_natts] = {oid, CStringGetTextDatum(file_name.c_str())};
-    bool isnull[x_data_files_natts] = {false, false};
+
+    int64_t file_id = nextval_internal(DataFilesSequenceOid(), true);
+    Datum values[x_data_files_natts] = {Int64GetDatum(file_id), oid, CStringGetTextDatum(file_name.c_str())};
+    bool isnull[x_data_files_natts] = {false, false, false};
     HeapTuple tuple = heap_form_tuple(desc, values, isnull);
     CatalogTupleInsert(table, tuple);
     CommandCounterIncrement();
     table_close(table, RowExclusiveLock);
+    return file_id;
 }
 
-void ColumnstoreMetadata::DataFilesDelete(const string &file_name) {
+void ColumnstoreMetadata::DataFilesDelete(int64_t file_id) {
     ::Relation table = table_open(DataFiles(), RowExclusiveLock);
-    ::Relation index = index_open(DataFilesFileName(), RowExclusiveLock);
+    ::Relation index = index_open(DataFilesPK(), RowExclusiveLock);
     ScanKeyData key[1];
-    ScanKeyInit(&key[0], 2 /*attributeNumber*/, BTEqualStrategyNumber, F_TEXTEQ,
-                CStringGetTextDatum(file_name.c_str()));
+    ScanKeyInit(&key[0], 1 /*attributeNumber*/, BTEqualStrategyNumber, F_INT8EQ, Int64GetDatum(file_id));
     SysScanDesc scan = systable_beginscan_ordered(table, index, snapshot, 1 /*nkeys*/, key);
 
     HeapTuple tuple;
@@ -132,7 +206,7 @@ void ColumnstoreMetadata::DataFilesDelete(Oid oid) {
     ::Relation table = table_open(DataFiles(), RowExclusiveLock);
     ::Relation index = index_open(DataFilesOid(), RowExclusiveLock);
     ScanKeyData key[1];
-    ScanKeyInit(&key[0], 1 /*attributeNumber*/, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(oid));
+    ScanKeyInit(&key[0], 2 /*attributeNumber*/, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(oid));
     SysScanDesc scan = systable_beginscan_ordered(table, index, snapshot, 1 /*nkeys*/, key);
 
     HeapTuple tuple;
@@ -146,27 +220,28 @@ void ColumnstoreMetadata::DataFilesDelete(Oid oid) {
     table_close(table, RowExclusiveLock);
 }
 
-vector<string> ColumnstoreMetadata::DataFilesSearch(Oid oid) {
+vector<ColumnstoreMetadata::FileInfo> ColumnstoreMetadata::DataFilesSearch(Oid oid, const string &path) {
     ::Relation table = table_open(DataFiles(), AccessShareLock);
     ::Relation index = index_open(DataFilesOid(), AccessShareLock);
     TupleDesc desc = RelationGetDescr(table);
     ScanKeyData key[1];
-    ScanKeyInit(&key[0], 1 /*attributeNumber*/, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(oid));
+    ScanKeyInit(&key[0], 2 /*attributeNumber*/, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(oid));
     SysScanDesc scan = systable_beginscan_ordered(table, index, snapshot, 1 /*nkeys*/, key);
 
-    vector<string> file_names;
+    vector<FileInfo> files;
     HeapTuple tuple;
     Datum values[x_data_files_natts];
     bool isnull[x_data_files_natts];
     while (HeapTupleIsValid(tuple = systable_getnext_ordered(scan, ForwardScanDirection))) {
         heap_deform_tuple(tuple, desc, values, isnull);
-        file_names.push_back(TextDatumGetCString(values[1]));
+        files.push_back({DatumGetInt64(values[0]), path + TextDatumGetCString(values[2])});
     }
 
     systable_endscan_ordered(scan);
     index_close(index, AccessShareLock);
     table_close(table, AccessShareLock);
-    return file_names;
+    ReplaceRemoteFileWithCache(oid, files);
+    return files;
 }
 
 Oid SecretsOid() {
@@ -197,8 +272,7 @@ string ColumnstoreMetadata::SecretGet() {
     return ret;
 }
 
-string ColumnstoreMetadata::GenerateFullPath(Oid oid, const string& path)
-{
+string ColumnstoreMetadata::GenerateFullPath(Oid oid, const string &path, bool remote) {
     string ret = path;
     if (ret.empty()) {
         Relation rel = RelationIdGetRelation(oid);
@@ -208,8 +282,8 @@ string ColumnstoreMetadata::GenerateFullPath(Oid oid, const string& path)
     if (ret.back() != '/') {
         ret += "/";
     }
-    if (ret[0] != '/') {
-        const char* data_directory = GetConfigOption("data_directory", false, false);
+    if (!remote && ret[0] != '/') {
+        const char *data_directory = GetConfigOption("data_directory", false, false);
         ret = string(data_directory) + "/" + ret.c_str();
     }
     return ret;

@@ -8,12 +8,53 @@
 
 namespace duckdb {
 
+class SingleFileCachedWriteFileSystem : public FileSystem {
+public:
+    SingleFileCachedWriteFileSystem(ClientContext &context, const std::string &file_name)
+        : tmp_file_path("mooncake_tmp/" + file_name), file_size(0), internal(GetFileSystem(context)) {}
+
+    unique_ptr<FileHandle> OpenFile(const string &path, FileOpenFlags flags,
+                                    optional_ptr<FileOpener> opener = nullptr) {
+        if (FileSystem::IsRemoteFile(path)) {
+            tmp_file = internal.OpenFile(tmp_file_path, flags, opener);
+        }
+        return internal.OpenFile(path, flags, opener);
+    }
+    int64_t Write(FileHandle &handle, void *buffer, int64_t nr_bytes) override {
+        file_size += nr_bytes;
+        if (tmp_file) {
+            int64_t written = internal.Write(*tmp_file, buffer, nr_bytes);
+            assert(written == nr_bytes);
+        }
+        return internal.Write(handle, buffer, nr_bytes);
+    }
+    void CacheFile(int64_t file_id) {
+        if (tmp_file) {
+            tmp_file->Close();
+            std::rename(tmp_file_path.c_str(),
+                        duckdb::StringUtil::Format("mooncake_cache/%ld.parquet", file_id).c_str());
+        }
+    }
+    std::string GetName() const {
+        return "SingleFileCachedWriteFileSystem";
+    }
+    idx_t GetCurrentFileSize() const {
+        return file_size;
+    }
+
+private:
+    std::string tmp_file_path;
+    idx_t file_size;
+    unique_ptr<FileHandle> tmp_file;
+    FileSystem &internal;
+};
+
 class DataFileWriter {
 public:
-    DataFileWriter(ClientContext &context, string file_name, vector<LogicalType> types, vector<string> names,
-                   ChildFieldIDs fieldIds)
+    DataFileWriter(ClientContext &context, FileSystem &fs, string file_name, vector<LogicalType> types,
+                   vector<string> names, ChildFieldIDs fieldIds)
         : collection(context, types, ColumnDataAllocatorType::HYBRID),
-          writer(context, FileSystem::GetFileSystem(context), std::move(file_name), std::move(types), std::move(names),
+          writer(context, fs, std::move(file_name), std::move(types), std::move(names),
                  duckdb_parquet::format::CompressionCodec::SNAPPY /*codec*/, std::move(fieldIds) /*field_ids*/,
                  {} /*kv_metadata*/, {} /*encryption_config*/, 1.0 /*dictionary_compression_ratio_threshold*/,
                  {} /*compression_level*/, true /*debug_use_openssl*/) {
@@ -62,7 +103,9 @@ public:
             for (int col = 0; col < names.size(); col++) {
                 fieldIds.ids->insert(std::make_pair(names[col], duckdb::FieldID(col)));
             }
-            writer = make_uniq<DataFileWriter>(context, path + file_name, types, names, std::move(fieldIds));
+            m_file_system = make_uniq<SingleFileCachedWriteFileSystem>(context, file_name);
+            writer =
+                make_uniq<DataFileWriter>(context, *m_file_system, path + file_name, types, names, std::move(fieldIds));
         }
         if (writer->Write(chunk)) {
             FinalizeDataFile();
@@ -79,9 +122,12 @@ private:
     void FinalizeDataFile() {
         writer->Finalize();
         writer.reset();
-        metadata.DataFilesInsert(oid, file_name.c_str());
-        idx_t size = 1;
+        int64_t file_id = metadata.DataFilesInsert(oid, file_name.c_str());
+        metadata.CacheAdd(oid, file_id);
+        m_file_system->CacheFile(file_id);
+        duckdb::idx_t size = m_file_system->GetCurrentFileSize();
         LakeAddFile(oid, file_name.c_str(), size);
+        m_file_system.reset();
     }
 
 private:
@@ -89,6 +135,7 @@ private:
     ColumnstoreMetadata &metadata;
     string path;
     string file_name;
+    unique_ptr<SingleFileCachedWriteFileSystem> m_file_system;
     vector<LogicalType> types;
     vector<string> names;
     unique_ptr<DataFileWriter> writer;
@@ -130,12 +177,12 @@ void ColumnstoreTable::FinalizeInsert() {
 void ColumnstoreTable::Delete(ClientContext &context, vector<row_t> &row_ids) {
     std::sort(row_ids.begin(), row_ids.end());
     auto path = metadata->TablesSearch(oid);
-    auto data_files = metadata->DataFilesSearch(oid);
+    auto data_files = metadata->DataFilesSearch(oid, path);
     for (idx_t row_ids_index = 0; row_ids_index < row_ids.size();) {
         int32_t file_number = row_ids[row_ids_index] >> 32;
         uint32_t next_file_row_number = row_ids[row_ids_index] & 0xFFFFFFFF;
         ParquetOptions parquet_options;
-        ParquetReader reader(context, path + data_files[file_number], parquet_options, nullptr /*metadata*/);
+        ParquetReader reader(context, data_files[file_number].file_path, parquet_options, nullptr /*metadata*/);
         for (idx_t i = 0; i < reader.GetTypes().size(); i++) {
             reader.reader_data.column_mapping.push_back(i);
             reader.reader_data.column_ids.push_back(i);
@@ -170,7 +217,7 @@ void ColumnstoreTable::Delete(ClientContext &context, vector<row_t> &row_ids) {
             chunk.Reset();
             reader.Scan(state, chunk);
         }
-        metadata->DataFilesDelete(data_files[file_number]);
+        metadata->DataFilesDelete(data_files[file_number].file_id);
     }
     FinalizeInsert();
 }

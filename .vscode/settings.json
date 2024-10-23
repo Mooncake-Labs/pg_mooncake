@@ -71,6 +71,8 @@
         "streambuf": "cpp",
         "thread": "cpp",
         "typeinfo": "cpp",
-        "variant": "cpp"
+        "variant": "cpp",
+        "backendid.h": "c",
+        "miscadmin.h": "c"
     }
 }

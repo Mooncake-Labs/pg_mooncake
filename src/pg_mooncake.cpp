@@ -15,6 +15,8 @@ bool allow_local_disk_table = true;
 
 char *default_storage_bucket = NULL;
 
+bool enable_local_cache = true;
+
 void _PG_init(void) {
     /* Define the global boolean GUC variable */
     DefineCustomBoolVariable(
@@ -38,6 +40,15 @@ void _PG_init(void) {
                                NULL,                                         /* assign_hook */
                                NULL                                          /* show_hook */
     );
+    DefineCustomBoolVariable("pg_mooncake.enable_local_cache",                           /* GUC name */
+                             "Specifies whether cache remote data files on local disk.", /* Short description */
+                             NULL,                                                       /* Long description */
+                             &allow_local_disk_table, true,                              /* Default value (false) */
+                             PGC_SUSET,                                                  /* Superuser-settable */
+                             0,                                                          /* Flags */
+                             NULL,                                                       /* check_hook */
+                             NULL,                                                       /* assign_hook */
+                             NULL /* show_hook */);
 
     InitDuckdbHooks();
     InitDuckdbScan();

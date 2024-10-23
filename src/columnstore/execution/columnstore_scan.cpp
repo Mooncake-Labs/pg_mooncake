@@ -111,9 +111,12 @@ unique_ptr<GlobalTableFunctionState> ColumnstoreScanInitGlobal(ClientContext &co
 
 void EmptyColumnstoreScan(ClientContext &context, TableFunctionInput &data, DataChunk &output) {}
 
+void BuildActualFilePath(std::vector<ColumnstoreMetadata::FileInfo> &files, const string &path);
+
 TableFunction ColumnstoreTable::GetScanFunction(ClientContext &context, unique_ptr<FunctionData> &bind_data) {
     auto path = metadata->TablesSearch(oid);
-    auto file_names = metadata->DataFilesSearch(oid, path);
+    auto file_names = metadata->DataFilesSearch(oid);
+    BuildActualFilePath(file_names, path);
     if (file_names.empty()) {
         return TableFunction("columnstore_scan", {} /*arguments*/, EmptyColumnstoreScan);
     }

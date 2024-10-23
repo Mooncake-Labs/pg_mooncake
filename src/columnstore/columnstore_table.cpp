@@ -5,18 +5,27 @@
 #include "parquet_writer.hpp"
 
 #include "lake/lake.hpp"
+#include <sys/stat.h>
 
+extern bool enable_local_cache;
 namespace duckdb {
+
+const int64_t x_min_available_space = 1024 * 1024 * 1024;
+
+constexpr const char *CACHE_DIRECTORY = "mooncake_cache/";
 
 class SingleFileCachedWriteFileSystem : public FileSystem {
 public:
     SingleFileCachedWriteFileSystem(ClientContext &context, const std::string &file_name)
-        : tmp_file_path("mooncake_tmp/" + file_name), file_size(0), internal(GetFileSystem(context)) {}
+        : tmp_file_path(CACHE_DIRECTORY + file_name), file_size(0), internal(GetFileSystem(context)) {}
 
     unique_ptr<FileHandle> OpenFile(const string &path, FileOpenFlags flags,
                                     optional_ptr<FileOpener> opener = nullptr) {
-        if (FileSystem::IsRemoteFile(path)) {
-            tmp_file = internal.OpenFile(tmp_file_path, flags, opener);
+        if (FileSystem::IsRemoteFile(path) && enable_local_cache) {
+            auto disk_space = internal.GetAvailableDiskSpace(CACHE_DIRECTORY);
+            if (disk_space.IsValid() && disk_space.GetIndex() > x_min_available_space) {
+                tmp_file = internal.OpenFile(tmp_file_path, flags, opener);
+            }
         }
         return internal.OpenFile(path, flags, opener);
     }
@@ -28,14 +37,10 @@ public:
         }
         return internal.Write(handle, buffer, nr_bytes);
     }
-    bool CacheFile(int64_t file_id) {
+    void CacheFile() {
         if (tmp_file) {
             tmp_file->Close();
-            std::rename(tmp_file_path.c_str(),
-                        duckdb::StringUtil::Format("mooncake_cache/%ld.parquet", file_id).c_str());
-            return true;
         }
-        return false;
     }
     std::string GetName() const {
         return "SingleFileCachedWriteFileSystem";
@@ -124,10 +129,8 @@ private:
     void FinalizeDataFile() {
         writer->Finalize();
         writer.reset();
-        int64_t file_id = metadata.DataFilesInsert(oid, file_name.c_str());
-        if (m_file_system->CacheFile(file_id)) {
-            metadata.CacheAdd(oid, file_id);
-        }
+        metadata.DataFilesInsert(oid, file_name.c_str());
+        m_file_system->CacheFile();
         duckdb::idx_t size = m_file_system->GetCurrentFileSize();
         LakeAddFile(oid, file_name.c_str(), size);
         m_file_system.reset();
@@ -177,10 +180,30 @@ void ColumnstoreTable::FinalizeInsert() {
     }
 }
 
+void BuildActualFilePath(std::vector<ColumnstoreMetadata::FileInfo> &files, const string &path) {
+    if (enable_local_cache && FileSystem::IsRemoteFile(path)) {
+        for (auto &file : files) {
+            struct stat info;
+            string cached_file_path = CACHE_DIRECTORY + file.file_name;
+            if (stat(cached_file_path.c_str(), &info) == 0) {
+                file.file_path = std::move(cached_file_path);
+            } else {
+                file.file_path = path + file.file_name;
+            }
+        }
+    } else {
+        for (auto &file : files) {
+            file.file_path = path + file.file_name;
+        }
+    }
+}
+
 void ColumnstoreTable::Delete(ClientContext &context, vector<row_t> &row_ids) {
     std::sort(row_ids.begin(), row_ids.end());
     auto path = metadata->TablesSearch(oid);
-    auto data_files = metadata->DataFilesSearch(oid, path);
+    auto data_files = metadata->DataFilesSearch(oid);
+    BuildActualFilePath(data_files, path);
+
     for (idx_t row_ids_index = 0; row_ids_index < row_ids.size();) {
         int32_t file_number = row_ids[row_ids_index] >> 32;
         uint32_t next_file_row_number = row_ids[row_ids_index] & 0xFFFFFFFF;

@@ -27,12 +27,10 @@ public:
         string file_name;
     };
 
-    vector<FileInfo> DataFilesSearch(Oid oid, const string &path);
-
-    void CacheAdd(Oid oid, int64_t file_id);
+    vector<FileInfo> DataFilesSearch(Oid oid);
 
     string SecretGet();
-    string GenerateFullPath(Oid oid, const string &path, bool remote);
+    string GenerateFullPath(Oid oid);
 
 private:
     Snapshot snapshot;

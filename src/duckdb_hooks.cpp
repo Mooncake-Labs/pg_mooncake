@@ -14,20 +14,6 @@ extern "C" {
 using duckdb::string;
 #include "lake/lake.hpp"
 
-string ParseColumnstoreOptions(List *list) {
-    string path;
-    ListCell *cell;
-    foreach (cell, list) {
-        DefElem *elem = castNode(DefElem, lfirst(cell));
-        if (strcmp(elem->defname, "path") == 0) {
-            path = defGetString(elem);
-        } else {
-            elog(ERROR, "Unrecognized columnstore option \"%s\"", elem->defname);
-        }
-    }
-    return path;
-}
-
 bool IsColumnstore(Oid oid);
 
 bool DuckdbCopy(PlannedStmt *pstmt, const char *query_string, struct QueryEnvironment *query_env, uint64 *processed);
@@ -40,13 +26,10 @@ void ProcessUtilityHook(PlannedStmt *pstmt, const char *query_string, bool read_
     if (IsA(pstmt->utilityStmt, CreateStmt)) {
         CreateStmt *stmt = castNode(CreateStmt, pstmt->utilityStmt);
         if (stmt->accessMethod && strcmp(stmt->accessMethod, "columnstore") == 0) {
-            string path = ParseColumnstoreOptions(stmt->options);
-
-            stmt->options = NIL;
             prev_process_utility_hook(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc);
             Oid oid = RangeVarGetRelid(stmt->relation, AccessShareLock, false /*missing_ok*/);
             duckdb::Connection con(pgduckdb::DuckDBManager::Get().GetDatabase());
-            duckdb::Columnstore::CreateTable(*con.context, oid, path);
+            duckdb::Columnstore::CreateTable(*con.context, oid);
             return;
         }
     } else if (IsA(pstmt->utilityStmt, CopyStmt)) {
@@ -84,7 +67,7 @@ void InitDuckdbHooks() {
     if (!duckdb::FileSystem::GetFileSystem(*con.context).DirectoryExists("mooncake_cache")) {
         duckdb::FileSystem::GetFileSystem(*con.context).CreateDirectory("mooncake_cache");
     }
-    if (!duckdb::FileSystem::GetFileSystem(*con.context).DirectoryExists("mooncake_tmp")) {
-        duckdb::FileSystem::GetFileSystem(*con.context).CreateDirectory("mooncake_tmp");
+    if (!duckdb::FileSystem::GetFileSystem(*con.context).DirectoryExists("mooncake_local_tables")) {
+        duckdb::FileSystem::GetFileSystem(*con.context).CreateDirectory("mooncake_local_tables");
     }
 }

@@ -91,7 +91,7 @@ void LakeCreateTable(Oid oid, const char *path) {
     TupleDesc desc = RelationGetDescr(relation);
     std::vector<std::string> types;
     std::vector<std::string> names;
-    std::string table_name = get_rel_name(oid);
+    std::string table_name = RelationGetRelationName(relation);
     for (int col = 0; col < desc->natts; col++) {
         Form_pg_attribute attr = &desc->attrs[col];
         types.push_back(format_type_be(attr->atttypid));

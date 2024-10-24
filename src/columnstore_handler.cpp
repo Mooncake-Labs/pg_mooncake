@@ -5,6 +5,7 @@ extern "C" {
 
 #include "access/tableam.h"
 #include "fmgr.h"
+#include "utils/syscache.h"
 }
 
 const TupleTableSlotOps *columnstore_slot_callbacks(Relation rel) {
@@ -115,7 +116,13 @@ TM_Result columnstore_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapsho
 
 void columnstore_relation_set_new_filelocator(Relation rel, const RelFileLocator *newrlocator, char persistence,
                                               TransactionId *freezeXid, MultiXactId *minmulti) {
-    duckdb::Columnstore::TruncateTable(rel->rd_id);
+    auto tuple = SearchSysCache1(RELOID, ObjectIdGetDatum(rel->rd_id));
+    if (!HeapTupleIsValid(tuple)) {
+        duckdb::Columnstore::CreateTable(rel->rd_id);
+    } else {
+        ReleaseSysCache(tuple);
+        duckdb::Columnstore::TruncateTable(rel->rd_id);
+    }
 }
 
 void columnstore_relation_nontransactional_truncate(Relation rel) {

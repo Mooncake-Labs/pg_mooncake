@@ -211,7 +211,7 @@ string ColumnstoreMetadata::GenerateFullPath(Oid oid) {
     Relation rel = RelationIdGetRelation(oid);
     string ret = psprintf("mooncake_%s_%d/", RelationGetRelationName(rel), oid);
     RelationClose(rel);
-    if (default_storage_bucket != NULL) {
+    if (default_storage_bucket != NULL && strlen(default_storage_bucket) != 0) {
         ret = string(default_storage_bucket) + "/" + ret.c_str();
     } else if (allow_local_disk_table) {
         const char *data_directory = GetConfigOption("data_directory", false, false);

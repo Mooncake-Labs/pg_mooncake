@@ -23,16 +23,7 @@ ProcessUtility_hook_type prev_process_utility_hook = NULL;
 void ProcessUtilityHook(PlannedStmt *pstmt, const char *query_string, bool read_only_tree,
                         ProcessUtilityContext context, ParamListInfo params, QueryEnvironment *query_env,
                         DestReceiver *dest, QueryCompletion *qc) {
-    if (IsA(pstmt->utilityStmt, CreateStmt)) {
-        CreateStmt *stmt = castNode(CreateStmt, pstmt->utilityStmt);
-        if (stmt->accessMethod && strcmp(stmt->accessMethod, "columnstore") == 0) {
-            prev_process_utility_hook(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc);
-            Oid oid = RangeVarGetRelid(stmt->relation, AccessShareLock, false /*missing_ok*/);
-            duckdb::Connection con(pgduckdb::DuckDBManager::Get().GetDatabase());
-            duckdb::Columnstore::CreateTable(*con.context, oid);
-            return;
-        }
-    } else if (IsA(pstmt->utilityStmt, CopyStmt)) {
+    if (IsA(pstmt->utilityStmt, CopyStmt)) {
         CopyStmt *stmt = castNode(CopyStmt, pstmt->utilityStmt);
         if (IsColumnstore(RangeVarGetRelid(stmt->relation, AccessShareLock, false /*missing_ok*/))) {
             if (!stmt->filename) {

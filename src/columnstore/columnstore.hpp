@@ -13,7 +13,7 @@ typedef unsigned int Oid;
 
 class Columnstore {
 public:
-    static void CreateTable(ClientContext &context, Oid oid);
+    static void CreateTable(Oid oid);
 
     static void DropTable(Oid oid);
 

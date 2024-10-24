@@ -4,11 +4,11 @@
 #include "lake/lake.hpp"
 namespace duckdb {
 
-void Columnstore::CreateTable(ClientContext &context, Oid oid) {
+void Columnstore::CreateTable(Oid oid) {
     ColumnstoreMetadata metadata(NULL /*snapshot*/);
     string full_path = metadata.GenerateFullPath(oid);
     if (!full_path.empty() && !duckdb::FileSystem::IsRemoteFile(full_path)) {
-        FileSystem::GetFileSystem(context).CreateDirectory(full_path);
+        FileSystem::CreateLocal()->CreateDirectory(full_path);
     }
     metadata.TablesInsert(oid, full_path);
     LakeCreateTable(oid, full_path.c_str());

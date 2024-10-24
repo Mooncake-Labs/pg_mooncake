@@ -1,6 +1,6 @@
 {
     "build": {
-        "dockerfile": "Dockerfile"
+        "dockerfile": "Dockerfile_17"
     },
     "postStartCommand": "bash .devcontainer/postStartCommand.sh",
     "customizations": {

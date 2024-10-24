@@ -102,29 +102,50 @@ TM_Result columnstore_tuple_delete(Relation rel, ItemPointer tid, CommandId cid,
     elog(ERROR, "columnstore_tuple_delete not implemented");
 }
 
+#if PG_VERSION_NUM >= 160000
 TM_Result columnstore_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, CommandId cid,
                                    Snapshot snapshot, Snapshot crosscheck, bool wait, TM_FailureData *tmfd,
                                    LockTupleMode *lockmode, TU_UpdateIndexes *update_indexes) {
     elog(ERROR, "columnstore_tuple_update not implemented");
 }
+#else
+TM_Result columnstore_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, CommandId cid,
+                                   Snapshot snapshot, Snapshot crosscheck, bool wait, TM_FailureData *tmfd,
+                                   LockTupleMode *lockmode, bool *update_indexes) {
+    elog(ERROR, "columnstore_tuple_update not implemented");
+}
+#endif
 
 TM_Result columnstore_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapshot, TupleTableSlot *slot, CommandId cid,
                                  LockTupleMode mode, LockWaitPolicy wait_policy, uint8 flags, TM_FailureData *tmfd) {
     elog(ERROR, "columnstore_tuple_lock not implemented");
 }
 
+#if PG_VERSION_NUM >= 160000
 void columnstore_relation_set_new_filelocator(Relation rel, const RelFileLocator *newrlocator, char persistence,
                                               TransactionId *freezeXid, MultiXactId *minmulti) {
     duckdb::Columnstore::TruncateTable(rel->rd_id);
 }
+#else
+void columnstore_relation_set_new_filenode(Relation rel, const RelFileNode *newrnode, char persistence,
+                                           TransactionId *freezeXid, MultiXactId *minmulti) {
+    duckdb::Columnstore::TruncateTable(rel->rd_id);
+}
+#endif
 
 void columnstore_relation_nontransactional_truncate(Relation rel) {
     duckdb::Columnstore::TruncateTable(rel->rd_id);
 }
 
+#if PG_VERSION_NUM >= 160000
 void columnstore_relation_copy_data(Relation rel, const RelFileLocator *newrlocator) {
     elog(ERROR, "columnstore_relation_copy_data not implemented");
 }
+#else
+void columnstore_relation_copy_data(Relation rel, const RelFileNode *newrnode) {
+    elog(ERROR, "columnstore_relation_copy_data not implemented");
+}
+#endif
 
 void columnstore_relation_copy_for_cluster(Relation OldTable, Relation NewTable, Relation OldIndex, bool use_sort,
                                            TransactionId OldestXmin, TransactionId *xid_cutoff,
@@ -137,9 +158,15 @@ void columnstore_relation_vacuum(Relation rel, struct VacuumParams *params, Buff
     elog(ERROR, "columnstore_relation_vacuum not implemented");
 }
 
+#if PG_VERSION_NUM >= 170000
+bool columnstore_scan_analyze_next_block(TableScanDesc scan, ReadStream *stream) {
+    elog(ERROR, "columnstore_scan_analyze_next_block not implemented");
+}
+#else
 bool columnstore_scan_analyze_next_block(TableScanDesc scan, BlockNumber blockno, BufferAccessStrategy bstrategy) {
     elog(ERROR, "columnstore_scan_analyze_next_block not implemented");
 }
+#endif
 
 bool columnstore_scan_analyze_next_tuple(TableScanDesc scan, TransactionId OldestXmin, double *liverows,
                                          double *deadrows, TupleTableSlot *slot) {
@@ -215,7 +242,11 @@ const TableAmRoutine columnstore_routine = {T_TableAmRoutine,
                                             columnstore_tuple_lock,
                                             NULL /*finish_bulk_insert*/,
 
+#if PG_VERSION_NUM >= 160000
                                             columnstore_relation_set_new_filelocator,
+#else
+                                            columnstore_relation_set_new_filenode,
+#endif
                                             columnstore_relation_nontransactional_truncate,
                                             columnstore_relation_copy_data,
                                             columnstore_relation_copy_for_cluster,

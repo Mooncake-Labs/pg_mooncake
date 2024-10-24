@@ -4,7 +4,6 @@ RUN yes | unminimize
 
 RUN apt update \
  && apt install -y \
-    bzip2 \
     clang-format \
     cmake \
     curl \
@@ -32,8 +31,8 @@ RUN echo 'source /workspaces/pg_mooncake/.devcontainer/.bashrc' >> .bashrc
 RUN curl https://sh.rustup.rs | sh -s -- -y
 
 ENV PATH="/usr/local/pgsql/bin:${PATH}"
-RUN curl https://ftp.postgresql.org/pub/source/v16.4/postgresql-16.4.tar.bz2 | bzip2 -d | tar x \
- && cd postgresql-16.4 \
+RUN curl https://ftp.postgresql.org/pub/source/v15.8/postgresql-15.8.tar.bz2 | bzip2 -d | tar x \
+ && cd postgresql-15.8 \
  && ./configure --enable-cassert --enable-debug CFLAGS='-ggdb3' \
  && make -j$(nproc) \
  && sudo make install \

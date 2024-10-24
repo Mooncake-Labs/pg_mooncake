@@ -165,9 +165,15 @@ void columnstore_relation_vacuum(Relation rel, struct VacuumParams *params, Buff
     elog(ERROR, "columnstore_relation_vacuum not implemented");
 }
 
+#if PG_VERSION_NUM >= 170000
+bool columnstore_scan_analyze_next_block(TableScanDesc scan, ReadStream *stream) {
+    elog(ERROR, "columnstore_scan_analyze_next_block not implemented");
+}
+#else
 bool columnstore_scan_analyze_next_block(TableScanDesc scan, BlockNumber blockno, BufferAccessStrategy bstrategy) {
     elog(ERROR, "columnstore_scan_analyze_next_block not implemented");
 }
+#endif
 
 bool columnstore_scan_analyze_next_tuple(TableScanDesc scan, TransactionId OldestXmin, double *liverows,
                                          double *deadrows, TupleTableSlot *slot) {

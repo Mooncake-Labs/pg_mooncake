@@ -12,6 +12,9 @@ extern "C" {
 #include "pgduckdb/pgduckdb_process_lock.hpp"
 #include "pgduckdb/scan/heap_reader.hpp"
 #include "pgduckdb/pgduckdb_types.hpp"
+#include "pgduckdb/pgduckdb_utils.hpp"
+
+#include <optional>
 
 namespace pgduckdb {
 
@@ -36,25 +39,31 @@ HeapReaderGlobalState::AssignNextBlockNumber(std::mutex &lock) {
 // HeapReader
 //
 
-HeapReader::HeapReader(Relation relation, duckdb::shared_ptr<HeapReaderGlobalState> heap_reader_global_state,
+HeapReader::HeapReader(Relation rel, duckdb::shared_ptr<HeapReaderGlobalState> heap_reader_global_state,
                        duckdb::shared_ptr<PostgresScanGlobalState> global_state,
                        duckdb::shared_ptr<PostgresScanLocalState> local_state)
     : m_global_state(global_state), m_heap_reader_global_state(heap_reader_global_state), m_local_state(local_state),
-      m_relation(relation), m_inited(false), m_read_next_page(true), m_block_number(InvalidBlockNumber),
-      m_buffer(InvalidBuffer), m_current_tuple_index(InvalidOffsetNumber), m_page_tuples_left(0) {
+      m_rel(rel), m_inited(false), m_read_next_page(true), m_block_number(InvalidBlockNumber), m_buffer(InvalidBuffer),
+      m_current_tuple_index(InvalidOffsetNumber), m_page_tuples_left(0) {
 	m_tuple.t_data = NULL;
-	m_tuple.t_tableOid = RelationGetRelid(m_relation);
+	m_tuple.t_tableOid = RelationGetRelid(m_rel);
 	ItemPointerSetInvalid(&m_tuple.t_self);
 }
 
 HeapReader::~HeapReader() {
+	/* If execution is interrupted and buffer is still opened close it now */
+	if (m_buffer != InvalidBuffer) {
+		DuckdbProcessLock::GetLock().lock();
+		UnlockReleaseBuffer(m_buffer);
+		DuckdbProcessLock::GetLock().unlock();
+	}
 }
 
 Page
 HeapReader::PreparePageRead() {
 	Page page = BufferGetPage(m_buffer);
 #if PG_VERSION_NUM < 170000
-	TestForOldSnapshot(m_global_state->m_snapshot, m_relation, page);
+	TestForOldSnapshot(m_global_state->m_snapshot, m_rel, page);
 #endif
 	m_page_tuples_all_visible = PageIsAllVisible(page) && !m_global_state->m_snapshot->takenDuringRecovery;
 	m_page_tuples_left = PageGetMaxOffsetNumber(page) - FirstOffsetNumber + 1;
@@ -76,7 +85,7 @@ HeapReader::ReadPageTuples(duckdb::DataChunk &output) {
 		m_read_next_page = true;
 	} else {
 		block = m_block_number;
-		if (block != InvalidBlockNumber) {
+		if (!m_read_next_page) {
 			page = BufferGetPage(m_buffer);
 		}
 	}
@@ -84,11 +93,14 @@ HeapReader::ReadPageTuples(duckdb::DataChunk &output) {
 	while (block != InvalidBlockNumber) {
 		if (m_read_next_page) {
 			CHECK_FOR_INTERRUPTS();
-			DuckdbProcessLock::GetLock().lock();
+			std::lock_guard<std::mutex> lock(DuckdbProcessLock::GetLock());
 			block = m_block_number;
-			m_buffer = ReadBufferExtended(m_relation, MAIN_FORKNUM, block, RBM_NORMAL, GetAccessStrategy(BAS_BULKREAD));
-			LockBuffer(m_buffer, BUFFER_LOCK_SHARE);
-			DuckdbProcessLock::GetLock().unlock();
+
+			m_buffer = PostgresFunctionGuard<Buffer>(ReadBufferExtended, m_rel, MAIN_FORKNUM, block, RBM_NORMAL,
+			                                         GetAccessStrategy(BAS_BULKREAD));
+
+			PostgresFunctionGuard(LockBuffer, m_buffer, BUFFER_LOCK_SHARE);
+
 			page = PreparePageRead();
 			m_read_next_page = false;
 		}
@@ -106,13 +118,14 @@ HeapReader::ReadPageTuples(duckdb::DataChunk &output) {
 			ItemPointerSet(&(m_tuple.t_self), block, m_current_tuple_index);
 
 			if (!m_page_tuples_all_visible) {
+				std::lock_guard<std::mutex> lock(DuckdbProcessLock::GetLock());
 				visible = HeapTupleSatisfiesVisibility(&m_tuple, m_global_state->m_snapshot, m_buffer);
 				/* skip tuples not visible to this snapshot */
 				if (!visible)
 					continue;
 			}
 
-			pgstat_count_heap_getnext(m_relation);
+			pgstat_count_heap_getnext(m_rel);
 			InsertTupleIntoChunk(output, m_global_state, m_local_state, &m_tuple);
 		}
 
@@ -121,6 +134,7 @@ HeapReader::ReadPageTuples(duckdb::DataChunk &output) {
 			DuckdbProcessLock::GetLock().lock();
 			UnlockReleaseBuffer(m_buffer);
 			DuckdbProcessLock::GetLock().unlock();
+			m_buffer = InvalidBuffer;
 			m_read_next_page = true;
 			/* Handle cancel request */
 			if (QueryCancelPending) {
@@ -133,6 +147,7 @@ HeapReader::ReadPageTuples(duckdb::DataChunk &output) {
 		/* We have collected STANDARD_VECTOR_SIZE */
 		if (m_local_state->m_output_vector_size == STANDARD_VECTOR_SIZE) {
 			output.SetCardinality(m_local_state->m_output_vector_size);
+			output.Verify();
 			m_local_state->m_output_vector_size = 0;
 			return true;
 		}
@@ -141,6 +156,7 @@ HeapReader::ReadPageTuples(duckdb::DataChunk &output) {
 	/* Next assigned block number is InvalidBlockNumber so we check did we write any tuples in output vector */
 	if (m_local_state->m_output_vector_size) {
 		output.SetCardinality(m_local_state->m_output_vector_size);
+		output.Verify();
 		m_local_state->m_output_vector_size = 0;
 	}
 

@@ -6,7 +6,7 @@
 #define pg_get_indexdef_string           pgduckdb_pg_get_indexdef_string
 #define pg_get_indexdef_columns          pgduckdb_pg_get_indexdef_columns
 #define pg_get_indexdef_columns_extended pgduckdb_pg_get_indexdef_columns_extended
-#define pg_get_querydef                  pgduckdb_pg_get_querydef
+#define pg_get_querydef                  pgduckdb_pg_get_querydef_internal
 #define pg_get_partkeydef_columns        pgduckdb_pg_get_partkeydef_columns
 #define pg_get_partconstrdef_string      pgduckdb_pg_get_partconstrdef_string
 #define pg_get_constraintdef_command     pgduckdb_pg_get_constraintdef_command
@@ -20,3 +20,10 @@
 #define get_range_partbound_string       pgduckdb_get_range_partbound_string
 #define pg_get_statisticsobjdef_string   pgduckdb_pg_get_statisticsobjdef_string
 #define get_list_partvalue_string        pgduckdb_get_list_partvalue_string
+
+/*
+ * The following replaces all usages of generate_qualified_relation_name and
+ * generate_relation_name with calls to the pgduckdb_relation_name function
+ */
+#define generate_qualified_relation_name          pgduckdb_relation_name
+#define generate_relation_name(relid, namespaces) pgduckdb_relation_name(relid)

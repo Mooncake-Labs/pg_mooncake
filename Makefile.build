@@ -22,7 +22,7 @@ PG_CPPFLAGS := -I../../src \
                -I../src \
                -MMD -MP
 PG_CFLAGS := $(if $(DEBUG),-ggdb3 -O0,-O2)
-PG_CXXFLAGS := $(if $(DEBUG),-ggdb3 -O0,-O2) -Werror -Wno-sign-compare -std=c++17
+PG_CXXFLAGS := $(if $(DEBUG),-ggdb3 -O0,-O2) -Werror -Wno-register -Wno-sign-compare -std=c++17
 SHLIB_LINK := -L. -Wl,-rpath,$(PG_LIB) -lduckdb
 
 override with_llvm := no

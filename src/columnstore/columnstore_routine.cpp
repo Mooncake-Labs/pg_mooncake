@@ -1,13 +1,13 @@
-#include "duckdb.hpp"
-
 extern "C" {
 #include "postgres.h"
 
 #include "access/tableam.h"
 #include "fmgr.h"
+#include "utils/syscache.h"
 }
 
-#include "columnstore/columnstore.hpp"
+void ColumnstoreCreateTable(Oid oid);
+void ColumnstoreInsert(Relation table, TupleTableSlot **slots, int nslots);
 
 const TupleTableSlotOps *columnstore_slot_callbacks(Relation rel) {
     return &TTSOpsVirtual;
@@ -117,7 +117,12 @@ TM_Result columnstore_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapsho
 
 void columnstore_relation_set_new_filelocator(Relation rel, const RelFileLocator *newrlocator, char persistence,
                                               TransactionId *freezeXid, MultiXactId *minmulti) {
-    // TODO: elog(NOTICE, "columnstore_relation_set_new_filelocator not fully implemented");
+    HeapTuple tp = SearchSysCache1(RELOID, ObjectIdGetDatum(rel->rd_id));
+    if (!HeapTupleIsValid(tp)) {
+        ColumnstoreCreateTable(rel->rd_id);
+    } else {
+        ReleaseSysCache(tp);
+    }
 }
 
 void columnstore_relation_nontransactional_truncate(Relation rel) {
@@ -246,12 +251,6 @@ Datum columnstore_handler(PG_FUNCTION_ARGS) {
 }
 }
 
-bool IsColumnstore(Oid oid) {
-    Relation relation = RelationIdGetRelation(oid);
-    if (!RelationIsValid(relation)) {
-        elog(ERROR, "Could not open relation with OID %u", oid);
-    }
-    bool res = relation->rd_tableam == &columnstore_routine;
-    RelationClose(relation);
-    return res;
+bool IsColumnstoreTable(Relation rel) {
+    return rel->rd_tableam == &columnstore_routine;
 }

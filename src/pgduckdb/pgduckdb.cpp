@@ -26,10 +26,10 @@ bool duckdb_enable_external_access = true;
 bool duckdb_allow_unsigned_extensions = false;
 
 extern "C" {
-PG_MODULE_MAGIC;
+// PG_MODULE_MAGIC;
 
 void
-_PG_init(void) {
+Duckdb_PG_init(void) {
 	if (!process_shared_preload_libraries_in_progress) {
 		ereport(ERROR, (errmsg("pg_duckdb needs to be loaded via shared_preload_libraries"),
 		                errhint("Add pg_duckdb to shared_preload_libraries.")));

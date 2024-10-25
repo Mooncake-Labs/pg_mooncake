@@ -2,6 +2,7 @@
 #include "pgduckdb/catalog/pgduckdb_transaction.hpp"
 #include "pgduckdb/catalog/pgduckdb_table.hpp"
 #include "pgduckdb/scan/postgres_scan.hpp"
+#include "columnstore/columnstore_table.hpp"
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
 #include "duckdb/parser/parsed_data/create_schema_info.hpp"
 #include "duckdb/catalog/catalog.hpp"
@@ -25,6 +26,8 @@ extern "C" {
 #include "parser/parsetree.h"
 #include "utils/rel.h"
 }
+
+bool IsColumnstoreTable(Relation rel);
 
 namespace duckdb {
 
@@ -81,9 +84,13 @@ SchemaItems::GetTable(const string &entry_name) {
 	info.table = entry_name;
 	PostgresTable::SetTableInfo(info, rel);
 
-	auto cardinality = PostgresTable::GetTableCardinality(rel);
-	auto table = make_uniq<PostgresHeapTable>(catalog, *schema, info, rel, cardinality, snapshot);
-	tables[entry_name] = std::move(table);
+	if (IsColumnstoreTable(rel)) {
+		RelationClose(rel);
+		tables[entry_name] = make_uniq<ColumnstoreTable>(catalog, *schema, info, rel_oid);
+	} else {
+		auto cardinality = PostgresTable::GetTableCardinality(rel);
+		tables[entry_name] = make_uniq<PostgresHeapTable>(catalog, *schema, info, rel, cardinality, snapshot);
+	}
 	return tables[entry_name].get();
 }
 

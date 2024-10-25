@@ -103,7 +103,7 @@ DuckDBManager::Initialize() {
 	}
 
 	LoadFunctions(context);
-	LoadExtensions(context);
+	// LoadExtensions(context);
 }
 
 void
@@ -207,22 +207,22 @@ DuckDBManager::CreateConnection() {
 	auto connection = duckdb::make_uniq<duckdb::Connection>(*instance.database);
 	auto &context = *connection->context;
 
-	const auto secret_table_last_seq = GetSeqLastValue("secrets_table_seq");
-	if (instance.IsSecretSeqLessThan(secret_table_last_seq)) {
-		instance.DropSecrets(context);
-		instance.LoadSecrets(context);
-		instance.UpdateSecretSeq(secret_table_last_seq);
-	}
+	// const auto secret_table_last_seq = GetSeqLastValue("secrets_table_seq");
+	// if (instance.IsSecretSeqLessThan(secret_table_last_seq)) {
+	// 	instance.DropSecrets(context);
+	// 	instance.LoadSecrets(context);
+	// 	instance.UpdateSecretSeq(secret_table_last_seq);
+	// }
 
-	const auto extensions_table_last_seq = GetSeqLastValue("extensions_table_seq");
-	if (instance.IsExtensionsSeqLessThan(extensions_table_last_seq)) {
-		instance.LoadExtensions(context);
-		instance.UpdateExtensionsSeq(extensions_table_last_seq);
-	}
+	// const auto extensions_table_last_seq = GetSeqLastValue("extensions_table_seq");
+	// if (instance.IsExtensionsSeqLessThan(extensions_table_last_seq)) {
+	// 	instance.LoadExtensions(context);
+	// 	instance.UpdateExtensionsSeq(extensions_table_last_seq);
+	// }
 
-	auto http_file_cache_set_dir_query =
-	    duckdb::StringUtil::Format("SET http_file_cache_dir TO '%s';", CreateOrGetDirectoryPath("duckdb_cache"));
-	context.Query(http_file_cache_set_dir_query, false);
+	// auto http_file_cache_set_dir_query =
+	//     duckdb::StringUtil::Format("SET http_file_cache_dir TO '%s';", CreateOrGetDirectoryPath("duckdb_cache"));
+	// context.Query(http_file_cache_set_dir_query, false);
 
 	if (duckdb_disabled_filesystems != NULL && !superuser()) {
 		/*

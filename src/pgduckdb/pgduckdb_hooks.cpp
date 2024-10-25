@@ -24,8 +24,12 @@ extern "C" {
 #include "pgduckdb/vendor/pg_explain.hpp"
 #include "pgduckdb/vendor/pg_list.hpp"
 
+void ColumnstoreFinalize();
+bool IsColumnstoreTable(Relation rel);
+
 static planner_hook_type prev_planner_hook = NULL;
 static ProcessUtility_hook_type prev_process_utility_hook = NULL;
+static ExecutorEnd_hook_type prev_executor_end_hook = NULL;
 static ExplainOneQuery_hook_type prev_explain_one_query_hook = NULL;
 
 static bool
@@ -45,6 +49,28 @@ IsCatalogTable(List *tables) {
 			if (namespace_oid == PG_CATALOG_NAMESPACE || namespace_oid == PG_TOAST_NAMESPACE) {
 				return true;
 			}
+		}
+	}
+	return false;
+}
+
+static bool
+IsColumnstoreTable(Oid relid) {
+	if (relid == InvalidOid) {
+		return false;
+	}
+
+	auto rel = RelationIdGetRelation(relid);
+	bool result = IsColumnstoreTable(rel);
+	RelationClose(rel);
+	return result;
+}
+
+static bool
+ContainsColumnstoreTables(List *rte_list) {
+	foreach_node(RangeTblEntry, rte, rte_list) {
+		if (IsColumnstoreTable(rte->relid)) {
+			return true;
 		}
 	}
 	return false;
@@ -105,7 +131,8 @@ ContainsDuckdbItems(Node *node, void *context) {
 
 static bool
 NeedsDuckdbExecution(Query *query) {
-	return ContainsDuckdbItems((Node *)query, NULL);
+	return (query->commandType == CMD_SELECT && ContainsColumnstoreTables(query->rtable)) ||
+	       ContainsDuckdbItems((Node *)query, NULL);
 }
 
 static bool
@@ -149,16 +176,16 @@ IsAllowedStatement(Query *query, bool throw_error = false) {
 	 * We don't support multi-statement transactions yet, so don't try to
 	 * execute queries in them even if duckdb.force_execution is enabled.
 	 */
-	if (IsInTransactionBlock(true)) {
-		if (throw_error) {
-			/*
-			 * We don't elog manually here, because PreventInTransactionBlock
-			 * provides very detailed errors.
-			 */
-			PreventInTransactionBlock(true, "DuckDB queries");
-		}
-		return false;
-	}
+	// if (IsInTransactionBlock(true)) {
+	// 	if (throw_error) {
+	// 		/*
+	// 		 * We don't elog manually here, because PreventInTransactionBlock
+	// 		 * provides very detailed errors.
+	// 		 */
+	// 		PreventInTransactionBlock(true, "DuckDB queries");
+	// 	}
+	// 	return false;
+	// }
 
 	/* Anything else is hopefully fine... */
 	return true;
@@ -190,26 +217,36 @@ DuckdbPlannerHook(Query *parse, const char *query_string, int cursor_options, Pa
 static void
 DuckdbUtilityHook(PlannedStmt *pstmt, const char *query_string, bool read_only_tree, ProcessUtilityContext context,
                   ParamListInfo params, struct QueryEnvironment *query_env, DestReceiver *dest, QueryCompletion *qc) {
-	Node *parsetree = pstmt->utilityStmt;
-	if (pgduckdb::IsExtensionRegistered() && IsA(parsetree, CopyStmt)) {
-		uint64 processed;
-		if (DuckdbCopy(pstmt, query_string, query_env, &processed)) {
-			if (qc) {
-				SetQueryCompletion(qc, CMDTAG_COPY, processed);
-			}
-			return;
-		}
-	}
+	// Node *parsetree = pstmt->utilityStmt;
+	// if (pgduckdb::IsExtensionRegistered() && IsA(parsetree, CopyStmt)) {
+	// 	uint64 processed;
+	// 	if (DuckdbCopy(pstmt, query_string, query_env, &processed)) {
+	// 		if (qc) {
+	// 			SetQueryCompletion(qc, CMDTAG_COPY, processed);
+	// 		}
+	// 		return;
+	// 	}
+	// }
 
-	if (pgduckdb::IsExtensionRegistered()) {
-		DuckdbHandleDDL(parsetree, query_string);
-	}
+	// if (pgduckdb::IsExtensionRegistered()) {
+	// 	DuckdbHandleDDL(parsetree, query_string);
+	// }
 
 	if (prev_process_utility_hook) {
 		(*prev_process_utility_hook)(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc);
 	} else {
 		standard_ProcessUtility(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc);
 	}
+
+	if (pgduckdb::IsExtensionRegistered() && IsA(pstmt->utilityStmt, CopyStmt)) {
+		ColumnstoreFinalize();
+	}
+}
+
+void
+DuckdbExecutorEndHook(QueryDesc *query_desc) {
+	prev_executor_end_hook(query_desc);
+	ColumnstoreFinalize();
 }
 
 extern "C" {
@@ -240,6 +277,9 @@ DuckdbInitHooks(void) {
 
 	prev_process_utility_hook = ProcessUtility_hook ? ProcessUtility_hook : standard_ProcessUtility;
 	ProcessUtility_hook = DuckdbUtilityHook;
+
+	prev_executor_end_hook = ExecutorEnd_hook ? ExecutorEnd_hook : standard_ExecutorEnd;
+	ExecutorEnd_hook = DuckdbExecutorEndHook;
 
 	prev_explain_one_query_hook = ExplainOneQuery_hook ? ExplainOneQuery_hook : standard_ExplainOneQuery;
 	ExplainOneQuery_hook = DuckdbExplainOneQueryHook;

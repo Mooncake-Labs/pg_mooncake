@@ -31,7 +31,7 @@ DuckdbPrepare(const Query *query) {
 	 * write queries in transactions we'll need to link Postgres and DuckdB
 	 * their transaction lifecycles.
 	 */
-	PreventInTransactionBlock(true, "DuckDB queries");
+	// PreventInTransactionBlock(true, "DuckDB queries");
 
 	Query *copied_query = (Query *)copyObjectImpl(query);
 	const char *query_string = pgduckdb_get_querydef(copied_query);

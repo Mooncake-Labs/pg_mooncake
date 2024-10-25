@@ -1,5 +1,3 @@
-#include "duckdb.hpp"
-
 extern "C" {
 #include "postgres.h"
 
@@ -30,10 +28,10 @@ Oid TablesPkeyOid() {
     return get_relname_relid("tables_pkey", MooncakeOid());
 }
 
-void TablesAdd(Oid oid, const ColumnstoreOptions &options) {
+void TablesAdd(Oid oid, const char *path) {
     Relation table = table_open(TablesOid(), RowExclusiveLock);
     TupleDesc desc = RelationGetDescr(table);
-    Datum values[x_tables_natts] = {oid, CStringGetTextDatum(options.path)};
+    Datum values[x_tables_natts] = {oid, CStringGetTextDatum(path)};
     bool nulls[x_tables_natts] = {false, false};
     HeapTuple tuple = heap_form_tuple(desc, values, nulls);
     CatalogTupleInsert(table, tuple);
@@ -41,7 +39,7 @@ void TablesAdd(Oid oid, const ColumnstoreOptions &options) {
     table_close(table, RowExclusiveLock);
 }
 
-ColumnstoreOptions TablesGet(Oid oid) {
+const char *TablesGet(Oid oid) {
     Relation table = table_open(TablesOid(), AccessShareLock);
     Relation index = index_open(TablesPkeyOid(), AccessShareLock);
     TupleDesc desc = RelationGetDescr(table);
@@ -49,19 +47,19 @@ ColumnstoreOptions TablesGet(Oid oid) {
     ScanKeyInit(&key[0], 1 /*attributeNumber*/, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(oid));
     SysScanDesc scan = systable_beginscan_ordered(table, index, NULL /*snapshot*/, 1 /*nkeys*/, key);
 
-    ColumnstoreOptions options;
+    const char *path = NULL;
     HeapTuple tuple;
     Datum values[x_tables_natts];
     bool isnull[x_tables_natts];
     if (HeapTupleIsValid(tuple = systable_getnext_ordered(scan, ForwardScanDirection))) {
         heap_deform_tuple(tuple, desc, values, isnull);
-        options.path = TextDatumGetCString(values[1]);
+        path = TextDatumGetCString(values[1]);
     }
 
     systable_endscan_ordered(scan);
     index_close(index, AccessShareLock);
     table_close(table, AccessShareLock);
-    return options;
+    return path;
 }
 
 const int x_data_files_natts = 2;

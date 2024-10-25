@@ -39,7 +39,8 @@ uninstall:
 # DuckDB
 
 duckdb: | .BUILD
-	$(MAKE) -C third_party/duckdb $(BUILD_TYPE) DISABLE_SANITIZER=1 ENABLE_UBSAN=0 BUILD_UNITTESTS=OFF
+	CMAKE_VARS_BUILD="-DBUILD_SHELL=0 -DBUILD_UNITTESTS=0" DISABLE_SANITIZER=1 \
+	$(MAKE) -C third_party/duckdb $(BUILD_TYPE)
 ifeq ($(BUILD_TYPE), debug)
 	gdb-add-index third_party/duckdb/build/debug/src/libduckdb.so
 endif

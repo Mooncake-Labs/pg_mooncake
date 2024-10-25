@@ -20,7 +20,7 @@ public:
 private:
 	string name;
 	unique_ptr<PostgresSchema> schema;
-	case_insensitive_map_t<unique_ptr<PostgresTable>> tables;
+	case_insensitive_map_t<unique_ptr<TableCatalogEntry>> tables;
 };
 
 class PostgresTransaction : public Transaction {

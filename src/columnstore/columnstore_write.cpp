@@ -18,10 +18,10 @@ extern "C" {
 #include "rust_extensions/delta.hpp"
 
 class ParquetWriter {
-  public:
-    ParquetWriter(duckdb::ClientContext &context, Oid oid, const ColumnstoreOptions &options,
-                  duckdb::vector<duckdb::LogicalType> types, duckdb::vector<duckdb::string> names)
-        : m_oid(oid), m_file_name(options.path + duckdb::UUID::GenerateRandomUUID().ToString() + ".parquet"),
+public:
+    ParquetWriter(duckdb::ClientContext &context, Oid oid, const char *path, duckdb::vector<duckdb::LogicalType> types,
+                  duckdb::vector<duckdb::string> names)
+        : m_oid(oid), m_file_name(path + duckdb::UUID::GenerateRandomUUID().ToString() + ".parquet"),
           m_collection(context, types, duckdb::ColumnDataAllocatorType::HYBRID),
           m_writer(context, duckdb::FileSystem::GetFileSystem(context), m_file_name, std::move(types), std::move(names),
                    duckdb_parquet::format::CompressionCodec::SNAPPY /*codec*/, {} /*field_ids*/, {} /*kv_metadata*/,
@@ -46,7 +46,7 @@ class ParquetWriter {
         elog(NOTICE, "delta: %zu", delta("hello"));
     }
 
-  private:
+private:
     static const idx_t x_row_group_size = duckdb::Storage::ROW_GROUP_SIZE;
     static const idx_t x_row_group_size_bytes = x_row_group_size * 1024;
 
@@ -58,10 +58,11 @@ class ParquetWriter {
 };
 
 class ColumnstoreWriter {
-  public:
-    ColumnstoreWriter() : m_con(pgduckdb::DuckDBManager::Get().GetDatabase()) {}
-
+public:
     void LazyInit(Oid oid, TupleDesc desc) {
+        if (!m_con) {
+            m_con = pgduckdb::DuckDBManager::CreateConnection();
+        }
         duckdb::vector<duckdb::LogicalType> types;
         duckdb::vector<duckdb::string> names;
         for (int col = 0; col < desc->natts; col++) {
@@ -69,16 +70,13 @@ class ColumnstoreWriter {
             types.push_back(pgduckdb::ConvertPostgresToDuckColumnType(attr));
             names.push_back(NameStr(attr->attname));
         }
-        m_chunk.Initialize(*m_con.context, types);
-        ColumnstoreOptions options = TablesGet(oid);
-        m_writer = duckdb::make_uniq<ParquetWriter>(*m_con.context, oid, options, std::move(types), std::move(names));
+        m_chunk.Initialize(*m_con->context, types);
+        const char *path = TablesGet(oid);
+        m_writer = duckdb::make_uniq<ParquetWriter>(*m_con->context, oid, path, std::move(types), std::move(names));
     }
 
-    void CreateTable(Oid oid, const ColumnstoreOptions &options) {
-        if (strlen(options.path)) {
-            duckdb::FileSystem::GetFileSystem(*m_con.context).CreateDirectory(options.path);
-        }
-        TablesAdd(oid, options);
+    void CreateTable(Oid oid) {
+        TablesAdd(oid, "" /*path*/);
     }
 
     void Insert(Relation table, TupleTableSlot **slots, int nslots) {
@@ -98,12 +96,13 @@ class ColumnstoreWriter {
                         bool should_free = false;
                         Datum value = pgduckdb::DetoastPostgresDatum(reinterpret_cast<varlena *>(slot->tts_values[col]),
                                                                      &should_free);
-                        pgduckdb::ConvertPostgresToDuckValue(value, vector, m_chunk.size());
+                        pgduckdb::ConvertPostgresToDuckValue(desc->attrs[col].atttypid, value, vector, m_chunk.size());
                         if (should_free) {
                             duckdb_free(reinterpret_cast<void *>(value));
                         }
                     } else {
-                        pgduckdb::ConvertPostgresToDuckValue(slot->tts_values[col], vector, m_chunk.size());
+                        pgduckdb::ConvertPostgresToDuckValue(desc->attrs[col].atttypid, slot->tts_values[col], vector,
+                                                             m_chunk.size());
                     }
                 }
             }
@@ -130,16 +129,16 @@ class ColumnstoreWriter {
         }
     }
 
-  private:
-    duckdb::Connection m_con;
+private:
+    duckdb::unique_ptr<duckdb::Connection> m_con;
     duckdb::DataChunk m_chunk;
     duckdb::unique_ptr<ParquetWriter> m_writer;
 };
 
 ColumnstoreWriter columnstore_writer;
 
-void ColumnstoreCreateTable(Oid oid, const ColumnstoreOptions &options) {
-    columnstore_writer.CreateTable(oid, options);
+void ColumnstoreCreateTable(Oid oid) {
+    columnstore_writer.CreateTable(oid);
 }
 
 void ColumnstoreInsert(Relation table, TupleTableSlot **slots, int nslots) {

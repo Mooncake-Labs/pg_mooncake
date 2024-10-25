@@ -104,9 +104,15 @@ TM_Result columnstore_tuple_delete(Relation rel, ItemPointer tid, CommandId cid,
     elog(ERROR, "columnstore_tuple_delete not implemented");
 }
 
+#if PG_VERSION_NUM >= 160000
 TM_Result columnstore_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, CommandId cid,
                                    Snapshot snapshot, Snapshot crosscheck, bool wait, TM_FailureData *tmfd,
                                    LockTupleMode *lockmode, TU_UpdateIndexes *update_indexes) {
+#else
+TM_Result columnstore_tuple_update(Relation rel, ItemPointer otid, TupleTableSlot *slot, CommandId cid,
+                                   Snapshot snapshot, Snapshot crosscheck, bool wait, TM_FailureData *tmfd,
+                                   LockTupleMode *lockmode, bool *update_indexes) {
+#endif
     elog(ERROR, "columnstore_tuple_update not implemented");
 }
 
@@ -115,8 +121,13 @@ TM_Result columnstore_tuple_lock(Relation rel, ItemPointer tid, Snapshot snapsho
     elog(ERROR, "columnstore_tuple_lock not implemented");
 }
 
+#if PG_VERSION_NUM >= 160000
 void columnstore_relation_set_new_filelocator(Relation rel, const RelFileLocator *newrlocator, char persistence,
                                               TransactionId *freezeXid, MultiXactId *minmulti) {
+#else
+void columnstore_relation_set_new_filenode(Relation rel, const RelFileNode *newrnode, char persistence,
+                                           TransactionId *freezeXid, MultiXactId *minmulti) {
+#endif
     HeapTuple tp = SearchSysCache1(RELOID, ObjectIdGetDatum(rel->rd_id));
     if (!HeapTupleIsValid(tp)) {
         ColumnstoreCreateTable(rel->rd_id);
@@ -129,7 +140,11 @@ void columnstore_relation_nontransactional_truncate(Relation rel) {
     elog(ERROR, "columnstore_relation_nontransactional_truncate not implemented");
 }
 
+#if PG_VERSION_NUM >= 160000
 void columnstore_relation_copy_data(Relation rel, const RelFileLocator *newrlocator) {
+#else
+void columnstore_relation_copy_data(Relation rel, const RelFileNode *newrnode) {
+#endif
     elog(ERROR, "columnstore_relation_copy_data not implemented");
 }
 
@@ -144,7 +159,11 @@ void columnstore_relation_vacuum(Relation rel, struct VacuumParams *params, Buff
     elog(ERROR, "columnstore_relation_vacuum not implemented");
 }
 
+#if PG_VERSION_NUM >= 170000
+bool columnstore_scan_analyze_next_block(TableScanDesc scan, ReadStream *stream) {
+#else
 bool columnstore_scan_analyze_next_block(TableScanDesc scan, BlockNumber blockno, BufferAccessStrategy bstrategy) {
+#endif
     elog(ERROR, "columnstore_scan_analyze_next_block not implemented");
 }
 
@@ -186,63 +205,69 @@ bool columnstore_scan_sample_next_tuple(TableScanDesc scan, struct SampleScanSta
     elog(ERROR, "columnstore_scan_sample_next_tuple not implemented");
 }
 
-const TableAmRoutine columnstore_routine = {T_TableAmRoutine,
+const TableAmRoutine columnstore_routine = {
+    T_TableAmRoutine,
 
-                                            columnstore_slot_callbacks,
+    columnstore_slot_callbacks,
 
-                                            columnstore_scan_begin,
-                                            columnstore_scan_end,
-                                            columnstore_scan_rescan,
-                                            columnstore_scan_getnextslot,
+    columnstore_scan_begin,
+    columnstore_scan_end,
+    columnstore_scan_rescan,
+    columnstore_scan_getnextslot,
 
-                                            NULL /*scan_set_tidrange*/,
-                                            NULL /*scan_getnextslot_tidrange*/,
+    NULL /*scan_set_tidrange*/,
+    NULL /*scan_getnextslot_tidrange*/,
 
-                                            columnstore_parallelscan_estimate,
-                                            columnstore_parallelscan_initialize,
-                                            columnstore_parallelscan_reinitialize,
+    columnstore_parallelscan_estimate,
+    columnstore_parallelscan_initialize,
+    columnstore_parallelscan_reinitialize,
 
-                                            columnstore_index_fetch_begin,
-                                            columnstore_index_fetch_reset,
-                                            columnstore_index_fetch_end,
-                                            columnstore_index_fetch_tuple,
+    columnstore_index_fetch_begin,
+    columnstore_index_fetch_reset,
+    columnstore_index_fetch_end,
+    columnstore_index_fetch_tuple,
 
-                                            columnstore_tuple_fetch_row_version,
-                                            columnstore_tuple_tid_valid,
-                                            columnstore_tuple_get_latest_tid,
-                                            columnstore_tuple_satisfies_snapshot,
-                                            columnstore_index_delete_tuples,
+    columnstore_tuple_fetch_row_version,
+    columnstore_tuple_tid_valid,
+    columnstore_tuple_get_latest_tid,
+    columnstore_tuple_satisfies_snapshot,
+    columnstore_index_delete_tuples,
 
-                                            columnstore_tuple_insert,
-                                            columnstore_tuple_insert_speculative,
-                                            columnstore_tuple_complete_speculative,
-                                            columnstore_multi_insert,
-                                            columnstore_tuple_delete,
-                                            columnstore_tuple_update,
-                                            columnstore_tuple_lock,
-                                            NULL /*finish_bulk_insert*/,
+    columnstore_tuple_insert,
+    columnstore_tuple_insert_speculative,
+    columnstore_tuple_complete_speculative,
+    columnstore_multi_insert,
+    columnstore_tuple_delete,
+    columnstore_tuple_update,
+    columnstore_tuple_lock,
+    NULL /*finish_bulk_insert*/,
 
-                                            columnstore_relation_set_new_filelocator,
-                                            columnstore_relation_nontransactional_truncate,
-                                            columnstore_relation_copy_data,
-                                            columnstore_relation_copy_for_cluster,
-                                            columnstore_relation_vacuum,
-                                            columnstore_scan_analyze_next_block,
-                                            columnstore_scan_analyze_next_tuple,
-                                            columnstore_index_build_range_scan,
-                                            columnstore_index_validate_scan,
+#if PG_VERSION_NUM >= 160000
+    columnstore_relation_set_new_filelocator,
+#else
+    columnstore_relation_set_new_filenode,
+#endif
+    columnstore_relation_nontransactional_truncate,
+    columnstore_relation_copy_data,
+    columnstore_relation_copy_for_cluster,
+    columnstore_relation_vacuum,
+    columnstore_scan_analyze_next_block,
+    columnstore_scan_analyze_next_tuple,
+    columnstore_index_build_range_scan,
+    columnstore_index_validate_scan,
 
-                                            columnstore_relation_size,
-                                            columnstore_relation_needs_toast_table,
-                                            NULL /*relation_toast_am*/,
-                                            NULL /*relation_fetch_toast_slice*/,
+    columnstore_relation_size,
+    columnstore_relation_needs_toast_table,
+    NULL /*relation_toast_am*/,
+    NULL /*relation_fetch_toast_slice*/,
 
-                                            columnstore_relation_estimate_size,
+    columnstore_relation_estimate_size,
 
-                                            NULL /*scan_bitmap_next_block*/,
-                                            NULL /*scan_bitmap_next_tuple*/,
-                                            columnstore_scan_sample_next_block,
-                                            columnstore_scan_sample_next_tuple};
+    NULL /*scan_bitmap_next_block*/,
+    NULL /*scan_bitmap_next_tuple*/,
+    columnstore_scan_sample_next_block,
+    columnstore_scan_sample_next_tuple
+};
 
 extern "C" {
 PG_FUNCTION_INFO_V1(columnstore_handler);

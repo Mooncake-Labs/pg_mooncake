@@ -4,7 +4,7 @@
         {
             "name": "Dev Container",
             "includePath": [
-                "/home/postgres/postgresql-16.4/src/**",
+                "/home/postgres/postgresql-17.0/src/**",
                 "${workspaceFolder}/**"
             ]
         }

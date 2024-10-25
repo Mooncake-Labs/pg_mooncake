@@ -1,3 +1,5 @@
+#include "columnstore/columnstore.hpp"
+
 extern "C" {
 #include "postgres.h"
 
@@ -6,11 +8,8 @@ extern "C" {
 #include "utils/syscache.h"
 }
 
-void ColumnstoreCreateTable(Oid oid);
-void ColumnstoreInsert(Relation table, TupleTableSlot **slots, int nslots);
-
 const TupleTableSlotOps *columnstore_slot_callbacks(Relation rel) {
-    return &TTSOpsVirtual;
+    elog(ERROR, "columnstore_slot_callbacks not implemented");
 }
 
 TableScanDesc columnstore_scan_begin(Relation rel, Snapshot snapshot, int nkeys, struct ScanKeyData *key,
@@ -82,7 +81,7 @@ TransactionId columnstore_index_delete_tuples(Relation rel, TM_IndexDeleteOp *de
 
 void columnstore_tuple_insert(Relation rel, TupleTableSlot *slot, CommandId cid, int options,
                               struct BulkInsertStateData *bistate) {
-    ColumnstoreInsert(rel, &slot, 1 /*nslots*/);
+    elog(ERROR, "columnstore_tuple_insert not implemented");
 }
 
 void columnstore_tuple_insert_speculative(Relation rel, TupleTableSlot *slot, CommandId cid, int options,
@@ -96,7 +95,7 @@ void columnstore_tuple_complete_speculative(Relation rel, TupleTableSlot *slot, 
 
 void columnstore_multi_insert(Relation rel, TupleTableSlot **slots, int nslots, CommandId cid, int options,
                               struct BulkInsertStateData *bistate) {
-    ColumnstoreInsert(rel, slots, nslots);
+    elog(ERROR, "columnstore_multi_insert not implemented");
 }
 
 TM_Result columnstore_tuple_delete(Relation rel, ItemPointer tid, CommandId cid, Snapshot snapshot, Snapshot crosscheck,
@@ -130,14 +129,15 @@ void columnstore_relation_set_new_filenode(Relation rel, const RelFileNode *newr
 #endif
     HeapTuple tp = SearchSysCache1(RELOID, ObjectIdGetDatum(rel->rd_id));
     if (!HeapTupleIsValid(tp)) {
-        ColumnstoreCreateTable(rel->rd_id);
+        duckdb::Columnstore::CreateTable(rel->rd_id);
     } else {
         ReleaseSysCache(tp);
+        duckdb::Columnstore::TruncateTable(rel->rd_id);
     }
 }
 
 void columnstore_relation_nontransactional_truncate(Relation rel) {
-    elog(ERROR, "columnstore_relation_nontransactional_truncate not implemented");
+    duckdb::Columnstore::TruncateTable(rel->rd_id);
 }
 
 #if PG_VERSION_NUM >= 160000
@@ -278,4 +278,15 @@ Datum columnstore_handler(PG_FUNCTION_ARGS) {
 
 bool IsColumnstoreTable(Relation rel) {
     return rel->rd_tableam == &columnstore_routine;
+}
+
+bool IsColumnstoreTable(Oid oid) {
+    if (oid == InvalidOid) {
+        return false;
+    }
+
+    auto rel = RelationIdGetRelation(oid);
+    bool result = IsColumnstoreTable(rel);
+    RelationClose(rel);
+    return result;
 }

@@ -89,6 +89,7 @@ DuckDBManager::Initialize() {
 	auto &db_manager = duckdb::DatabaseManager::Get(context);
 	default_dbname = db_manager.GetDefaultDatabase(context);
 	pgduckdb::DuckDBQueryOrThrow(context, "ATTACH DATABASE 'pgduckdb' (TYPE pgduckdb)");
+	pgduckdb::DuckDBQueryOrThrow(context, "ATTACH DATABASE 'pgmooncake' (TYPE pgduckdb)");
 	pgduckdb::DuckDBQueryOrThrow(context, "ATTACH DATABASE ':memory:' AS pg_temp;");
 
 	if (pgduckdb::IsMotherDuckEnabled()) {

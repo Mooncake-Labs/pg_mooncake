@@ -217,7 +217,7 @@ duckdb_create_table_trigger(PG_FUNCTION_ARGS) {
 		Oid saved_userid;
 		int sec_context;
 		const char *postgres_schema_name = get_namespace_name_or_temp(get_rel_namespace(relid));
-		const char *duckdb_db = (const char *)linitial(pgduckdb_db_and_schema(postgres_schema_name, true));
+		const char *duckdb_db = (const char *)linitial(pgduckdb_db_and_schema(postgres_schema_name, true, false));
 		GetUserIdAndSecContext(&saved_userid, &sec_context);
 		SetUserIdAndSecContext(BOOTSTRAP_SUPERUSERID, sec_context | SECURITY_LOCAL_USERID_CHANGE);
 
@@ -436,8 +436,9 @@ duckdb_drop_trigger(PG_FUNCTION_ARGS) {
 
 			char *postgres_schema_name = SPI_getvalue(tuple, SPI_tuptable->tupdesc, 1);
 			char *table_name = SPI_getvalue(tuple, SPI_tuptable->tupdesc, 2);
-			char *drop_query = psprintf("DROP TABLE %s.%s", pgduckdb_db_and_schema_string(postgres_schema_name, true),
-			                            quote_identifier(table_name));
+			char *drop_query =
+			    psprintf("DROP TABLE %s.%s", pgduckdb_db_and_schema_string(postgres_schema_name, true, false),
+			             quote_identifier(table_name));
 			pgduckdb::DuckDBQueryOrThrow(*connection, drop_query);
 		}
 	}

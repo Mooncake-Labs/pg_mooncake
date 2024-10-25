@@ -1,15 +1,32 @@
 #pragma once
 
-#include <vector>
+#include "duckdb/common/unique_ptr.hpp"
 
-extern "C" {
-#include "postgres.h"
-}
+namespace duckdb {
 
-void TablesAdd(Oid oid, const char *path);
+class ClientContext;
+class LogicalDelete;
+class LogicalInsert;
+class LogicalUpdate;
+class PhysicalOperator;
+using Oid = unsigned int;
 
-const char *TablesGet(Oid oid);
+class Columnstore {
+public:
+    static void CreateTable(Oid oid);
 
-void DataFilesAdd(Oid oid, const char *file_name);
+    static void DropTable(Oid oid);
 
-std::vector<const char *> DataFilesGet(Oid oid);
+    static void TruncateTable(Oid oid);
+
+    static unique_ptr<PhysicalOperator> PlanInsert(ClientContext &context, LogicalInsert &op,
+                                                   unique_ptr<PhysicalOperator> plan);
+
+    static unique_ptr<PhysicalOperator> PlanDelete(ClientContext &context, LogicalDelete &op,
+                                                   unique_ptr<PhysicalOperator> plan);
+
+    static unique_ptr<PhysicalOperator> PlanUpdate(ClientContext &context, LogicalUpdate &op,
+                                                   unique_ptr<PhysicalOperator> plan);
+};
+
+} // namespace duckdb

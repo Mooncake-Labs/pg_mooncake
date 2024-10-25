@@ -18,6 +18,7 @@ extern "C" {
 #include "pgduckdb/pgduckdb_ruleutils.h"
 }
 
+#include "columnstore_handler.hpp"
 #include "pgduckdb/utility/copy.hpp"
 #include "pgduckdb/pgduckdb_duckdb.hpp"
 #include "pgduckdb/vendor/pg_list.hpp"
@@ -49,10 +50,10 @@ CreateRelationCopyString(ParseState *pstate, CopyStmt *copy_stmt) {
 
 #if PG_VERSION_NUM >= 160000
 	perminfo = nsitem->p_perminfo;
-	perminfo->requiredPerms = ACL_SELECT;
+	perminfo->requiredPerms = copy_stmt->is_from ? ACL_INSERT : ACL_SELECT;
 #else
 	rte = nsitem->p_rte;
-	rte->requiredPerms = ACL_SELECT;
+	rte->requiredPerms = copy_stmt->is_from ? ACL_INSERT : ACL_SELECT;
 #endif
 
 #if PG_VERSION_NUM >= 160000
@@ -199,26 +200,33 @@ bool
 DuckdbCopy(PlannedStmt *pstmt, const char *query_string, struct QueryEnvironment *query_env, uint64 *processed) {
 	CopyStmt *copy_stmt = (CopyStmt *)pstmt->utilityStmt;
 
-	if (!copy_stmt->filename) {
+	if (!IsColumnstoreTable(RangeVarGetRelid(copy_stmt->relation, AccessShareLock, false /*missing_ok*/))) {
 		return false;
+	}
+
+	if (!copy_stmt->filename) {
+		// return false;
+		elog(ERROR, "(PGDuckDB/DuckdbCopy) COPY without filename is not supported");
 	}
 
 	/* Copy `filename` should start with S3/GS/R2 prefix */
-	if (duckdb::string(copy_stmt->filename).rfind(s3_filename_prefix, 0) &&
-	    duckdb::string(copy_stmt->filename).rfind(gcs_filename_prefix, 0) &&
-	    duckdb::string(copy_stmt->filename).rfind(r2_filename_prefix, 0)) {
-		return false;
-	}
+	// if (duckdb::string(copy_stmt->filename).rfind(s3_filename_prefix, 0) &&
+	//     duckdb::string(copy_stmt->filename).rfind(gcs_filename_prefix, 0) &&
+	//     duckdb::string(copy_stmt->filename).rfind(r2_filename_prefix, 0)) {
+	// 	return false;
+	// }
 
 	/* We handle only COPY .. TO */
-	if (copy_stmt->is_from) {
-		return false;
-	}
+	// if (copy_stmt->is_from) {
+	// 	return false;
+	// }
+	const char *direction = copy_stmt->is_from ? "FROM" : "TO";
 
 	bool options_valid = true;
 	duckdb::string options_string = CreateCopyOptions(copy_stmt, &options_valid);
 	if (!options_valid) {
-		return false;
+		// return false;
+		elog(ERROR, "(PGDuckDB/DuckdbCopy) unsupported COPY options");
 	}
 
 	auto filename_quoted = quote_literal_cstr(copy_stmt->filename);
@@ -237,15 +245,15 @@ DuckdbCopy(PlannedStmt *pstmt, const char *query_string, struct QueryEnvironment
 		Query *query = linitial_node(Query, rewritten);
 		CheckQueryPermissions(query, query_string);
 
-		rewritten_query_string = duckdb::StringUtil::Format("COPY (%s) TO %s %s", pgduckdb_get_querydef(query),
-		                                                    filename_quoted, options_string);
+		rewritten_query_string = duckdb::StringUtil::Format("COPY (%s) %s %s %s", pgduckdb_get_querydef(query),
+		                                                    direction, filename_quoted, options_string);
 	} else {
 		ParseState *pstate = make_parsestate(NULL);
 		pstate->p_sourcetext = query_string;
 		pstate->p_queryEnv = query_env;
 		duckdb::string relation_copy_part = CreateRelationCopyString(pstate, copy_stmt);
-		rewritten_query_string =
-		    duckdb::StringUtil::Format("COPY %s TO %s %s", relation_copy_part, filename_quoted, options_string);
+		rewritten_query_string = duckdb::StringUtil::Format("COPY %s %s %s %s", relation_copy_part, direction,
+		                                                    filename_quoted, options_string);
 	}
 
 	elog(DEBUG2, "(PGDuckDB/CreateRelationCopyString) Rewritten query: \'%s\'", rewritten_query_string.c_str());

@@ -15,6 +15,7 @@ extern "C" {
 #include "optimizer/optimizer.h"
 }
 
+#include "columnstore_handler.hpp"
 #include "pgduckdb/pgduckdb.h"
 #include "pgduckdb/pgduckdb_metadata_cache.hpp"
 #include "pgduckdb/pgduckdb_ddl.hpp"
@@ -24,12 +25,8 @@ extern "C" {
 #include "pgduckdb/vendor/pg_explain.hpp"
 #include "pgduckdb/vendor/pg_list.hpp"
 
-void ColumnstoreFinalize();
-bool IsColumnstoreTable(Relation rel);
-
 static planner_hook_type prev_planner_hook = NULL;
 static ProcessUtility_hook_type prev_process_utility_hook = NULL;
-static ExecutorEnd_hook_type prev_executor_end_hook = NULL;
 static ExplainOneQuery_hook_type prev_explain_one_query_hook = NULL;
 
 static bool
@@ -52,18 +49,6 @@ IsCatalogTable(List *tables) {
 		}
 	}
 	return false;
-}
-
-static bool
-IsColumnstoreTable(Oid relid) {
-	if (relid == InvalidOid) {
-		return false;
-	}
-
-	auto rel = RelationIdGetRelation(relid);
-	bool result = IsColumnstoreTable(rel);
-	RelationClose(rel);
-	return result;
 }
 
 static bool
@@ -105,7 +90,7 @@ ContainsDuckdbItems(Node *node, void *context) {
 
 	if (IsA(node, Query)) {
 		Query *query = (Query *)node;
-		if (ContainsDuckdbTables(query->rtable)) {
+		if (ContainsColumnstoreTables(query->rtable) || ContainsDuckdbTables(query->rtable)) {
 			return true;
 		}
 #if PG_VERSION_NUM >= 160000
@@ -131,8 +116,7 @@ ContainsDuckdbItems(Node *node, void *context) {
 
 static bool
 NeedsDuckdbExecution(Query *query) {
-	return (query->commandType == CMD_SELECT && ContainsColumnstoreTables(query->rtable)) ||
-	       ContainsDuckdbItems((Node *)query, NULL);
+	return ContainsDuckdbItems((Node *)query, NULL);
 }
 
 static bool
@@ -145,13 +129,13 @@ IsAllowedStatement(Query *query, bool throw_error = false) {
 	}
 
 	/* We don't support modifying statements on Postgres tables yet */
-	if (query->commandType != CMD_SELECT) {
-		RangeTblEntry *resultRte = list_nth_node(RangeTblEntry, query->rtable, query->resultRelation - 1);
-		if (!IsDuckdbTable(resultRte->relid)) {
-			elog(elevel, "DuckDB does not support modififying Postgres tables");
-			return false;
-		}
-	}
+	// if (query->commandType != CMD_SELECT) {
+	// 	RangeTblEntry *resultRte = list_nth_node(RangeTblEntry, query->rtable, query->resultRelation - 1);
+	// 	if (!IsDuckdbTable(resultRte->relid)) {
+	// 		elog(elevel, "DuckDB does not support modififying Postgres tables");
+	// 		return false;
+	// 	}
+	// }
 
 	/*
 	 * If there's no rtable, we're only selecting constants. There's no point
@@ -217,16 +201,16 @@ DuckdbPlannerHook(Query *parse, const char *query_string, int cursor_options, Pa
 static void
 DuckdbUtilityHook(PlannedStmt *pstmt, const char *query_string, bool read_only_tree, ProcessUtilityContext context,
                   ParamListInfo params, struct QueryEnvironment *query_env, DestReceiver *dest, QueryCompletion *qc) {
-	// Node *parsetree = pstmt->utilityStmt;
-	// if (pgduckdb::IsExtensionRegistered() && IsA(parsetree, CopyStmt)) {
-	// 	uint64 processed;
-	// 	if (DuckdbCopy(pstmt, query_string, query_env, &processed)) {
-	// 		if (qc) {
-	// 			SetQueryCompletion(qc, CMDTAG_COPY, processed);
-	// 		}
-	// 		return;
-	// 	}
-	// }
+	Node *parsetree = pstmt->utilityStmt;
+	if (pgduckdb::IsExtensionRegistered() && IsA(parsetree, CopyStmt)) {
+		uint64 processed;
+		if (DuckdbCopy(pstmt, query_string, query_env, &processed)) {
+			if (qc) {
+				SetQueryCompletion(qc, CMDTAG_COPY, processed);
+			}
+			return;
+		}
+	}
 
 	// if (pgduckdb::IsExtensionRegistered()) {
 	// 	DuckdbHandleDDL(parsetree, query_string);
@@ -237,16 +221,6 @@ DuckdbUtilityHook(PlannedStmt *pstmt, const char *query_string, bool read_only_t
 	} else {
 		standard_ProcessUtility(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc);
 	}
-
-	if (pgduckdb::IsExtensionRegistered() && IsA(pstmt->utilityStmt, CopyStmt)) {
-		ColumnstoreFinalize();
-	}
-}
-
-void
-DuckdbExecutorEndHook(QueryDesc *query_desc) {
-	prev_executor_end_hook(query_desc);
-	ColumnstoreFinalize();
 }
 
 extern "C" {
@@ -277,9 +251,6 @@ DuckdbInitHooks(void) {
 
 	prev_process_utility_hook = ProcessUtility_hook ? ProcessUtility_hook : standard_ProcessUtility;
 	ProcessUtility_hook = DuckdbUtilityHook;
-
-	prev_executor_end_hook = ExecutorEnd_hook ? ExecutorEnd_hook : standard_ExecutorEnd;
-	ExecutorEnd_hook = DuckdbExecutorEndHook;
 
 	prev_explain_one_query_hook = ExplainOneQuery_hook ? ExplainOneQuery_hook : standard_ExplainOneQuery;
 	ExplainOneQuery_hook = DuckdbExplainOneQueryHook;

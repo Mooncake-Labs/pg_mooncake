@@ -35,6 +35,9 @@ public:
     void Delete(ClientContext &context, vector<row_t> &row_ids);
 
 private:
+    vector<string> GetFilePaths(const string &path, const vector<string> &file_names);
+
+private:
     Oid oid;
     unique_ptr<ColumnstoreMetadata> metadata;
     unique_ptr<ColumnstoreWriter> writer;

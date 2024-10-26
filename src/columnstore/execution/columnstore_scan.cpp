@@ -110,7 +110,8 @@ unique_ptr<GlobalTableFunctionState> ColumnstoreScanInitGlobal(ClientContext &co
 TableFunction ColumnstoreTable::GetScanFunction(ClientContext &context, unique_ptr<FunctionData> &bind_data) {
     auto path = metadata->TablesSearch(oid);
     auto file_names = metadata->DataFilesSearch(oid);
-    if (file_names.empty()) {
+    auto file_paths = GetFilePaths(path, file_names);
+    if (file_paths.empty()) {
         return TableFunction("columnstore_scan", {} /*arguments*/, EmptyColumnstoreScan);
     }
 
@@ -120,8 +121,8 @@ TableFunction ColumnstoreTable::GetScanFunction(ClientContext &context, unique_p
     columnstore_scan.get_multi_file_reader = ColumnstoreScanMultiFileReader::Create;
 
     vector<Value> values;
-    for (auto &file_name : file_names) {
-        values.push_back(Value(path + file_name));
+    for (auto &file_path : file_paths) {
+        values.push_back(Value(file_path));
     }
     vector<Value> inputs;
     inputs.push_back(Value::LIST(values));

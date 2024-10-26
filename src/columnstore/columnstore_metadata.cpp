@@ -1,13 +1,17 @@
 #include "columnstore/columnstore_metadata.hpp"
 #include "pgduckdb/pgduckdb_utils.hpp"
+#include "pgmooncake.hpp"
 
 extern "C" {
 #include "postgres.h"
 
+#include "access/genam.h"
 #include "access/table.h"
 #include "access/xact.h"
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
+#include "commands/dbcommands.h"
+#include "miscadmin.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
@@ -80,6 +84,35 @@ string ColumnstoreMetadata::TablesSearch(Oid oid) {
     index_close(index, AccessShareLock);
     table_close(table, AccessShareLock);
     return path;
+}
+
+string ColumnstoreMetadata::GetTablePath(Oid oid) {
+    ::Relation table = table_open(oid, AccessShareLock);
+    string path =
+        StringUtil::Format("mooncake_%s_%s_%d/", get_database_name(MyDatabaseId), RelationGetRelationName(table), oid);
+    table_close(table, AccessShareLock);
+    if (strlen(mooncake_default_bucket)) {
+        path = StringUtil::Format("%s/%s", mooncake_default_bucket, path);
+    } else if (mooncake_allow_local_tables) {
+        path = StringUtil::Format("%s/mooncake_local_tables/%s", DataDir, path);
+    } else {
+        elog(ERROR, "Columnstore tables on local disk are not allowed. Set mooncake.default_bucket to default "
+                    "S3 bucket");
+    }
+    return path;
+}
+
+void ColumnstoreMetadata::GetTableMetadata(Oid oid, string &table_name /*out*/, vector<string> &column_names /*out*/,
+                                           vector<string> &column_types /*out*/) {
+    ::Relation table = table_open(oid, AccessShareLock);
+    TupleDesc desc = RelationGetDescr(table);
+    table_name = RelationGetRelationName(table);
+    for (int i = 0; i < desc->natts; i++) {
+        Form_pg_attribute attr = &desc->attrs[i];
+        column_names.push_back(NameStr(attr->attname));
+        column_types.push_back(format_type_be(attr->atttypid));
+    }
+    table_close(table, AccessShareLock);
 }
 
 const int x_data_files_natts = 2;
@@ -165,6 +198,65 @@ vector<string> ColumnstoreMetadata::DataFilesSearch(Oid oid) {
     index_close(index, AccessShareLock);
     table_close(table, AccessShareLock);
     return file_names;
+}
+
+const int x_secrets_natts = 5;
+
+Oid Secrets() {
+    return get_relname_relid("secrets", Mooncake());
+}
+
+vector<string> ColumnstoreMetadata::SecretsGetDuckdbQueries() {
+    ::Relation table = table_open(Secrets(), AccessShareLock);
+    TupleDesc desc = RelationGetDescr(table);
+    SysScanDescData *scan =
+        systable_beginscan(table, InvalidOid /*indexId*/, false /*indexOK*/, snapshot, 0 /*nkeys*/, NULL /*key*/);
+
+    vector<string> queries;
+    HeapTuple tuple;
+    Datum values[x_secrets_natts];
+    bool isnull[x_secrets_natts];
+    while (HeapTupleIsValid(tuple = systable_getnext(scan))) {
+        heap_deform_tuple(tuple, desc, values, isnull);
+        if (strcmp(TextDatumGetCString(values[1]), "S3") == 0) {
+            queries.push_back(TextDatumGetCString(values[3]));
+        }
+    }
+
+    systable_endscan(scan);
+    table_close(table, AccessShareLock);
+    return queries;
+}
+
+string ColumnstoreMetadata::SecretsSearchDeltaOptions(const string &path) {
+    if (!FileSystem::IsRemoteFile(path)) {
+        return "{}";
+    }
+
+    ::Relation table = table_open(Secrets(), AccessShareLock);
+    TupleDesc desc = RelationGetDescr(table);
+    SysScanDescData *scan =
+        systable_beginscan(table, InvalidOid /*indexId*/, false /*indexOK*/, snapshot, 0 /*nkeys*/, NULL /*key*/);
+
+    string option = "{}";
+    size_t longest_match = 0;
+    HeapTuple tuple;
+    Datum values[x_secrets_natts];
+    bool isnull[x_secrets_natts];
+    while (HeapTupleIsValid(tuple = systable_getnext(scan))) {
+        heap_deform_tuple(tuple, desc, values, isnull);
+        if (strcmp(TextDatumGetCString(values[1]), "S3") == 0) {
+            string scope = TextDatumGetCString(values[2]);
+            if ((scope.empty() || StringUtil::StartsWith(path, scope)) && longest_match <= scope.length()) {
+                option = TextDatumGetCString(values[4]);
+                longest_match = scope.length();
+            }
+        }
+    }
+
+    systable_endscan(scan);
+    table_close(table, AccessShareLock);
+    return option;
 }
 
 } // namespace duckdb

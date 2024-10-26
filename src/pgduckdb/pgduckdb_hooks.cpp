@@ -15,6 +15,7 @@ extern "C" {
 #include "optimizer/optimizer.h"
 }
 
+#include "columnstore/columnstore.hpp"
 #include "columnstore_handler.hpp"
 #include "pgduckdb/pgduckdb.h"
 #include "pgduckdb/pgduckdb_metadata_cache.hpp"
@@ -245,6 +246,13 @@ DuckdbExplainOneQueryHook(Query *query, int cursorOptions, IntoClause *into, Exp
 }
 
 void
+DuckdbXactCallback(XactEvent event, void *arg) {
+	if (event == XactEvent::XACT_EVENT_COMMIT) {
+		duckdb::Columnstore::Commit();
+	}
+}
+
+void
 DuckdbInitHooks(void) {
 	prev_planner_hook = planner_hook;
 	planner_hook = DuckdbPlannerHook;
@@ -254,4 +262,6 @@ DuckdbInitHooks(void) {
 
 	prev_explain_one_query_hook = ExplainOneQuery_hook ? ExplainOneQuery_hook : standard_ExplainOneQuery;
 	ExplainOneQuery_hook = DuckdbExplainOneQueryHook;
+
+	RegisterXactCallback(DuckdbXactCallback, NULL /*arg*/);
 }

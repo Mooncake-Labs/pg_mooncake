@@ -15,9 +15,11 @@ class Columnstore {
 public:
     static void CreateTable(Oid oid);
 
-    static void DropTable(Oid oid);
-
     static void TruncateTable(Oid oid);
+
+    static void Commit();
+
+    static void LoadSecrets(ClientContext &context);
 
     static unique_ptr<PhysicalOperator> PlanInsert(ClientContext &context, LogicalInsert &op,
                                                    unique_ptr<PhysicalOperator> plan);

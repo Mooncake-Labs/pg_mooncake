@@ -23,4 +23,8 @@ RUN cd /tmp/pg_mooncake \
 
 FROM postgres:17
 
+RUN apt update \
+ && apt install -y ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY --from=builder /out /

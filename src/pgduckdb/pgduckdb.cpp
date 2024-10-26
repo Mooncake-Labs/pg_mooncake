@@ -9,6 +9,7 @@ extern "C" {
 #include "pgduckdb/pgduckdb.h"
 #include "pgduckdb/pgduckdb_node.hpp"
 #include "pgduckdb/pgduckdb_background_worker.hpp"
+#include "pgmooncake.hpp"
 
 static void DuckdbInitGUC(void);
 
@@ -156,4 +157,15 @@ DuckdbInitGUC(void) {
 
 	DefineCustomVariable("duckdb.motherduck_postgres_database", "Which database to enable MotherDuck support in",
 	                     &duckdb_motherduck_postgres_database);
+}
+
+void
+MooncakeInitGUC() {
+	DefineCustomVariable("mooncake.allow_local_tables", "Allow columnstore tables on local disk",
+	                     &mooncake_allow_local_tables);
+
+	DefineCustomVariable("mooncake.default_bucket", "Default bucket for columnstore tables", &mooncake_default_bucket);
+
+	DefineCustomVariable("mooncake.enable_local_cache", "Enable local cache for columnstore tables",
+	                     &mooncake_enable_local_cache);
 }

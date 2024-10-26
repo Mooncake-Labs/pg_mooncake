@@ -8,6 +8,9 @@ crate-type = ["staticlib"]
 
 [dependencies]
 cxx = "1.0"
+deltalake = {version = "0.21", features = ["s3"] }
+tokio = "1.41"
+serde_json = "1.0"
 
 [build-dependencies]
 cxx-build = "1.0"

@@ -12,6 +12,7 @@ extern "C" {
 #include "utils/fmgrprotos.h"
 }
 
+#include "columnstore/columnstore.hpp"
 #include "pgduckdb/pgduckdb_options.hpp"
 #include "pgduckdb/pgduckdb_duckdb.hpp"
 #include "pgduckdb/pgduckdb_metadata_cache.hpp"
@@ -122,7 +123,7 @@ DuckDBManager::LoadFunctions(duckdb::ClientContext &context) {
 
 int64
 GetSeqLastValue(const char *seq_name) {
-	Oid duckdb_namespace = get_namespace_oid("duckdb", false);
+	Oid duckdb_namespace = get_namespace_oid("mooncake", false);
 	Oid table_seq_oid = get_relname_relid(seq_name, duckdb_namespace);
 	return PostgresFunctionGuard<int64>(DirectFunctionCall1Coll, pg_sequence_last_value, InvalidOid, table_seq_oid);
 }
@@ -200,20 +201,21 @@ DuckDBManager::LoadExtensions(duckdb::ClientContext &context) {
 
 duckdb::unique_ptr<duckdb::Connection>
 DuckDBManager::CreateConnection() {
-	if (!pgduckdb::IsDuckdbExecutionAllowed()) {
-		elog(ERROR, "DuckDB execution is not allowed because you have not been granted the duckdb.postgres_role");
-	}
+	// if (!pgduckdb::IsDuckdbExecutionAllowed()) {
+	// 	elog(ERROR, "DuckDB execution is not allowed because you have not been granted the duckdb.postgres_role");
+	// }
 
 	auto &instance = Get();
 	auto connection = duckdb::make_uniq<duckdb::Connection>(*instance.database);
 	auto &context = *connection->context;
 
-	// const auto secret_table_last_seq = GetSeqLastValue("secrets_table_seq");
-	// if (instance.IsSecretSeqLessThan(secret_table_last_seq)) {
-	// 	instance.DropSecrets(context);
-	// 	instance.LoadSecrets(context);
-	// 	instance.UpdateSecretSeq(secret_table_last_seq);
-	// }
+	const auto secret_table_last_seq = GetSeqLastValue("secrets_table_seq");
+	if (instance.IsSecretSeqLessThan(secret_table_last_seq)) {
+		instance.DropSecrets(context);
+		// instance.LoadSecrets(context);
+		duckdb::Columnstore::LoadSecrets(context);
+		instance.UpdateSecretSeq(secret_table_last_seq);
+	}
 
 	// const auto extensions_table_last_seq = GetSeqLastValue("extensions_table_seq");
 	// if (instance.IsExtensionsSeqLessThan(extensions_table_last_seq)) {
@@ -225,20 +227,20 @@ DuckDBManager::CreateConnection() {
 	//     duckdb::StringUtil::Format("SET http_file_cache_dir TO '%s';", CreateOrGetDirectoryPath("duckdb_cache"));
 	// context.Query(http_file_cache_set_dir_query, false);
 
-	if (duckdb_disabled_filesystems != NULL && !superuser()) {
-		/*
-		 * DuckDB does not allow us to disable this setting on the
-		 * database after the DuckDB connection is created for a non
-		 * superuser, any further connections will inherit this
-		 * restriction. This means that once a non-superuser used a
-		 * DuckDB connection in aside a Postgres backend, any loter
-		 * connection will inherit these same filesystem restrictions.
-		 * This shouldn't be a problem in practice.
-		 */
-		pgduckdb::DuckDBQueryOrThrow(context,
-		                             "SET disabled_filesystems='" + std::string(duckdb_disabled_filesystems) + "'");
-		instance.disabled_filesystems_is_set = true;
-	}
+	// if (duckdb_disabled_filesystems != NULL && !superuser()) {
+	// 	/*
+	// 	 * DuckDB does not allow us to disable this setting on the
+	// 	 * database after the DuckDB connection is created for a non
+	// 	 * superuser, any further connections will inherit this
+	// 	 * restriction. This means that once a non-superuser used a
+	// 	 * DuckDB connection in aside a Postgres backend, any loter
+	// 	 * connection will inherit these same filesystem restrictions.
+	// 	 * This shouldn't be a problem in practice.
+	// 	 */
+	// 	pgduckdb::DuckDBQueryOrThrow(context,
+	// 	                             "SET disabled_filesystems='" + std::string(duckdb_disabled_filesystems) + "'");
+	// 	instance.disabled_filesystems_is_set = true;
+	// }
 
 	return connection;
 }

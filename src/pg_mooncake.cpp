@@ -11,7 +11,7 @@ void InitDuckdbScan();
 extern "C" {
 PG_MODULE_MAGIC;
 
-bool allow_local_disk_table = true;
+bool allow_local_disk_table = false;
 
 char *default_storage_bucket = NULL;
 
@@ -23,7 +23,7 @@ void _PG_init(void) {
         "pg_mooncake.allow_local_disk_table",                                      /* GUC name */
         "Specifies whether creating columnstore tables on local disk is allowed.", /* Short description */
         NULL,                                                                      /* Long description */
-        &allow_local_disk_table, true,                                             /* Default value (false) */
+        &allow_local_disk_table, false,                                             /* Default value (false) */
         PGC_SUSET,                                                                 /* Superuser-settable */
         0,                                                                         /* Flags */
         NULL,                                                                      /* check_hook */

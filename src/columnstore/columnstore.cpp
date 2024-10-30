@@ -24,6 +24,10 @@ void Columnstore::TruncateTable(Oid oid) {
     }
 }
 
+void Columnstore::Abort() {
+    LakeAbort();
+}
+
 void Columnstore::Commit() {
     pgduckdb::DuckDBFunctionGuard<void>(LakeCommit, "LakeCommit");
 }

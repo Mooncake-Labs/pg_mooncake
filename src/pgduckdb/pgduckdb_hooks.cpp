@@ -247,7 +247,9 @@ DuckdbExplainOneQueryHook(Query *query, int cursorOptions, IntoClause *into, Exp
 
 void
 DuckdbXactCallback(XactEvent event, void *arg) {
-	if (event == XactEvent::XACT_EVENT_COMMIT) {
+	if (event == XactEvent::XACT_EVENT_ABORT) {
+		duckdb::Columnstore::Abort();
+	} else if (event == XactEvent::XACT_EVENT_COMMIT) {
 		duckdb::Columnstore::Commit();
 	}
 }

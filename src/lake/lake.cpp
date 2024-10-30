@@ -35,6 +35,10 @@ public:
         }
     }
 
+    void Abort() {
+        xact_state.clear();
+    }
+
     void Commit() {
         if (xact_state.empty()) {
             return;
@@ -82,6 +86,10 @@ void LakeAddFile(Oid oid, string file_name, int64_t file_size) {
 
 void LakeDeleteFile(Oid oid, string file_name) {
     lake_writer.ChangeFile(oid, std::move(file_name), 0 /*file_size*/, false /*is_add_file*/);
+}
+
+void LakeAbort() {
+    lake_writer.Abort();
 }
 
 void LakeCommit() {

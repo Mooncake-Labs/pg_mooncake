@@ -70,7 +70,7 @@ BEGIN
             name,
             type,
             coalesce(extra_params->>'SCOPE', ''),
-            format('CREATE SECRET pgduckb_secret_%s (TYPE %s, KEY_ID %L, SECRET %L', name, type, key_id, secret) ||
+            format('CREATE SECRET "duckdb_secret_%s" (TYPE %s, KEY_ID %L, SECRET %L', name, type, key_id, secret) ||
                 CASE WHEN extra_params->>'REGION' IS NULL THEN '' ELSE format(', REGION %L', extra_params->>'REGION') END ||
                 CASE WHEN extra_params->>'ENDPOINT' IS NULL THEN '' ELSE format(', ENDPOINT %L', extra_params->>'ENDPOINT') END ||
                 CASE WHEN (extra_params->>'USE_SSL')::boolean = false THEN ', USE_SSL FALSE' ELSE '' END ||

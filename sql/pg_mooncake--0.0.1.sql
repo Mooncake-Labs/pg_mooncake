@@ -44,6 +44,7 @@ DECLARE
     allowed_keys TEXT[] := ARRAY['ENDPOINT', 'REGION', 'SCOPE', 'USE_SSL'];
     keys TEXT[];
     invalid_keys TEXT[];
+    delta_endpoint TEXT;
 BEGIN
     IF type = 'S3' THEN
         keys := ARRAY(SELECT jsonb_object_keys(extra_params));
@@ -53,7 +54,18 @@ BEGIN
             RAISE EXCEPTION 'Invalid extra parameters: %', array_to_string(invalid_keys, ', ')
             USING HINT = 'Allowed parameters are ENDPOINT, REGION, SCOPE, USE_SSL.';
         END IF;
-
+        delta_endpoint = NULL;
+        IF extra_params->>'ENDPOINT' LIKE '%://%' THEN
+            RAISE EXCEPTION 'Invalid ENDPOINT format: %', extra_params->>'ENDPOINT'
+            USING HINT = 'USE domain name excluding http prefix';
+        END IF;
+        IF extra_params->>'ENDPOINT' is NOT NULL THEN
+            IF (extra_params->>'USE_SSL')::boolean = false THEN
+                delta_endpoint = CONCAT('http://', extra_params->>'ENDPOINT');
+            ELSE
+                delta_endpoint = CONCAT('https://', extra_params->>'ENDPOINT');
+            END IF;
+        END IF;
         INSERT INTO mooncake.secrets VALUES (
             name,
             type,
@@ -68,7 +80,7 @@ BEGIN
                 jsonb_strip_nulls(jsonb_build_object(
                     'ALLOW_HTTP', NOT (extra_params->>'USE_SSL')::boolean,
                     'AWS_REGION', extra_params->>'REGION',
-                    'AWS_ENDPOINT', extra_params->>'ENDPOINT'
+                    'AWS_ENDPOINT', delta_endpoint
                 ))
         );
         PERFORM nextval('mooncake.secrets_table_seq');
@@ -85,6 +97,7 @@ LANGUAGE plpgsql
 AS $drop_secret$
 BEGIN
     DELETE FROM mooncake.secrets WHERE name = secret_name;
+    PERFORM nextval('mooncake.secrets_table_seq');
 END;
 $drop_secret$ SECURITY DEFINER;
 

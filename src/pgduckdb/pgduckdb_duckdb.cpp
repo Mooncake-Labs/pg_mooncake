@@ -211,8 +211,8 @@ DuckDBManager::CreateConnection() {
 
 	const auto secret_table_last_seq = GetSeqLastValue("secrets_table_seq");
 	if (instance.IsSecretSeqLessThan(secret_table_last_seq)) {
-		instance.DropSecrets(context);
-		// instance.LoadSecrets(context);
+		// instance.DropSecrets(context);
+		//  instance.LoadSecrets(context);
 		duckdb::Columnstore::LoadSecrets(context);
 		instance.UpdateSecretSeq(secret_table_last_seq);
 	}

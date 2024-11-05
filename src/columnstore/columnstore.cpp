@@ -1,5 +1,6 @@
 #include "columnstore/columnstore.hpp"
 #include "columnstore_metadata.hpp"
+#include "duckdb/main/secret/secret_manager.hpp"
 #include "lake/lake.hpp"
 #include "pgduckdb/pgduckdb_duckdb.hpp"
 
@@ -34,6 +35,14 @@ void Columnstore::Commit() {
 
 void Columnstore::LoadSecrets(ClientContext &context) {
     ColumnstoreMetadata metadata(NULL /*snapshot*/);
+    context.transaction.BeginTransaction();
+    auto transaction = CatalogTransaction::GetSystemCatalogTransaction(context);
+    auto secrets = SecretManager::Get(context).AllSecrets(transaction);
+    for (auto secret : secrets) {
+        SecretManager::Get(context).DropSecretByName(context, secret.secret->GetName(),
+                                                     duckdb::OnEntryNotFound::RETURN_NULL);
+    }
+    context.transaction.Commit();
     auto queries = metadata.SecretsGetDuckdbQueries();
     for (auto &query : queries) {
         pgduckdb::DuckDBQueryOrThrow(context, query);

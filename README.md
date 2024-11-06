@@ -45,7 +45,7 @@ make install
 ```
 
 ### On Neon Postgres
-To quickly install the **pg_mooncake** extension on Neon, [create a Neon project](https://console.neon.tech/signup) and running the following commands from the [Neon SQL Editor](https://neon.tech/docs/get-started-with-neon/query-with-neon-sql-editor) or a [connected SQL client such as psql](https://neon.tech/docs/connect/query-with-psql-editor):
+To quickly install the **pg_mooncake** extension on Neon, [create a Neon project](https://console.neon.tech/signup) and run the following commands from the [Neon SQL Editor](https://neon.tech/docs/get-started-with-neon/query-with-neon-sql-editor) or a [connected SQL client such as psql](https://neon.tech/docs/connect/query-with-psql-editor):
 ```sql
 SET neon.allow_unstable_extensions='true';
 CREATE EXTENSION pg_mooncake;

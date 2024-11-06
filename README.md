@@ -70,7 +70,11 @@ CREATE EXTENSION pg_mooncake;
 This will be where your columnstore tables are stored. If no S3 configurations are specified, these tables will be created in your local file system.
 > **Note**: If you are using **pg_mooncake** on [Neon](https://neon.tech), you will need to bring your own S3 bucket for now. We’re  working to improve this DX.
 ```sql
+-- for S3 buckets
 SELECT mooncake.create_secret('<name>', 'S3', '<key_id>', '<secret>', '{"REGION": "<s3-region>"}');
+
+-- for R2 buckets
+SELECT mooncake.create_secret('<name>', 'S3', '<key_id>', '<secret>', '{"ENDPOINT":"<ACCOUNT_ID>.r2.cloudflarestorage.com/"}');
 
 SET mooncake.default_bucket = 's3://<bucket>';
 

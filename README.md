@@ -3,7 +3,7 @@
 
 **pg_mooncake** is a PostgreSQL extension that adds native columnstore tables with DuckDB execution. Columnstore tables are stored as [Iceberg](https://github.com/apache/iceberg) or [Delta Lake](https://github.com/delta-io/delta) tables in object storage.
 
-The extension is maintained by [Mooncake Labs](https://mooncake.dev/) and is available on [Neon](https://github.com/neondatabase/neon).
+The extension is maintained by [Mooncake Labs](https://mooncake.dev/) and is available on [Neon Postgres](https://neon.tech/home).
 
 ```sql
 -- Create a columnstore table in PostgreSQL
@@ -23,7 +23,7 @@ SELECT * FROM user_activity LIMIT 5;
 
 
 ## Installation
-You can install **pg_mooncake** using either our Docker image or from source.
+You can install **pg_mooncake** using our Docker image, from source, or on [Neon Postgres](https://neon.tech/home).
 
 ### Docker Image:
 To quickly get a PostgreSQL instance with **pg_mooncake** extension up and running, pull and run the latest Docker image:
@@ -42,6 +42,12 @@ You can compile and install **pg_mooncake** extension to add it to your PostgreS
 git submodule update --init --recursive
 make release
 make install
+```
+
+### On Neon Postgres:
+To quickly install the **pg_mooncake** extension on Neon, [create a Neon project](https://console.neon.tech/signup) and run the following command from the [Neon SQL Editor](https://neon.tech/docs/get-started-with-neon/query-with-neon-sql-editor) or a [connected SQL client such as psql](https://neon.tech/docs/connect/query-with-psql-editor) before you enable the extension.
+```sql
+SET neon.allow_unstable_extensions='true';
 ```
 
 ### Enable the Extension:

@@ -2,7 +2,7 @@ export override DEBUG := $(filter debug,$(BUILD_TYPE))
 CARGO_FLAGS := $(if $(DEBUG),,--release)
 MAKEFLAGS := --no-print-directory
 
-.PHONY: .BUILD all release debug clean format install uninstall \
+.PHONY: .BUILD all release debug clean format install installcheck uninstall \
         duckdb duckdb-fast clean-duckdb \
         delta clean-delta format-delta
 
@@ -32,6 +32,9 @@ format: format-delta
 
 install:
 	@$(MAKE) -C build/current install
+
+installcheck:
+	@$(MAKE) -C build/current installcheck
 
 uninstall:
 	@$(MAKE) -C build/current uninstall

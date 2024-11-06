@@ -9,6 +9,10 @@ SRCS := $(SRCS_C) $(SRCS_CXX)
 OBJS := $(SRCS:%=%.o) libduckdb.so libdelta.a
 DEPS := $(SRCS:%=%.d)
 
+REGRESS_SQL := $(shell cd ../../test/sql; find * -name '*.sql')
+REGRESS := $(REGRESS_SQL:%.sql=%)
+REGRESS_OPTS = --inputdir=../../test --load-extension=pg_mooncake
+
 PG_CONFIG ?= pg_config
 PG_LIB := $(shell $(PG_CONFIG) --pkglibdir)
 PGXS := $(shell $(PG_CONFIG) --pgxs)

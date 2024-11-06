@@ -197,12 +197,11 @@ CheckRewritten(List *rewritten) {
 }
 
 bool
+NeedsDuckdbExecution(Query *query);
+
+bool
 DuckdbCopy(PlannedStmt *pstmt, const char *query_string, struct QueryEnvironment *query_env, uint64 *processed) {
 	CopyStmt *copy_stmt = (CopyStmt *)pstmt->utilityStmt;
-
-	if (!IsColumnstoreTable(RangeVarGetRelid(copy_stmt->relation, AccessShareLock, false /*missing_ok*/))) {
-		return false;
-	}
 
 	if (!copy_stmt->filename) {
 		// return false;
@@ -243,11 +242,18 @@ DuckdbCopy(PlannedStmt *pstmt, const char *query_string, struct QueryEnvironment
 		CheckRewritten(rewritten);
 
 		Query *query = linitial_node(Query, rewritten);
+		if (!NeedsDuckdbExecution(query)) {
+			return false;
+		}
 		CheckQueryPermissions(query, query_string);
 
 		rewritten_query_string = duckdb::StringUtil::Format("COPY (%s) %s %s %s", pgduckdb_get_querydef(query),
 		                                                    direction, filename_quoted, options_string);
 	} else {
+		if (!IsColumnstoreTable(RangeVarGetRelid(copy_stmt->relation, AccessShareLock, false /*missing_ok*/))) {
+			return false;
+		}
+
 		ParseState *pstate = make_parsestate(NULL);
 		pstate->p_sourcetext = query_string;
 		pstate->p_queryEnv = query_env;

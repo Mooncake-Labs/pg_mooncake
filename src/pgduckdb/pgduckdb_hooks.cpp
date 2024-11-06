@@ -115,7 +115,7 @@ ContainsDuckdbItems(Node *node, void *context) {
 #endif
 }
 
-static bool
+bool
 NeedsDuckdbExecution(Query *query) {
 	return ContainsDuckdbItems((Node *)query, NULL);
 }

@@ -74,7 +74,7 @@ This will be where your columnstore tables are stored. If no S3 configurations a
 SELECT mooncake.create_secret('<name>', 'S3', '<key_id>', '<secret>', '{"REGION": "<s3-region>"}');
 
 -- for R2 buckets
-SELECT mooncake.create_secret('<name>', 'S3', '<key_id>', '<secret>', '{"ENDPOINT":"<ACCOUNT_ID>.r2.cloudflarestorage.com/"}');
+SELECT mooncake.create_secret('<name>', 'S3', '<key_id>', '<secret>', '{"END_POINT":"<ACCOUNT_ID>.r2.cloudflarestorage.com/"}');
 
 SET mooncake.default_bucket = 's3://<bucket>';
 

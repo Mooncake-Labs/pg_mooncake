@@ -172,6 +172,20 @@ IsAllowedStatement(Query *query, bool throw_error = false) {
 	// 	return false;
 	// }
 
+	if (query->commandType == CMD_UPDATE && query->hasSubLinks) {
+		ListCell *l;
+		foreach (l, query->targetList) {
+			TargetEntry *tle = (TargetEntry *)lfirst(l);
+			if (tle->resjunk && IsA(tle->expr, SubLink)) {
+				SubLink *sl = (SubLink *)tle->expr;
+				if (sl->subLinkType == MULTIEXPR_SUBLINK) {
+					elog(elevel, "DuckDB does not support UPDATE with multi-column assignment");
+					return false;
+				}
+			}
+		}
+	}
+
 	/* Anything else is hopefully fine... */
 	return true;
 }

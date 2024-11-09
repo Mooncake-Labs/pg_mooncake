@@ -31,6 +31,8 @@ SHLIB_LINK := -L. -Wl,-rpath,$(PG_LIB) -lduckdb
 override with_llvm := no
 include $(PGXS)
 
+.PHONY: installcheck-dirs
+
 $(SRCS_C:%=%.o): %.o: ../../src/%
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
@@ -38,5 +40,10 @@ $(SRCS_C:%=%.o): %.o: ../../src/%
 $(SRCS_CXX:%=%.o): %.o: ../../src/%
 	@mkdir -p $(dir $@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+installcheck: installcheck-dirs
+
+installcheck-dirs:
+	mkdir -p $(addprefix results/, $(sort $(dir $(REGRESS))))
 
 -include $(DEPS)

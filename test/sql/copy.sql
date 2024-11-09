@@ -3,7 +3,7 @@
 
 COPY (SELECT * FROM generate_series(1, 5)) TO :csv_file;
 
-CREATE TABLE t (a INT) USING columnstore;
+CREATE TABLE t (a int) USING columnstore;
 COPY t FROM :csv_file;
 SELECT * FROM t;
 

@@ -1,0 +1,5 @@
+CREATE TABLE t (a jsonb) USING columnstore;
+ERROR:  column "a" has unsupported type
+CREATE TYPE point AS (x int, y int);
+CREATE TABLE t (a point) USING columnstore;
+ERROR:  column "a" has unsupported type

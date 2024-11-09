@@ -196,8 +196,7 @@ CheckRewritten(List *rewritten) {
 	}
 }
 
-bool
-NeedsDuckdbExecution(Query *query);
+bool NeedsDuckdbExecution(Query *query);
 
 bool
 DuckdbCopy(PlannedStmt *pstmt, const char *query_string, struct QueryEnvironment *query_env, uint64 *processed) {

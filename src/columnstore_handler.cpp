@@ -1,4 +1,5 @@
 #include "columnstore/columnstore.hpp"
+#include "pgduckdb/pgduckdb_types.hpp"
 
 extern "C" {
 #include "postgres.h"
@@ -129,6 +130,15 @@ void columnstore_relation_set_new_filenode(Relation rel, const RelFileNode *newr
 #endif
     HeapTuple tp = SearchSysCache1(RELOID, ObjectIdGetDatum(rel->rd_id));
     if (!HeapTupleIsValid(tp)) {
+        TupleDesc desc = RelationGetDescr(rel);
+        for (int i = 0; i < desc->natts; i++) {
+            Form_pg_attribute attr = &desc->attrs[i];
+            auto duck_type = pgduckdb::ConvertPostgresToDuckColumnType(attr);
+            if (duck_type.id() == duckdb::LogicalTypeId::USER) {
+                elog(ERROR, "column \"%s\" has unsupported type", NameStr(attr->attname));
+            }
+        }
+
         duckdb::Columnstore::CreateTable(rel->rd_id);
     } else {
         ReleaseSysCache(tp);

@@ -3,6 +3,7 @@
 extern "C" {
 #include "postgres.h"
 
+#include "catalog/namespace.h"
 #include "catalog/pg_namespace.h"
 #include "commands/extension.h"
 #include "nodes/nodes.h"
@@ -217,13 +218,27 @@ static void
 DuckdbUtilityHook(PlannedStmt *pstmt, const char *query_string, bool read_only_tree, ProcessUtilityContext context,
                   ParamListInfo params, struct QueryEnvironment *query_env, DestReceiver *dest, QueryCompletion *qc) {
 	Node *parsetree = pstmt->utilityStmt;
-	if (pgduckdb::IsExtensionRegistered() && IsA(parsetree, CopyStmt)) {
-		uint64 processed;
-		if (DuckdbCopy(pstmt, query_string, query_env, &processed)) {
-			if (qc) {
-				SetQueryCompletion(qc, CMDTAG_COPY, processed);
+	if (pgduckdb::IsExtensionRegistered()) {
+		if (IsA(parsetree, AlterTableStmt)) {
+			AlterTableStmt *stmt = (AlterTableStmt *)pstmt->utilityStmt;
+			if (IsColumnstoreTable(RangeVarGetRelid(stmt->relation, AccessShareLock, false /*missing_ok*/))) {
+				elog(ERROR, "ALTER TABLE on columnstore table is not supported");
 			}
-			return;
+			ListCell *lcmd;
+			foreach (lcmd, stmt->cmds) {
+				AlterTableCmd *cmd = lfirst_node(AlterTableCmd, lcmd);
+				if (cmd->subtype == AT_SetAccessMethod && strcmp(cmd->name, "columnstore") == 0) {
+					elog(ERROR, "ALTER TABLE changing ACCESS METHOD to columnstore is not supported");
+				}
+			}
+		} else if (IsA(parsetree, CopyStmt)) {
+			uint64 processed;
+			if (DuckdbCopy(pstmt, query_string, query_env, &processed)) {
+				if (qc) {
+					SetQueryCompletion(qc, CMDTAG_COPY, processed);
+				}
+				return;
+			}
 		}
 	}
 

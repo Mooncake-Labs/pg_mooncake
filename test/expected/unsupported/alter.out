@@ -1,0 +1,13 @@
+CREATE TABLE t (a int) USING columnstore;
+ALTER TABLE t SET ACCESS METHOD heap;
+ERROR:  ALTER TABLE on columnstore table is not supported
+ALTER TABLE t SET ACCESS METHOD columnstore;
+ERROR:  ALTER TABLE on columnstore table is not supported
+ALTER TABLE t ADD COLUMN b int;
+ERROR:  ALTER TABLE on columnstore table is not supported
+DROP TABLE t;
+CREATE TABLE t (a int);
+ALTER TABLE t SET ACCESS METHOD heap;
+ALTER TABLE t SET ACCESS METHOD columnstore;
+ERROR:  ALTER TABLE changing ACCESS METHOD to columnstore is not supported
+DROP TABLE t;

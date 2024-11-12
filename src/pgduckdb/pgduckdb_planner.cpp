@@ -107,6 +107,13 @@ CreatePlan(Query *query, bool throw_error) {
 PlannedStmt *
 DuckdbPlanNode(Query *parse, const char *query_string, int cursor_options, ParamListInfo bound_params,
                bool throw_error) {
+	if (cursor_options & CURSOR_OPT_SCROLL) {
+		if (throw_error) {
+			elog(ERROR, "PGDuckDB does not support scrollable cursor");
+		}
+		return nullptr;
+	}
+
 	/* We need to check can we DuckDB create plan */
 	Plan *plan = pgduckdb::DuckDBFunctionGuard<Plan *>(CreatePlan, "CreatePlan", parse, throw_error);
 	Plan *duckdb_plan = (Plan *)castNode(CustomScan, plan);

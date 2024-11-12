@@ -1,0 +1,44 @@
+CREATE TABLE t (a int);
+INSERT INTO t VALUES (1);
+BEGIN;
+DECLARE c SCROLL CURSOR FOR SELECT a FROM t;
+FETCH NEXT FROM c;
+ a 
+---
+ 1
+(1 row)
+
+FETCH NEXT FROM c;
+ a 
+---
+(0 rows)
+
+FETCH PRIOR FROM c;
+ a 
+---
+ 1
+(1 row)
+
+COMMIT;
+DROP TABLE t;
+CREATE TABLE t (a int) USING columnstore;
+INSERT INTO t VALUES (1);
+BEGIN;
+DECLARE c SCROLL CURSOR FOR SELECT a FROM t;
+ERROR:  PGDuckDB does not support scrollable cursor
+ABORT;
+BEGIN;
+DECLARE c CURSOR FOR SELECT a FROM t;
+FETCH NEXT FROM c;
+ a 
+---
+ 1
+(1 row)
+
+FETCH NEXT FROM c;
+ a 
+---
+(0 rows)
+
+COMMIT;
+DROP TABLE t;

@@ -173,6 +173,11 @@ IsAllowedStatement(Query *query, bool throw_error = false) {
 	// 	return false;
 	// }
 
+	if (query->returningList) {
+		elog(elevel, "RETURNING clause is not supported yet");
+		return false;
+	}
+
 	if (query->commandType == CMD_UPDATE && query->hasSubLinks) {
 		ListCell *l;
 		foreach (l, query->targetList) {

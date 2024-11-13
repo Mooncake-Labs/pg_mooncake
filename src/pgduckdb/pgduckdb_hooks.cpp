@@ -239,6 +239,11 @@ DuckdbUtilityHook(PlannedStmt *pstmt, const char *query_string, bool read_only_t
 				}
 				return;
 			}
+		} else if (IsA(parsetree, CreateTableAsStmt)) {
+			CreateTableAsStmt *stmt = (CreateTableAsStmt *)pstmt->utilityStmt;
+			if (stmt->into->accessMethod && strcmp(stmt->into->accessMethod, "columnstore") == 0) {
+				elog(ERROR, "CREATE TABLE AS USING columnstore is not supported");
+			}
 		}
 	}
 

@@ -77,8 +77,6 @@ SELECT mooncake.create_secret('<name>', 'S3', '<key_id>', '<secret>', '{"REGION"
 SELECT mooncake.create_secret('<name>', 'S3', '<key_id>', '<secret>', '{"ENDPOINT":"<ACCOUNT_ID>.r2.cloudflarestorage.com/"}');
 
 SET mooncake.default_bucket = 's3://<bucket>';
-
-SET mooncake.enable_local_cache = false; -- (if you are using Neon)
 ```
 
 ### 2. Creating columnstore tables

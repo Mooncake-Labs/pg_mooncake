@@ -6708,6 +6708,9 @@ get_insert_query_def(Query *query, deparse_context *context,
 		if (tle->resjunk)
 			continue;			/* ignore junk entries */
 
+		if (IsA(tle->expr, NextValueExpr))
+			continue;
+
 		appendStringInfoString(buf, sep);
 		sep = ", ";
 

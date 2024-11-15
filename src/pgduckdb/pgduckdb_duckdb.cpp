@@ -4,10 +4,12 @@
 #include "duckdb/main/client_data.hpp"
 #include "duckdb/catalog/catalog_search_path.hpp"
 #include "duckdb/main/extension_install_info.hpp"
+#include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 
 extern "C" {
 #include "postgres.h"
 #include "catalog/namespace.h"
+#include "commands/sequence.h"
 #include "utils/lsyscache.h"
 #include "utils/fmgrprotos.h"
 }
@@ -20,6 +22,31 @@ extern "C" {
 #include "pgduckdb/scan/postgres_seq_scan.hpp"
 #include "pgduckdb/pgduckdb_utils.hpp"
 #include "pgduckdb/catalog/pgduckdb_storage.hpp"
+
+namespace duckdb {
+
+static void
+PgNextval(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &input = args.data[0];
+	D_ASSERT(input.GetVectorType() == VectorType::CONSTANT_VECTOR);
+	Oid seqid = *ConstantVector::GetData<Oid>(input);
+
+	result.SetVectorType(VectorType::FLAT_VECTOR);
+	auto result_data = FlatVector::GetData<int64_t>(result);
+	for (idx_t i = 0; i < args.size(); i++) {
+		result_data[i] = pgduckdb::PostgresFunctionGuard<int64_t>(nextval_internal, seqid, false /*check_permissions*/);
+	}
+}
+
+static void
+LoadPgNextval(ClientContext &context) {
+	ScalarFunction pg_nextval("pg_nextval", {LogicalType::UINTEGER}, LogicalType::BIGINT, PgNextval);
+	pg_nextval.stability = FunctionStability::VOLATILE;
+	CreateScalarFunctionInfo info(std::move(pg_nextval));
+	context.RegisterFunction(info);
+}
+
+} // namespace duckdb
 
 namespace pgduckdb {
 
@@ -104,6 +131,7 @@ DuckDBManager::Initialize() {
 		                             "SET motherduck_background_catalog_refresh_inactivity_timeout='99 years'");
 	}
 
+	duckdb::LoadPgNextval(context);
 	LoadFunctions(context);
 	// LoadExtensions(context);
 }

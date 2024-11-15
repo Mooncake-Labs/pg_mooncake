@@ -1,0 +1,27 @@
+-- UNDONE: https://github.com/duckdb/pg_duckdb/issues/445
+
+CREATE TABLE t (a int DEFAULT NULL, b int) USING columnstore;
+INSERT INTO t VALUES (DEFAULT, 1), (DEFAULT, 2);
+INSERT INTO t VALUES (3, 3), (4, 4);
+INSERT INTO t SELECT 5, 5;
+SELECT * FROM t;
+DROP TABLE t;
+
+CREATE TABLE t (a int DEFAULT 3, b int) USING columnstore;
+INSERT INTO t VALUES (DEFAULT, 1), (DEFAULT, 2);
+INSERT INTO t VALUES (3, 3), (4, 4);
+INSERT INTO t SELECT 5, 5;
+SELECT * FROM t;
+DROP TABLE t;
+
+CREATE TABLE t (a int DEFAULT 1 + 2, b int) USING columnstore;
+INSERT INTO t (b) VALUES (1), (2);
+DROP TABLE t;
+
+CREATE TABLE t (a int GENERATED ALWAYS AS IDENTITY, b int) USING columnstore;
+INSERT INTO t (b) VALUES (1), (2);
+INSERT INTO t (b) SELECT 3;
+SELECT * FROM t;
+DROP TABLE t;
+
+CREATE TABLE t (a int GENERATED ALWAYS AS (b + 1) STORED, b int) USING columnstore;

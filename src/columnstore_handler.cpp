@@ -137,6 +137,9 @@ void columnstore_relation_set_new_filenode(Relation rel, const RelFileNode *newr
             if (duck_type.id() == duckdb::LogicalTypeId::USER) {
                 elog(ERROR, "column \"%s\" has unsupported type", NameStr(attr->attname));
             }
+            if (attr->attgenerated) {
+                elog(ERROR, "unsupported generated column \"%s\"", NameStr(attr->attname));
+            }
         }
 
         duckdb::Columnstore::CreateTable(rel->rd_id);

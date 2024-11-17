@@ -192,6 +192,11 @@ IsAllowedStatement(Query *query, bool throw_error = false) {
 		}
 	}
 
+	if (query->commandType == CMD_MERGE) {
+		elog(elevel, "DuckDB does not support MERGE INTO statement");
+		return false;
+	}
+
 	/* Anything else is hopefully fine... */
 	return true;
 }

@@ -78,7 +78,7 @@ BEGIN
                 ');',
             jsonb_build_object('AWS_ACCESS_KEY_ID', key_id, 'AWS_SECRET_ACCESS_KEY', secret) ||
                 jsonb_strip_nulls(jsonb_build_object(
-                    'ALLOW_HTTP', NOT (extra_params->>'USE_SSL')::boolean,
+                    'ALLOW_HTTP', (NOT (extra_params->>'USE_SSL')::boolean)::varchar,
                     'AWS_REGION', extra_params->>'REGION',
                     'AWS_ENDPOINT', delta_endpoint
                 ))

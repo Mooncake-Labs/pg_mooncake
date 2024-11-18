@@ -21,10 +21,7 @@ git submodule update --init --recursive
 make debug
 make install
 ```
-Then, connect to PostgreSQL using psql:
-```bash
-psql -U postgres -d mooncake
-```
+Then, connect to Postgres using `psql`.
 Once connected to psql, you can enable the extension and begin development:
 ```sql
 CREATE EXTENSION pg_mooncake;
@@ -42,7 +39,7 @@ This pid (1219 in this case) indicates the process that you should attach the de
 3. Set Breakpoints and Debug: With the debugger attached, you can set breakpoints within the code. This allows you to step through the code execution, inspect variables, and fully debug the Postgres instance running in your container.
 
 ## Testing
-* Tests use standard regression tests for Postgres extensions. To run tests, run make installcheck.
+* Tests use standard regression tests for Postgres extensions. To run tests, run `make installcheck`.
 
 ## Formatting
 * Ensure to run `make format` to format the code.

@@ -1,7 +1,7 @@
-CREATE TABLE s (a INT) USING columnstore;
+CREATE TABLE s (a int) USING columnstore;
 INSERT INTO s VALUES (1), (2), (3);
 
-CREATE TABLE t (a INT, b INT) USING columnstore;
+CREATE TABLE t (a int, b int) USING columnstore;
 INSERT INTO t VALUES (0), (1);
 
 MERGE INTO t USING s ON t.a = s.a

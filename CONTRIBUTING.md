@@ -17,10 +17,16 @@ This will create an isolated Workspace in vscode, including all tools required t
 
 Now you can compile and install the extension
 ```bash
+git submodule update --init --recursive
 make debug
 make install
 ```
-then connect to Postgres using `psql`.
+Then, connect to Postgres using `psql`.
+
+Once connected, you can enable the extension and begin development:
+```sql
+CREATE EXTENSION pg_mooncake;
+```
 
 ### Debugging
 1. Identify the Process: Take note of the pid that appears in your psql prompt. For example:
@@ -33,5 +39,8 @@ This pid (1219 in this case) indicates the process that you should attach the de
 
 3. Set Breakpoints and Debug: With the debugger attached, you can set breakpoints within the code. This allows you to step through the code execution, inspect variables, and fully debug the Postgres instance running in your container.
 
+## Testing
+Tests use standard regression tests for Postgres extensions. To run tests, run `make installcheck`.
+
 ## Formatting
-* Ensure to run `make format` to format the code.
+Ensure to run `make format` to format the code.

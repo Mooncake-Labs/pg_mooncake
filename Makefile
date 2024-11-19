@@ -43,6 +43,7 @@ uninstall:
 
 duckdb: | .BUILD
 	BUILD_EXTENSIONS="httpfs;json" CMAKE_VARS_BUILD="-DBUILD_SHELL=0 -DBUILD_UNITTESTS=0" DISABLE_SANITIZER=1 \
+	CMAKE_BUILD_PARALLEL_LEVEL=$(or $(patsubst -j%,%,$(filter -j%,$(MAKEFLAGS))),1) \
 	$(MAKE) -C third_party/duckdb $(BUILD_TYPE)
 ifeq ($(BUILD_TYPE), debug)
 	gdb-add-index third_party/duckdb/build/debug/src/libduckdb.so

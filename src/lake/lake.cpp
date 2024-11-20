@@ -2,7 +2,11 @@
 #include "duckdb/common/unordered_set.hpp"
 #include "rust_extensions/delta.hpp"
 
+#include <utility>
+
 namespace duckdb {
+
+namespace {
 
 class LakeWriter {
 public:
@@ -27,11 +31,12 @@ public:
             cached_table_infos[oid] = {path, metadata.SecretsSearchDeltaOptions(path)};
         }
         auto &files = xact_state[oid];
-        if (files.count(file_name) == 0) {
-            files[file_name] = {file_size, is_add_file};
+        auto files_iter = files.find(file_name);
+        if (files_iter == files.end()) {
+            files.emplace(std::move(file_name), FileInfo{file_size, is_add_file});
         } else {
-            D_ASSERT(files[file_name].is_add_file && !is_add_file);
-            files.erase(file_name);
+            D_ASSERT(files_iter->second.is_add_file && !is_add_file);
+            files.erase(files_iter);
         }
     }
 
@@ -45,12 +50,15 @@ public:
         }
         for (auto &[oid, files] : xact_state) {
             vector<string> file_names;
+            file_names.reserve(files.size());
             vector<int64_t> file_sizes;
+            file_sizes.reserve(files.size());
             vector<int8_t> is_add_files;
-            for (auto &[file_name, file_info] : files) {
-                file_names.push_back(file_name);
-                file_sizes.push_back(file_info.file_size);
-                is_add_files.push_back(file_info.is_add_file);
+            is_add_files.reserve(files.size());
+            for (const auto &[file_name, file_info] : files) {
+                file_names.emplace_back(file_name);
+                file_sizes.emplace_back(file_info.file_size);
+                is_add_files.emplace_back(file_info.is_add_file);
             }
             if (file_names.size()) {
                 auto info = cached_table_infos[oid];
@@ -75,6 +83,8 @@ private:
 };
 
 LakeWriter lake_writer;
+
+} // namespace
 
 void LakeCreateTable(Oid oid, const string &path) {
     lake_writer.CreateTable(oid, path);

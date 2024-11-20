@@ -20,19 +20,35 @@ extern "C" {
 
 namespace duckdb {
 
+namespace {
+
+constexpr int x_tables_natts = 2;
+constexpr int x_data_files_natts = 2;
+constexpr int x_secrets_natts = 5;
+
 Oid Mooncake() {
     return get_namespace_oid("mooncake", false /*missing_ok*/);
 }
-
-const int x_tables_natts = 2;
-
 Oid Tables() {
     return get_relname_relid("tables", Mooncake());
 }
-
 Oid TablesOid() {
     return get_relname_relid("tables_oid", Mooncake());
 }
+Oid DataFiles() {
+    return get_relname_relid("data_files", Mooncake());
+}
+Oid DataFilesOid() {
+    return get_relname_relid("data_files_oid", Mooncake());
+}
+Oid DataFilesFileName() {
+    return get_relname_relid("data_files_file_name", Mooncake());
+}
+Oid Secrets() {
+    return get_relname_relid("secrets", Mooncake());
+}
+
+} // namespace
 
 void ColumnstoreMetadata::TablesInsert(Oid oid, const string &path) {
     ::Relation table = table_open(Tables(), RowExclusiveLock);
@@ -91,7 +107,7 @@ string ColumnstoreMetadata::GetTablePath(Oid oid) {
     string path =
         StringUtil::Format("mooncake_%s_%s_%d/", get_database_name(MyDatabaseId), RelationGetRelationName(table), oid);
     table_close(table, AccessShareLock);
-    if (strlen(mooncake_default_bucket)) {
+    if (mooncake_default_bucket != nullptr && mooncake_default_bucket[0] != '\0') {
         path = StringUtil::Format("%s/%s", mooncake_default_bucket, path);
     } else if (mooncake_allow_local_tables) {
         path = StringUtil::Format("%s/mooncake_local_tables/%s", DataDir, path);
@@ -109,24 +125,10 @@ void ColumnstoreMetadata::GetTableMetadata(Oid oid, string &table_name /*out*/, 
     table_name = RelationGetRelationName(table);
     for (int i = 0; i < desc->natts; i++) {
         Form_pg_attribute attr = &desc->attrs[i];
-        column_names.push_back(NameStr(attr->attname));
-        column_types.push_back(format_type_be(attr->atttypid));
+        column_names.emplace_back(NameStr(attr->attname));
+        column_types.emplace_back(format_type_be(attr->atttypid));
     }
     table_close(table, AccessShareLock);
-}
-
-const int x_data_files_natts = 2;
-
-Oid DataFiles() {
-    return get_relname_relid("data_files", Mooncake());
-}
-
-Oid DataFilesOid() {
-    return get_relname_relid("data_files_oid", Mooncake());
-}
-
-Oid DataFilesFileName() {
-    return get_relname_relid("data_files_file_name", Mooncake());
 }
 
 void ColumnstoreMetadata::DataFilesInsert(Oid oid, const string &file_name) {
@@ -191,19 +193,13 @@ vector<string> ColumnstoreMetadata::DataFilesSearch(Oid oid) {
     bool isnull[x_data_files_natts];
     while (HeapTupleIsValid(tuple = systable_getnext_ordered(scan, ForwardScanDirection))) {
         heap_deform_tuple(tuple, desc, values, isnull);
-        file_names.push_back(TextDatumGetCString(values[1]));
+        file_names.emplace_back(TextDatumGetCString(values[1]));
     }
 
     systable_endscan_ordered(scan);
     index_close(index, AccessShareLock);
     table_close(table, AccessShareLock);
     return file_names;
-}
-
-const int x_secrets_natts = 5;
-
-Oid Secrets() {
-    return get_relname_relid("secrets", Mooncake());
 }
 
 vector<string> ColumnstoreMetadata::SecretsGetDuckdbQueries() {

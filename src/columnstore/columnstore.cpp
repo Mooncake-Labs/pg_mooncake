@@ -1,5 +1,5 @@
 #include "columnstore/columnstore.hpp"
-#include "columnstore_metadata.hpp"
+#include "columnstore/columnstore_metadata.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
 #include "lake/lake.hpp"
 #include "pgduckdb/pgduckdb_duckdb.hpp"
@@ -44,7 +44,7 @@ void Columnstore::LoadSecrets(ClientContext &context) {
     }
     context.transaction.Commit();
     auto queries = metadata.SecretsGetDuckdbQueries();
-    for (auto &query : queries) {
+    for (const auto &query : queries) {
         pgduckdb::DuckDBQueryOrThrow(context, query);
     }
 }

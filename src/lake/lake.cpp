@@ -82,8 +82,6 @@ private:
     unordered_map<Oid, unordered_map<string, FileInfo>> xact_state;
 };
 
-// TODO(mooncake): Make `lake_writer` thread-safe. For the current implementation, concurrent table creation is not
-// guarded by mutex.
 LakeWriter lake_writer;
 
 } // namespace

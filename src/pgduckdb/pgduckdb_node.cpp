@@ -250,13 +250,13 @@ extern "C" void
 DuckdbInitNode() {
 	/* setup scan methods */
 	memset(&duckdb_scan_scan_methods, 0, sizeof(duckdb_scan_scan_methods));
-	duckdb_scan_scan_methods.CustomName = "DuckDBScan";
+	duckdb_scan_scan_methods.CustomName = "MooncakeDuckDBScan";
 	duckdb_scan_scan_methods.CreateCustomScanState = Duckdb_CreateCustomScanState;
 	RegisterCustomScanMethods(&duckdb_scan_scan_methods);
 
 	/* setup exec methods */
 	memset(&duckdb_scan_exec_methods, 0, sizeof(duckdb_scan_exec_methods));
-	duckdb_scan_exec_methods.CustomName = "DuckDBScan";
+	duckdb_scan_exec_methods.CustomName = "MooncakeDuckDBScan";
 
 	duckdb_scan_exec_methods.BeginCustomScan = Duckdb_BeginCustomScan;
 	duckdb_scan_exec_methods.ExecCustomScan = Duckdb_ExecCustomScan;

@@ -50,6 +50,7 @@ PostgresTable::OpenRelation(Oid relid) {
 void
 PostgresTable::SetTableInfo(CreateTableInfo &info, ::Relation rel) {
 	auto desc = RelationGetDescr(rel);
+	int defval_index = 0;
 
 	for (int i = 0; i < desc->natts; ++i) {
 		Form_pg_attribute attr = &desc->attrs[i];
@@ -57,7 +58,12 @@ PostgresTable::SetTableInfo(CreateTableInfo &info, ::Relation rel) {
 		auto duck_type = pgduckdb::ConvertPostgresToDuckColumnType(attr);
 		ColumnDefinition column(col_name, duck_type);
 		if (attr->atthasdef) {
-			Node *node = TupleDescGetDefault(desc, i + 1);
+			Assert(desc->constr);
+			Assert(desc->constr->defval);
+			Assert(defval_index < desc->constr->num_defval);
+			AttrDefault &defval = desc->constr->defval[defval_index++];
+			Assert(defval.adnum == i + 1);
+			Node *node = static_cast<Node *>(stringToNode(defval.adbin));
 			if (!IsA(node, Const)) {
 				elog(ERROR, "column \"%s\" has unsupported default value ", NameStr(attr->attname));
 			}
@@ -69,7 +75,11 @@ PostgresTable::SetTableInfo(CreateTableInfo &info, ::Relation rel) {
 				    pgduckdb::ConvertPostgresParameterToDuckValue(val->constvalue, val->consttype)));
 			}
 		} else if (attr->attidentity) {
+#if PG_VERSION_NUM >= 170000
 			Oid seqid = getIdentitySequence(rel, i + 1, false /*missing_ok*/);
+#else
+			Oid seqid = getIdentitySequence(RelationGetRelid(rel), i + 1, false /*missing_ok*/);
+#endif
 			vector<unique_ptr<ParsedExpression>> children;
 			children.push_back(make_uniq<ConstantExpression>(Value::UINTEGER(seqid)));
 			column.SetDefaultValue(make_uniq<FunctionExpression>("pg_nextval", std::move(children)));

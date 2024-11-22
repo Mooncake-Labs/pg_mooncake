@@ -40,7 +40,7 @@ docker run -it --rm --link mooncake-demo:postgres mooncakelabs/pg_mooncake psql 
 You can compile and install **pg_mooncake** extension to add it to your PostgreSQL instance. PostgreSQL versions 15, 16, and 17 are currently supported.
 ```bash
 git submodule update --init --recursive
-make release
+make release -j`nproc`
 make install
 ```
 

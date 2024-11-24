@@ -30,14 +30,23 @@ CREATE EXTENSION pg_mooncake;
 
 ### Debugging
 1. Identify the Process: Take note of the pid that appears in your psql prompt. For example:
-```
+```sql
 mooncake (pid: 1219) =#
 ```
 This pid (1219 in this case) indicates the process that you should attach the debugger to.
 
+If PID is not displayed on the `psql` screen (depending on `psql` version), you could check via
+```sql
+SELECT * FROM pg_backend_pid();
+```
+
 2. Start Debugging: Press F5 to start debugging. When prompted, you'll need to attach the debugger to the appropriate Postgres process.
 
 3. Set Breakpoints and Debug: With the debugger attached, you can set breakpoints within the code. This allows you to step through the code execution, inspect variables, and fully debug the Postgres instance running in your container.
+
+#### Tips on debug build and gdb
+- `binutils` with version 2.34/2.35 is broken, please make sure you're not dealing with these two versions
+  + [issue report](https://sourceware.org/bugzilla/show_bug.cgi?id=26548)
 
 ## Testing
 Tests use standard regression tests for Postgres extensions. To run tests, run `make installcheck`.

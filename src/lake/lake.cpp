@@ -60,7 +60,7 @@ public:
                 file_sizes.emplace_back(file_info.file_size);
                 is_add_files.emplace_back(file_info.is_add_file);
             }
-            if (file_names.size()) {
+            if (!file_names.empty()) {
                 auto info = cached_table_infos[oid];
                 DeltaModifyFiles(info.path, info.delta_options, file_names, file_sizes, is_add_files);
             }

@@ -120,9 +120,16 @@ string ColumnstoreMetadata::GetTablePath(Oid oid) {
 
 void ColumnstoreMetadata::GetTableMetadata(Oid oid, string &table_name /*out*/, vector<string> &column_names /*out*/,
                                            vector<string> &column_types /*out*/) {
+    // Clear out params before emplace.
+    column_names.clear();
+    column_types.clear();
+
     ::Relation table = table_open(oid, AccessShareLock);
     TupleDesc desc = RelationGetDescr(table);
     table_name = RelationGetRelationName(table);
+
+    column_names.reserve(desc->natts);
+    column_types.reserve(desc->natts);
     for (int i = 0; i < desc->natts; i++) {
         Form_pg_attribute attr = &desc->attrs[i];
         column_names.emplace_back(NameStr(attr->attname));

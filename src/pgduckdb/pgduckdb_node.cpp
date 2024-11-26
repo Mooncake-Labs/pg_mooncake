@@ -100,7 +100,6 @@ ExecuteQuery(DuckdbScanState *state) {
 	auto pg_params = state->estate->es_param_list_info;
 	const auto num_params = pg_params ? pg_params->numParams : 0;
 	duckdb::vector<duckdb::Value> duckdb_params;
-	duckdb_params.reserve(num_params);
 	for (int i = 0; i < num_params; i++) {
 		ParamExternData *pg_param;
 		ParamExternData tmp_workspace;
@@ -113,9 +112,9 @@ ExecuteQuery(DuckdbScanState *state) {
 		}
 
 		if (pg_param->isnull) {
-			duckdb_params.emplace_back(duckdb::Value());
+			duckdb_params.push_back(duckdb::Value());
 		} else if (OidIsValid(pg_param->ptype)) {
-			duckdb_params.emplace_back(pgduckdb::ConvertPostgresParameterToDuckValue(pg_param->value, pg_param->ptype));
+			duckdb_params.push_back(pgduckdb::ConvertPostgresParameterToDuckValue(pg_param->value, pg_param->ptype));
 		} else {
 			std::ostringstream oss;
 			oss << "parameter '" << i << "' has an invalid type (" << pg_param->ptype << ") during query execution";

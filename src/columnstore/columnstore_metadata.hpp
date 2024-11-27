@@ -11,7 +11,7 @@ using Snapshot = SnapshotData *;
 
 class ColumnstoreMetadata {
 public:
-    ColumnstoreMetadata(Snapshot snapshot) : snapshot(snapshot) {}
+    explicit ColumnstoreMetadata(Snapshot snapshot) : snapshot(snapshot) {}
 
 public:
     void TablesInsert(Oid oid, const string &path);

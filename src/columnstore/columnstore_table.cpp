@@ -146,7 +146,7 @@ ColumnstoreTable::ColumnstoreTable(Catalog &catalog, SchemaCatalogEntry &schema,
                                    Snapshot snapshot)
     : TableCatalogEntry(catalog, schema, info), oid(oid), metadata(make_uniq<ColumnstoreMetadata>(snapshot)) {}
 
-ColumnstoreTable::~ColumnstoreTable() {}
+ColumnstoreTable::~ColumnstoreTable() = default;
 
 // HACK: force update_is_del_and_insert
 TableStorageInfo ColumnstoreTable::GetStorageInfo(ClientContext &context) {

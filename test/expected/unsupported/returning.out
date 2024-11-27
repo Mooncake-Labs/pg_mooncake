@@ -1,9 +1,9 @@
 CREATE TABLE t (a int) USING columnstore;
 INSERT INTO t VALUES (1), (2), (3);
-INSERT INTO t VALUES (123) RETURNING a + 1;
-ERROR:  RETURNING clause is not supported yet
+-- Test RETURNING clause with UPDATE.
 UPDATE t SET a = -a RETURNING a + 1;
-ERROR:  RETURNING clause is not supported yet
+ERROR:  RETURNING clause only supports INSERT
+-- Test RETURNING clause with DELETE.
 DELETE FROM t RETURNING a + 1;
-ERROR:  RETURNING clause is not supported yet
+ERROR:  RETURNING clause only supports INSERT
 DROP TABLE t;

@@ -44,3 +44,21 @@ SELECT * FROM t;
 (3 rows)
 
 DROP TABLE t;
+-- Test RETURNING clause for INSERT.
+CREATE TABLE t (a int) USING columnstore;
+INSERT INTO t VALUES (123) RETURNING a + 1;
+ ?column? 
+----------
+      124
+(1 row)
+
+DROP TABLE t;
+CREATE TABLE t (a int, b int DEFAULT 3) USING columnstore;
+INSERT INTO t VALUES (1, DEFAULT), (2, DEFAULT) RETURNING *;
+ a | b 
+---+---
+ 1 | 3
+ 2 | 3
+(2 rows)
+
+DROP TABLE t;

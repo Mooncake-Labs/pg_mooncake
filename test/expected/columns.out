@@ -44,3 +44,19 @@ SELECT * FROM t;
 (3 rows)
 
 DROP TABLE t;
+-- Test RETURNING clause for UPDATE.
+CREATE TABLE t (a int) USING columnstore;
+INSERT INTO t VALUES (123);
+UPDATE t SET a = 234 WHERE a = 123 RETURNING (a + 10);
+ ?column? 
+----------
+      244
+(1 row)
+
+SELECT * FROM t;
+  a  
+-----
+ 234
+(1 row)
+
+DROP TABLE t;

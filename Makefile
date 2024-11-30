@@ -24,7 +24,7 @@ release:
 debug:
 	@$(MAKE) BUILD_TYPE=debug all
 
-clean: clean-delta
+clean: clean-delta clean-duckdb
 	rm -rf build
 
 format: format-delta

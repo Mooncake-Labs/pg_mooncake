@@ -9,6 +9,38 @@ extern "C" {
 #include "utils/syscache.h"
 }
 
+namespace {
+
+// Get precision for postgres "numerics" type, copied from pg_duckdb.
+int numeric_typmod_precision(int32 typmod) {
+    return ((typmod - VARHDRSZ) >> 16) & 0xffff;
+}
+// Get scale for postgres "numerics" type, copied from pg_duckdb.
+int numeric_typmod_scale(int32 typmod) {
+    return (((typmod - VARHDRSZ) & 0x7ff) ^ 1024) - 1024;
+}
+
+// If column is of type "numeric", check whether it's acceptable for mooncake;
+// If not, exception is thrown via `elog`.
+void ValidateColumnNumericType(Form_pg_attribute &attribute) {
+    auto &type = attribute->atttypid;
+    if (type != NUMERICOID) {
+        return;
+    }
+    auto &typmod = attribute->atttypmod;
+    auto precision = numeric_typmod_precision(typmod);
+    auto scale = numeric_typmod_scale(typmod);
+    // duckdb's "numeric" type's max supported precision is 38.
+    if (typmod == -1 || precision < 0 || scale < 0 || precision > 38) {
+        elog(ERROR,
+             "Unsupported type when creating column: type precision %d with scale %d is not supported by duckdb, which "
+             "only allows maximum precision 38",
+             precision, scale);
+    }
+}
+
+} // namespace
+
 const TupleTableSlotOps *columnstore_slot_callbacks(Relation rel) {
     elog(ERROR, "columnstore_slot_callbacks not implemented");
 }
@@ -129,24 +161,29 @@ void columnstore_relation_set_new_filenode(Relation rel, const RelFileNode *newr
                                            TransactionId *freezeXid, MultiXactId *minmulti) {
 #endif
     HeapTuple tp = SearchSysCache1(RELOID, ObjectIdGetDatum(rel->rd_id));
-    if (!HeapTupleIsValid(tp)) {
-        TupleDesc desc = RelationGetDescr(rel);
-        for (int i = 0; i < desc->natts; i++) {
-            Form_pg_attribute attr = &desc->attrs[i];
-            auto duck_type = pgduckdb::ConvertPostgresToDuckColumnType(attr);
-            if (duck_type.id() == duckdb::LogicalTypeId::USER) {
-                elog(ERROR, "column \"%s\" has unsupported type", NameStr(attr->attname));
-            }
-            if (attr->attgenerated) {
-                elog(ERROR, "unsupported generated column \"%s\"", NameStr(attr->attname));
-            }
-        }
-
-        duckdb::Columnstore::CreateTable(rel->rd_id);
-    } else {
+    if (HeapTupleIsValid(tp)) {
         ReleaseSysCache(tp);
         duckdb::Columnstore::TruncateTable(rel->rd_id);
     }
+
+    TupleDesc desc = RelationGetDescr(rel);
+    for (int i = 0; i < desc->natts; i++) {
+        // Check whether column type is acceptable.
+        Form_pg_attribute attr = &desc->attrs[i];
+        auto duck_type = pgduckdb::ConvertPostgresToDuckColumnType(attr);
+        if (duck_type.id() == duckdb::LogicalTypeId::USER) {
+            const auto type_info = duck_type.ToString();
+            elog(ERROR, "column \"%s\" has unsupported user type: %s", NameStr(attr->attname), type_info.data());
+        }
+        if (attr->attgenerated) {
+            elog(ERROR, "unsupported generated column \"%s\"", NameStr(attr->attname));
+        }
+
+        // Check numeric types, which have different support for duckdb and postgres.
+        ValidateTableCreationColumnType(attr);
+    }
+
+    duckdb::Columnstore::CreateTable(rel->rd_id);
 }
 
 void columnstore_relation_nontransactional_truncate(Relation rel) {

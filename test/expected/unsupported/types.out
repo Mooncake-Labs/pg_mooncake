@@ -3,3 +3,7 @@ ERROR:  column "a" has unsupported type
 CREATE TYPE point AS (x int, y int);
 CREATE TABLE t (a point) USING columnstore;
 ERROR:  column "a" has unsupported type
+CREATE TABLE mooncake_numeric_tbl (val numeric(40, 5)) USING columnstore;
+ERROR:  Unsupported type when creating column: type precision 40 with scale 5 is not supported by duckdb, which only allows maximum precision 38
+CREATE TABLE mooncake_numeric_tbl (val numeric) USING columnstore;
+ERROR:  Unsupported type when creating column: type precision 65535 with scale -5 is not supported by duckdb, which only allows maximum precision 38

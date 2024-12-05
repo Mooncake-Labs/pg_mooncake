@@ -164,6 +164,7 @@ void columnstore_relation_set_new_filenode(Relation rel, const RelFileNode *newr
     if (HeapTupleIsValid(tp)) {
         ReleaseSysCache(tp);
         duckdb::Columnstore::TruncateTable(rel->rd_id);
+        return;
     }
 
     TupleDesc desc = RelationGetDescr(rel);
@@ -172,15 +173,14 @@ void columnstore_relation_set_new_filenode(Relation rel, const RelFileNode *newr
         Form_pg_attribute attr = &desc->attrs[i];
         auto duck_type = pgduckdb::ConvertPostgresToDuckColumnType(attr);
         if (duck_type.id() == duckdb::LogicalTypeId::USER) {
-            const auto type_info = duck_type.ToString();
-            elog(ERROR, "column \"%s\" has unsupported user type: %s", NameStr(attr->attname), type_info.data());
+            elog(ERROR, "column \"%s\" has unsupported user type", NameStr(attr->attname));
         }
         if (attr->attgenerated) {
             elog(ERROR, "unsupported generated column \"%s\"", NameStr(attr->attname));
         }
 
         // Check numeric types, which have different support for duckdb and postgres.
-        ValidateTableCreationColumnType(attr);
+        ValidateColumnNumericType(attr);
     }
 
     duckdb::Columnstore::CreateTable(rel->rd_id);

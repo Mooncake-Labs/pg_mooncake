@@ -59,7 +59,7 @@ BEGIN
             RAISE EXCEPTION 'Invalid ENDPOINT format: %', extra_params->>'ENDPOINT'
             USING HINT = 'USE domain name excluding http prefix';
         END IF;
-        IF extra_params->>'ENDPOINT' is NOT NULL THEN
+        IF extra_params->>'ENDPOINT' is NOT NULL and NOT(extra_params->>'ENDPOINT' LIKE 's3express%') THEN
             IF (extra_params->>'USE_SSL')::boolean = false THEN
                 delta_endpoint = CONCAT('http://', extra_params->>'ENDPOINT');
             ELSE
@@ -80,7 +80,8 @@ BEGIN
                 jsonb_strip_nulls(jsonb_build_object(
                     'ALLOW_HTTP', (NOT (extra_params->>'USE_SSL')::boolean)::varchar,
                     'AWS_REGION', extra_params->>'REGION',
-                    'AWS_ENDPOINT', delta_endpoint
+                    'AWS_ENDPOINT', delta_endpoint,
+                    'AWS_S3_EXPRESS', (NULLIF(extra_params->>'ENDPOINT' LIKE 's3express%', false))::varchar
                 ))
         );
         PERFORM nextval('mooncake.secrets_table_seq');

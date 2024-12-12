@@ -1,5 +1,3 @@
--- UNDONE: https://github.com/duckdb/pg_duckdb/issues/445
-
 CREATE TABLE t (a int DEFAULT NULL, b int) USING columnstore;
 INSERT INTO t VALUES (DEFAULT, 1), (DEFAULT, 2);
 INSERT INTO t VALUES (3, 3), (4, 4);

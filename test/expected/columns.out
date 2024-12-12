@@ -1,4 +1,3 @@
--- UNDONE: https://github.com/duckdb/pg_duckdb/issues/445
 CREATE TABLE t (a int DEFAULT NULL, b int) USING columnstore;
 INSERT INTO t VALUES (DEFAULT, 1), (DEFAULT, 2);
 INSERT INTO t VALUES (3, 3), (4, 4);
@@ -31,7 +30,7 @@ SELECT * FROM t;
 DROP TABLE t;
 CREATE TABLE t (a int DEFAULT 1 + 2, b int) USING columnstore;
 INSERT INTO t (b) VALUES (1), (2);
-ERROR:  column "a" has unsupported default value 
+ERROR:  (PGDuckDB/CreatePlan) Prepared query returned an error: 'Not implemented Error: column "a" has unsupported default value 
 DROP TABLE t;
 CREATE TABLE t (a int GENERATED ALWAYS AS IDENTITY, b int) USING columnstore;
 INSERT INTO t (b) VALUES (1), (2);

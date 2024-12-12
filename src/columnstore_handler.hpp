@@ -1,10 +1,6 @@
 #pragma once
 
-extern "C" {
-#include "postgres.h"
-
-#include "utils/relcache.h"
-}
+#include "pgduckdb/pg/declarations.hpp"
 
 bool IsColumnstoreTable(Relation rel);
 

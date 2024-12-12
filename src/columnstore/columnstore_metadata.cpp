@@ -1,6 +1,6 @@
 #include "columnstore/columnstore_metadata.hpp"
 #include "pgduckdb/pgduckdb_utils.hpp"
-#include "pgmooncake.hpp"
+#include "pgmooncake_guc.hpp"
 
 extern "C" {
 #include "postgres.h"
@@ -56,7 +56,7 @@ void ColumnstoreMetadata::TablesInsert(Oid oid, const string &path) {
     Datum values[x_tables_natts] = {oid, CStringGetTextDatum(path.c_str())};
     bool nulls[x_tables_natts] = {false, false};
     HeapTuple tuple = heap_form_tuple(desc, values, nulls);
-    pgduckdb::PostgresFunctionGuard(CatalogTupleInsert, table, tuple);
+    PostgresFunctionGuard(CatalogTupleInsert, table, tuple);
     CommandCounterIncrement();
     table_close(table, RowExclusiveLock);
 }
@@ -70,7 +70,7 @@ void ColumnstoreMetadata::TablesDelete(Oid oid) {
 
     HeapTuple tuple;
     if (HeapTupleIsValid(tuple = systable_getnext_ordered(scan, ForwardScanDirection))) {
-        pgduckdb::PostgresFunctionGuard(CatalogTupleDelete, table, &tuple->t_self);
+        PostgresFunctionGuard(CatalogTupleDelete, table, &tuple->t_self);
     }
 
     systable_endscan_ordered(scan);
@@ -143,7 +143,7 @@ void ColumnstoreMetadata::DataFilesInsert(Oid oid, const string &file_name) {
     Datum values[x_data_files_natts] = {oid, CStringGetTextDatum(file_name.c_str())};
     bool isnull[x_data_files_natts] = {false, false};
     HeapTuple tuple = heap_form_tuple(desc, values, isnull);
-    pgduckdb::PostgresFunctionGuard(CatalogTupleInsert, table, tuple);
+    PostgresFunctionGuard(CatalogTupleInsert, table, tuple);
     CommandCounterIncrement();
     table_close(table, RowExclusiveLock);
 }
@@ -158,7 +158,7 @@ void ColumnstoreMetadata::DataFilesDelete(const string &file_name) {
 
     HeapTuple tuple;
     if (HeapTupleIsValid(tuple = systable_getnext_ordered(scan, ForwardScanDirection))) {
-        pgduckdb::PostgresFunctionGuard(CatalogTupleDelete, table, &tuple->t_self);
+        PostgresFunctionGuard(CatalogTupleDelete, table, &tuple->t_self);
     }
 
     systable_endscan_ordered(scan);
@@ -176,7 +176,7 @@ void ColumnstoreMetadata::DataFilesDelete(Oid oid) {
 
     HeapTuple tuple;
     while (HeapTupleIsValid(tuple = systable_getnext_ordered(scan, ForwardScanDirection))) {
-        pgduckdb::PostgresFunctionGuard(CatalogTupleDelete, table, &tuple->t_self);
+        PostgresFunctionGuard(CatalogTupleDelete, table, &tuple->t_self);
     }
 
     systable_endscan_ordered(scan);

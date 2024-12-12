@@ -22,6 +22,7 @@ extern "C" {
 #include "pgduckdb/vendor/pg_ruleutils.h"
 }
 
+#include "columnstore_handler.hpp"
 #include "pgduckdb/pgduckdb.h"
 #include "pgduckdb/pgduckdb_table_am.hpp"
 #include "pgduckdb/pgduckdb_duckdb.hpp"
@@ -44,7 +45,11 @@ pgduckdb_function_name(Oid function_oid) {
  * are not escaped yet.
  */
 List *
-pgduckdb_db_and_schema(const char *postgres_schema_name, bool is_duckdb_table) {
+pgduckdb_db_and_schema(const char *postgres_schema_name, bool is_duckdb_table, bool is_columnstore_table) {
+	if (is_columnstore_table) {
+		return list_make2((void *)"pgmooncake", (void *)postgres_schema_name);
+	}
+
 	if (!is_duckdb_table) {
 		return list_make2((void *)"pgduckdb", (void *)postgres_schema_name);
 	}
@@ -110,8 +115,8 @@ pgduckdb_db_and_schema(const char *postgres_schema_name, bool is_duckdb_table) {
  * database are quoted if necessary.
  */
 const char *
-pgduckdb_db_and_schema_string(const char *postgres_schema_name, bool is_duckdb_table) {
-	List *db_and_schema = pgduckdb_db_and_schema(postgres_schema_name, is_duckdb_table);
+pgduckdb_db_and_schema_string(const char *postgres_schema_name, bool is_duckdb_table, bool is_columnstore_table) {
+	List *db_and_schema = pgduckdb_db_and_schema(postgres_schema_name, is_duckdb_table, is_columnstore_table);
 	const char *db_name = (const char *)linitial(db_and_schema);
 	const char *schema_name = (const char *)lsecond(db_and_schema);
 	return psprintf("%s.%s", quote_identifier(db_name), quote_identifier(schema_name));
@@ -152,7 +157,9 @@ pgduckdb_relation_name(Oid relation_oid) {
 		}
 	}
 
-	const char *db_and_schema = pgduckdb_db_and_schema_string(postgres_schema_name, is_duckdb_table);
+	bool is_columnstore_table = IsColumnstoreTable(relation_oid);
+	const char *db_and_schema =
+	    pgduckdb_db_and_schema_string(postgres_schema_name, is_duckdb_table, is_columnstore_table);
 	char *result = psprintf("%s.%s", db_and_schema, quote_identifier(relname));
 
 	ReleaseSysCache(tp);
@@ -197,7 +204,8 @@ pgduckdb_get_tabledef(Oid relation_oid) {
 	Relation relation = relation_open(relation_oid, AccessShareLock);
 	const char *relation_name = pgduckdb_relation_name(relation_oid);
 	const char *postgres_schema_name = get_namespace_name_or_temp(relation->rd_rel->relnamespace);
-	const char *db_and_schema = pgduckdb_db_and_schema_string(postgres_schema_name, pgduckdb::IsDuckdbTable(relation));
+	const char *db_and_schema = pgduckdb_db_and_schema_string(postgres_schema_name, pgduckdb::IsDuckdbTable(relation),
+	                                                          IsColumnstoreTable(relation));
 
 	StringInfoData buffer;
 	initStringInfo(&buffer);

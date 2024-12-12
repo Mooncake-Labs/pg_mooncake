@@ -5,6 +5,8 @@
 #include "pgduckdb/scan/postgres_scan.hpp"
 #include "pgduckdb/pg/relations.hpp"
 
+#include "columnstore/columnstore_table.hpp"
+#include "columnstore_handler.hpp"
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
 #include "duckdb/parser/parsed_data/create_schema_info.hpp"
 #include "duckdb/catalog/catalog.hpp"
@@ -54,9 +56,15 @@ SchemaItems::GetTable(const duckdb::string &entry_name) {
 	info.table = entry_name;
 	PostgresTable::SetTableInfo(info, rel);
 
-	auto cardinality = PostgresTable::GetTableCardinality(rel);
-	tables.emplace(entry_name, duckdb::make_uniq<PostgresHeapTable>(schema->catalog, *schema, info, rel, cardinality,
-	                                                                schema->snapshot));
+	if (IsColumnstoreTable(rel)) {
+		CloseRelation(rel);
+		tables.emplace(entry_name, duckdb::make_uniq<duckdb::ColumnstoreTable>(schema->catalog, *schema, info, rel_oid,
+		                                                                       schema->snapshot));
+	} else {
+		auto cardinality = PostgresTable::GetTableCardinality(rel);
+		tables.emplace(entry_name, duckdb::make_uniq<PostgresHeapTable>(schema->catalog, *schema, info, rel,
+		                                                                cardinality, schema->snapshot));
+	}
 	return tables[entry_name].get();
 }
 

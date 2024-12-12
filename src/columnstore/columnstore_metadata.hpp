@@ -1,13 +1,9 @@
 #pragma once
 
 #include "duckdb/common/vector.hpp"
-
-struct SnapshotData;
+#include "pgduckdb/pg/declarations.hpp"
 
 namespace duckdb {
-
-using Oid = unsigned int;
-using Snapshot = SnapshotData *;
 
 class ColumnstoreMetadata {
 public:

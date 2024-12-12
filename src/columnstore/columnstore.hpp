@@ -1,6 +1,7 @@
 #pragma once
 
 #include "duckdb/common/unique_ptr.hpp"
+#include "pgduckdb/pg/declarations.hpp"
 
 namespace duckdb {
 
@@ -9,7 +10,6 @@ class LogicalDelete;
 class LogicalInsert;
 class LogicalUpdate;
 class PhysicalOperator;
-using Oid = unsigned int;
 
 class Columnstore {
 public:

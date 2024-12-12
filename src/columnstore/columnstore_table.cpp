@@ -4,7 +4,7 @@
 #include "lake/lake.hpp"
 #include "parquet_reader.hpp"
 #include "parquet_writer.hpp"
-#include "pgmooncake.hpp"
+#include "pgmooncake_guc.hpp"
 
 namespace duckdb {
 

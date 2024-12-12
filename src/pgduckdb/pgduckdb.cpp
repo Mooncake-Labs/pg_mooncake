@@ -10,6 +10,7 @@ extern "C" {
 #include "pgduckdb/pgduckdb_node.hpp"
 #include "pgduckdb/pgduckdb_background_worker.hpp"
 #include "pgduckdb/pgduckdb_xact.hpp"
+#include "pgmooncake_guc.hpp"
 
 static void DuckdbInitGUC(void);
 
@@ -30,10 +31,10 @@ bool duckdb_autoinstall_known_extensions = true;
 bool duckdb_autoload_known_extensions = true;
 
 extern "C" {
-PG_MODULE_MAGIC;
+// PG_MODULE_MAGIC;
 
 void
-_PG_init(void) {
+Duckdb_PG_init(void) {
 	if (!process_shared_preload_libraries_in_progress) {
 		ereport(ERROR, (errmsg("pg_duckdb needs to be loaded via shared_preload_libraries"),
 		                errhint("Add pg_duckdb to shared_preload_libraries.")));
@@ -181,4 +182,15 @@ DuckdbInitGUC(void) {
 	DefineCustomVariable("duckdb.motherduck_default_database",
 	                     "Which database in MotherDuck to designate as default (in place of my_db)",
 	                     &duckdb_motherduck_default_database, PGC_POSTMASTER, GUC_SUPERUSER_ONLY);
+}
+
+void
+MooncakeInitGUC() {
+	DefineCustomVariable("mooncake.allow_local_tables", "Allow columnstore tables on local disk",
+	                     &mooncake_allow_local_tables);
+
+	DefineCustomVariable("mooncake.default_bucket", "Default bucket for columnstore tables", &mooncake_default_bucket);
+
+	DefineCustomVariable("mooncake.enable_local_cache", "Enable local cache for columnstore tables",
+	                     &mooncake_enable_local_cache);
 }

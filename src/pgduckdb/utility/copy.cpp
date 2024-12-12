@@ -41,10 +41,10 @@ appendCreateRelationCopyString(StringInfo info, ParseState *pstate, CopyStmt *co
 
 #if PG_VERSION_NUM >= 160000
 	RTEPermissionInfo *perminfo = nsitem->p_perminfo;
-	perminfo->requiredPerms = ACL_SELECT;
+	perminfo->requiredPerms = copy_stmt->is_from ? ACL_INSERT : ACL_SELECT;
 #else
 	RangeTblEntry *rte = nsitem->p_rte;
-	rte->requiredPerms = ACL_SELECT;
+	rte->requiredPerms = copy_stmt->is_from ? ACL_INSERT : ACL_SELECT;
 #endif
 
 #if PG_VERSION_NUM >= 160000
@@ -209,16 +209,16 @@ MakeDuckdbCopyQuery(PlannedStmt *pstmt, const char *query_string, struct QueryEn
 	}
 
 	/* Copy `filename` should start with S3/GS/R2 prefix */
-	if (!starts_with(copy_stmt->filename, s3_filename_prefix) &&
-	    !starts_with(copy_stmt->filename, gcs_filename_prefix) &&
-	    !starts_with(copy_stmt->filename, r2_filename_prefix)) {
-		return nullptr;
-	}
+	// if (!starts_with(copy_stmt->filename, s3_filename_prefix) &&
+	//     !starts_with(copy_stmt->filename, gcs_filename_prefix) &&
+	//     !starts_with(copy_stmt->filename, r2_filename_prefix)) {
+	// 	return nullptr;
+	// }
 
 	/* We handle only COPY .. TO */
-	if (copy_stmt->is_from) {
-		return nullptr;
-	}
+	// if (copy_stmt->is_from) {
+	// 	return nullptr;
+	// }
 
 	StringInfo rewritten_query_info = makeStringInfo();
 	appendStringInfo(rewritten_query_info, "COPY ");
@@ -248,7 +248,7 @@ MakeDuckdbCopyQuery(PlannedStmt *pstmt, const char *query_string, struct QueryEn
 		appendCreateRelationCopyString(rewritten_query_info, pstate, copy_stmt);
 	}
 
-	appendStringInfo(rewritten_query_info, " TO ");
+	appendStringInfo(rewritten_query_info, copy_stmt->is_from ? " FROM " : " TO ");
 	appendStringInfoString(rewritten_query_info, quote_literal_cstr(copy_stmt->filename));
 	appendStringInfo(rewritten_query_info, " ");
 	appendCreateCopyOptions(rewritten_query_info, copy_stmt);

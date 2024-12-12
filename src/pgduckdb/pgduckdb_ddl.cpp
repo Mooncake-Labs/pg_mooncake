@@ -1,6 +1,7 @@
 #include "duckdb.hpp"
 #include <regex>
 
+#include "columnstore_handler.hpp"
 #include "pgduckdb/pgduckdb_planner.hpp"
 #include "pgduckdb/pgduckdb_utils.hpp"
 
@@ -102,7 +103,19 @@ DuckdbUtilityHook_Cpp(PlannedStmt *pstmt, const char *query_string, bool read_on
                       ParamListInfo params, struct QueryEnvironment *query_env, DestReceiver *dest,
                       QueryCompletion *qc) {
 	Node *parsetree = pstmt->utilityStmt;
-	if (IsA(parsetree, CopyStmt)) {
+	if (IsA(parsetree, AlterTableStmt)) {
+		AlterTableStmt *stmt = (AlterTableStmt *)pstmt->utilityStmt;
+		if (IsColumnstoreTable(RangeVarGetRelid(stmt->relation, AccessShareLock, false /*missing_ok*/))) {
+			elog(ERROR, "ALTER TABLE on columnstore table is not supported");
+		}
+		ListCell *lcmd;
+		foreach (lcmd, stmt->cmds) {
+			AlterTableCmd *cmd = lfirst_node(AlterTableCmd, lcmd);
+			if (cmd->subtype == AT_SetAccessMethod && strcmp(cmd->name, "columnstore") == 0) {
+				elog(ERROR, "ALTER TABLE changing ACCESS METHOD to columnstore is not supported");
+			}
+		}
+	} else if (IsA(parsetree, CopyStmt)) {
 		auto copy_query = PostgresFunctionGuard(MakeDuckdbCopyQuery, pstmt, query_string, query_env);
 		if (copy_query) {
 			auto res = pgduckdb::DuckDBQueryOrThrow(copy_query);
@@ -112,6 +125,11 @@ DuckdbUtilityHook_Cpp(PlannedStmt *pstmt, const char *query_string, bool read_on
 				SetQueryCompletion(qc, CMDTAG_COPY, processed);
 			}
 			return;
+		}
+	} else if (IsA(parsetree, CreateTableAsStmt)) {
+		CreateTableAsStmt *stmt = (CreateTableAsStmt *)pstmt->utilityStmt;
+		if (stmt->into->accessMethod && strcmp(stmt->into->accessMethod, "columnstore") == 0) {
+			elog(ERROR, "CREATE TABLE AS USING columnstore is not supported");
 		}
 	}
 
@@ -280,7 +298,7 @@ DECLARE_PG_FUNCTION(duckdb_create_table_trigger) {
 		Oid saved_userid;
 		int sec_context;
 		const char *postgres_schema_name = get_namespace_name_or_temp(get_rel_namespace(relid));
-		const char *duckdb_db = (const char *)linitial(pgduckdb_db_and_schema(postgres_schema_name, true));
+		const char *duckdb_db = (const char *)linitial(pgduckdb_db_and_schema(postgres_schema_name, true, false));
 		auto default_db = pgduckdb::DuckDBManager::Get().GetDefaultDBName();
 		GetUserIdAndSecContext(&saved_userid, &sec_context);
 		SetUserIdAndSecContext(BOOTSTRAP_SUPERUSERID, sec_context | SECURITY_LOCAL_USERID_CHANGE);
@@ -494,8 +512,9 @@ DECLARE_PG_FUNCTION(duckdb_drop_trigger) {
 
 			char *postgres_schema_name = SPI_getvalue(tuple, SPI_tuptable->tupdesc, 1);
 			char *table_name = SPI_getvalue(tuple, SPI_tuptable->tupdesc, 2);
-			char *drop_query = psprintf("DROP TABLE %s.%s", pgduckdb_db_and_schema_string(postgres_schema_name, true),
-			                            quote_identifier(table_name));
+			char *drop_query =
+			    psprintf("DROP TABLE %s.%s", pgduckdb_db_and_schema_string(postgres_schema_name, true, false),
+			             quote_identifier(table_name));
 			pgduckdb::DuckDBQueryOrThrow(*connection, drop_query);
 		}
 	}

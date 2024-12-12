@@ -7,9 +7,15 @@
 #include "pgduckdb/pgduckdb_types.hpp" // ConvertPostgresToDuckColumnType
 #include "pgduckdb/scan/postgres_seq_scan.hpp"
 
+#include "duckdb/parser/expression/constant_expression.hpp"
+#include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
 
-#include "pgduckdb/utility/cpp_only_file.hpp" // Must be last include.
+extern "C" {
+#include "postgres.h"
+
+#include "catalog/dependency.h"
+}
 
 namespace pgduckdb {
 
@@ -32,14 +38,46 @@ PostgresTable::OpenRelation(Oid relid) {
 
 void
 PostgresTable::SetTableInfo(duckdb::CreateTableInfo &info, Relation rel) {
+	using namespace duckdb;
+
 	auto tupleDesc = RelationGetDescr(rel);
+	int defval_index = 0;
 
 	const auto n = GetTupleDescNatts(tupleDesc);
 	for (int i = 0; i < n; ++i) {
 		Form_pg_attribute attr = GetAttr(tupleDesc, i);
 		auto col_name = duckdb::string(GetAttName(attr));
 		auto duck_type = ConvertPostgresToDuckColumnType(attr);
-		info.columns.AddColumn(duckdb::ColumnDefinition(col_name, duck_type));
+		ColumnDefinition column(col_name, duck_type);
+		if (attr->atthasdef) {
+			Assert(tupleDesc->constr);
+			Assert(tupleDesc->constr->defval);
+			Assert(defval_index < tupleDesc->constr->num_defval);
+			AttrDefault &defval = tupleDesc->constr->defval[defval_index++];
+			Assert(defval.adnum == i + 1);
+			Node *node = static_cast<Node *>(stringToNode(defval.adbin));
+			if (!IsA(node, Const)) {
+				throw duckdb::NotImplementedException("column \"%s\" has unsupported default value ",
+				                                      NameStr(attr->attname));
+			}
+			Const *val = castNode(Const, node);
+			if (val->constisnull) {
+				column.SetDefaultValue(make_uniq<ConstantExpression>(Value(duck_type)));
+			} else {
+				column.SetDefaultValue(make_uniq<ConstantExpression>(
+				    pgduckdb::ConvertPostgresParameterToDuckValue(val->constvalue, val->consttype)));
+			}
+		} else if (attr->attidentity) {
+#if PG_VERSION_NUM >= 170000
+			Oid seqid = getIdentitySequence(rel, i + 1, false /*missing_ok*/);
+#else
+			Oid seqid = getIdentitySequence(RelationGetRelid(rel), i + 1, false /*missing_ok*/);
+#endif
+			vector<unique_ptr<ParsedExpression>> children;
+			children.push_back(make_uniq<ConstantExpression>(Value::UINTEGER(seqid)));
+			column.SetDefaultValue(make_uniq<FunctionExpression>("pg_nextval", std::move(children)));
+		}
+		info.columns.AddColumn(std::move(column));
 		/* Log column name and type */
 		pd_log(DEBUG2, "(DuckDB/SetTableInfo) Column name: %s, Type: %s --", col_name.c_str(),
 		       duck_type.ToString().c_str());

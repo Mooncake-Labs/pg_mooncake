@@ -27,7 +27,7 @@ static CustomExecMethods duckdb_scan_exec_methods;
 typedef struct DuckdbScanState {
 	CustomScanState css; /* must be first field */
 	const Query *query;
-	ParamListInfo params;
+	EState *estate;
 	duckdb::Connection *duckdb_connection;
 	duckdb::PreparedStatement *prepared_statement;
 	bool is_executed;
@@ -82,7 +82,7 @@ Duckdb_BeginCustomScan_Cpp(CustomScanState *cscanstate, EState *estate, int /*ef
 
 	duckdb_scan_state->duckdb_connection = pgduckdb::DuckDBManager::GetConnection();
 	duckdb_scan_state->prepared_statement = prepared_query.release();
-	duckdb_scan_state->params = estate->es_param_list_info;
+	duckdb_scan_state->estate = estate;
 	duckdb_scan_state->is_executed = false;
 	duckdb_scan_state->fetch_next = true;
 	duckdb_scan_state->css.ss.ps.ps_ResultTupleDesc = duckdb_scan_state->css.ss.ss_ScanTupleSlot->tts_tupleDescriptor;
@@ -99,7 +99,7 @@ ExecuteQuery(DuckdbScanState *state) {
 	auto &prepared = *state->prepared_statement;
 	auto &query_results = state->query_results;
 	auto &connection = state->duckdb_connection;
-	auto pg_params = state->params;
+	auto pg_params = state->estate->es_param_list_info;
 	const auto num_params = pg_params ? pg_params->numParams : 0;
 	duckdb::vector<duckdb::Value> duckdb_params;
 	for (int i = 0; i < num_params; i++) {
@@ -174,6 +174,11 @@ Duckdb_ExecCustomScan_Cpp(CustomScanState *node) {
 			ExecClearTuple(slot);
 			return slot;
 		}
+	}
+
+	if (duckdb_scan_state->query_results->properties.return_type == duckdb::StatementReturnType::CHANGED_ROWS) {
+		duckdb_scan_state->estate->es_processed =
+		    duckdb_scan_state->current_data_chunk->GetValue(0, 0).GetValue<int64_t>();
 	}
 
 	MemoryContextReset(duckdb_scan_state->css.ss.ps.ps_ExprContext->ecxt_per_tuple_memory);
@@ -262,13 +267,13 @@ extern "C" void
 DuckdbInitNode() {
 	/* setup scan methods */
 	memset(&duckdb_scan_scan_methods, 0, sizeof(duckdb_scan_scan_methods));
-	duckdb_scan_scan_methods.CustomName = "DuckDBScan";
+	duckdb_scan_scan_methods.CustomName = "MooncakeDuckDBScan";
 	duckdb_scan_scan_methods.CreateCustomScanState = Duckdb_CreateCustomScanState;
 	RegisterCustomScanMethods(&duckdb_scan_scan_methods);
 
 	/* setup exec methods */
 	memset(&duckdb_scan_exec_methods, 0, sizeof(duckdb_scan_exec_methods));
-	duckdb_scan_exec_methods.CustomName = "DuckDBScan";
+	duckdb_scan_exec_methods.CustomName = "MooncakeDuckDBScan";
 
 	duckdb_scan_exec_methods.BeginCustomScan = Duckdb_BeginCustomScan;
 	duckdb_scan_exec_methods.ExecCustomScan = Duckdb_ExecCustomScan;

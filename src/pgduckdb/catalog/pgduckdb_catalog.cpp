@@ -1,3 +1,4 @@
+#include "columnstore/columnstore.hpp"
 #include "duckdb/parser/parsed_data/attach_info.hpp"
 #include "duckdb/parser/parsed_data/create_schema_info.hpp"
 #include "pgduckdb/catalog/pgduckdb_catalog.hpp"
@@ -57,20 +58,29 @@ PostgresCatalog::PlanCreateTableAs(duckdb::ClientContext &, duckdb::LogicalCreat
 }
 
 duckdb::unique_ptr<duckdb::PhysicalOperator>
-PostgresCatalog::PlanInsert(duckdb::ClientContext &, duckdb::LogicalInsert &,
-                            duckdb::unique_ptr<duckdb::PhysicalOperator>) {
+PostgresCatalog::PlanInsert(duckdb::ClientContext &context, duckdb::LogicalInsert &op,
+                            duckdb::unique_ptr<duckdb::PhysicalOperator> plan) {
+	if (db.name == "pgmooncake") {
+		return duckdb::Columnstore::PlanInsert(context, op, std::move(plan));
+	}
 	throw duckdb::NotImplementedException("PlanInsert not supported yet");
 }
 
 duckdb::unique_ptr<duckdb::PhysicalOperator>
-PostgresCatalog::PlanDelete(duckdb::ClientContext &, duckdb::LogicalDelete &,
-                            duckdb::unique_ptr<duckdb::PhysicalOperator>) {
+PostgresCatalog::PlanDelete(duckdb::ClientContext &context, duckdb::LogicalDelete &op,
+                            duckdb::unique_ptr<duckdb::PhysicalOperator> plan) {
+	if (db.name == "pgmooncake") {
+		return duckdb::Columnstore::PlanDelete(context, op, std::move(plan));
+	}
 	throw duckdb::NotImplementedException("PlanDelete not supported yet");
 }
 
 duckdb::unique_ptr<duckdb::PhysicalOperator>
-PostgresCatalog::PlanUpdate(duckdb::ClientContext &, duckdb::LogicalUpdate &,
-                            duckdb::unique_ptr<duckdb::PhysicalOperator>) {
+PostgresCatalog::PlanUpdate(duckdb::ClientContext &context, duckdb::LogicalUpdate &op,
+                            duckdb::unique_ptr<duckdb::PhysicalOperator> plan) {
+	if (db.name == "pgmooncake") {
+		return duckdb::Columnstore::PlanUpdate(context, op, std::move(plan));
+	}
 	throw duckdb::NotImplementedException("PlanUpdate not supported yet");
 }
 

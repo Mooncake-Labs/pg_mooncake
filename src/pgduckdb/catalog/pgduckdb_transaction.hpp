@@ -26,7 +26,7 @@ public:
 private:
 	duckdb::string name;
 	duckdb::unique_ptr<PostgresSchema> schema;
-	duckdb::case_insensitive_map_t<duckdb::unique_ptr<PostgresTable>> tables;
+	duckdb::case_insensitive_map_t<duckdb::unique_ptr<duckdb::TableCatalogEntry>> tables;
 };
 
 class PostgresContextState : public duckdb::ClientContextState {

@@ -1,16 +1,13 @@
 #pragma once
 
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
-
-struct SnapshotData;
+#include "pgduckdb/pg/declarations.hpp"
 
 namespace duckdb {
 
 class ColumnstoreMetadata;
 class ColumnstoreWriter;
 class DataChunk;
-using Oid = unsigned int;
-using Snapshot = SnapshotData *;
 
 class ColumnstoreTable : public TableCatalogEntry {
 public:

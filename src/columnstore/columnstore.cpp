@@ -2,7 +2,8 @@
 #include "columnstore/columnstore_metadata.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
 #include "lake/lake.hpp"
-#include "pgduckdb/pgduckdb_duckdb.hpp"
+#include "pgduckdb/pgduckdb_utils.hpp"
+#include "pgduckdb/utility/cpp_wrapper.hpp"
 
 namespace duckdb {
 
@@ -13,7 +14,7 @@ void Columnstore::CreateTable(Oid oid) {
         FileSystem::CreateLocal()->CreateDirectory(path);
     }
     metadata.TablesInsert(oid, path);
-    pgduckdb::DuckDBFunctionGuard<void>(LakeCreateTable, "LakeCreateTable", oid, path);
+    InvokeCPPFunc(LakeCreateTable, oid, path);
 }
 
 void Columnstore::TruncateTable(Oid oid) {
@@ -30,19 +31,24 @@ void Columnstore::Abort() {
 }
 
 void Columnstore::Commit() {
-    pgduckdb::DuckDBFunctionGuard<void>(LakeCommit, "LakeCommit");
+    InvokeCPPFunc(LakeCommit);
 }
 
 void Columnstore::LoadSecrets(ClientContext &context) {
     ColumnstoreMetadata metadata(NULL /*snapshot*/);
-    context.transaction.BeginTransaction();
+    bool require_new_transaction = !context.transaction.HasActiveTransaction();
+    if (require_new_transaction) {
+        context.transaction.BeginTransaction();
+    }
     auto transaction = CatalogTransaction::GetSystemCatalogTransaction(context);
     auto secrets = SecretManager::Get(context).AllSecrets(transaction);
     for (auto secret : secrets) {
         SecretManager::Get(context).DropSecretByName(context, secret.secret->GetName(),
                                                      duckdb::OnEntryNotFound::RETURN_NULL);
     }
-    context.transaction.Commit();
+    if (require_new_transaction) {
+        context.transaction.Commit();
+    }
     auto queries = metadata.SecretsGetDuckdbQueries();
     for (const auto &query : queries) {
         pgduckdb::DuckDBQueryOrThrow(context, query);

@@ -133,7 +133,7 @@ BuildDuckdbOnlyFunctions() {
 }
 
 /*
- * Returns true if the pg_duckdb extension is installed (using CREATE
+ * Returns true if the pg_mooncake extension is installed (using CREATE
  * EXTENSION). This also initializes our metadata cache if it is not already
  * initialized.
  */
@@ -144,7 +144,7 @@ IsExtensionRegistered() {
 	}
 
 	if (IsAbortedTransactionBlockState()) {
-		elog(WARNING, "pgduckdb: IsExtensionRegistered called in an aborted transaction");
+		elog(WARNING, "pg_mooncake: IsExtensionRegistered called in an aborted transaction");
 		/* We need to run `get_extension_oid` in a valid transaction */
 		return false;
 	}
@@ -156,17 +156,17 @@ IsExtensionRegistered() {
 		 * invalidate this on DDL that changes the extension, i.e.
 		 * CREATE/ALTER/DROP EXTENSION. Sadly, this is currently not possible
 		 * because there is no syscache for the pg_extension table. Instead we
-		 * subscribe to the syscache of the pg_namespace table for the duckdb
+		 * subscribe to the syscache of the pg_namespace table for the mooncake
 		 * schema. This is not perfect, as it doesn't cover extension updates,
 		 * but for now this is acceptable.
 		 */
 		callback_is_configured = true;
-		schema_hash_value = GetSysCacheHashValue1(NAMESPACENAME, CStringGetDatum("duckdb"));
+		schema_hash_value = GetSysCacheHashValue1(NAMESPACENAME, CStringGetDatum("mooncake"));
 
 		CacheRegisterSyscacheCallback(NAMESPACENAME, InvalidateCaches, (Datum)0);
 	}
 
-	cache.extension_oid = get_extension_oid("pg_duckdb", true);
+	cache.extension_oid = get_extension_oid("pg_mooncake", true);
 	cache.installed = cache.extension_oid != InvalidOid;
 	cache.version++;
 	if (cache.installed) {

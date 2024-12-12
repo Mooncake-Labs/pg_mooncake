@@ -1,10 +1,9 @@
 #pragma once
 
 #include "duckdb/common/string.hpp"
+#include "pgduckdb/pg/declarations.hpp"
 
 namespace duckdb {
-
-using Oid = unsigned int;
 
 void LakeCreateTable(Oid oid, const string &path);
 

@@ -1,5 +1,7 @@
 #include "duckdb.hpp"
 
+#include "columnstore/columnstore.hpp"
+#include "columnstore_handler.hpp"
 #include "pgduckdb/pgduckdb_planner.hpp"
 #include "pgduckdb/pg/transactions.hpp"
 #include "pgduckdb/pgduckdb_xact.hpp"
@@ -78,6 +80,16 @@ ContainsPartitionedTable(List *rtes) {
 }
 
 static bool
+ContainsColumnstoreTables(List *rte_list) {
+	foreach_node(RangeTblEntry, rte, rte_list) {
+		if (IsColumnstoreTable(rte->relid)) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool
 IsDuckdbTable(Oid relid) {
 	if (relid == InvalidOid) {
 		return false;
@@ -106,7 +118,7 @@ ContainsDuckdbItems(Node *node, void *context) {
 
 	if (IsA(node, Query)) {
 		Query *query = (Query *)node;
-		if (ContainsDuckdbTables(query->rtable)) {
+		if (ContainsColumnstoreTables(query->rtable) || ContainsDuckdbTables(query->rtable)) {
 			return true;
 		}
 #if PG_VERSION_NUM >= 160000
@@ -147,7 +159,7 @@ IsAllowedStatement(Query *query, bool throw_error = false) {
 	/* We don't support modifying statements on Postgres tables yet */
 	if (query->commandType != CMD_SELECT) {
 		RangeTblEntry *resultRte = list_nth_node(RangeTblEntry, query->rtable, query->resultRelation - 1);
-		if (!IsDuckdbTable(resultRte->relid)) {
+		if (!IsColumnstoreTable(resultRte->relid) && !IsDuckdbTable(resultRte->relid)) {
 			elog(elevel, "DuckDB does not support modififying Postgres tables");
 			return false;
 		}
@@ -183,6 +195,30 @@ IsAllowedStatement(Query *query, bool throw_error = false) {
 	 */
 	if (ContainsPartitionedTable(query->rtable)) {
 		elog(elevel, "DuckDB does not support querying PG partitioned table");
+		return false;
+	}
+
+	if (query->returningList) {
+		elog(elevel, "RETURNING clause is not supported yet");
+		return false;
+	}
+
+	if (query->commandType == CMD_UPDATE && query->hasSubLinks) {
+		ListCell *l;
+		foreach (l, query->targetList) {
+			TargetEntry *tle = (TargetEntry *)lfirst(l);
+			if (tle->resjunk && IsA(tle->expr, SubLink)) {
+				SubLink *sl = (SubLink *)tle->expr;
+				if (sl->subLinkType == MULTIEXPR_SUBLINK) {
+					elog(elevel, "DuckDB does not support UPDATE with multi-column assignment");
+					return false;
+				}
+			}
+		}
+	}
+
+	if (query->commandType == CMD_MERGE) {
+		elog(elevel, "DuckDB does not support MERGE INTO statement");
 		return false;
 	}
 

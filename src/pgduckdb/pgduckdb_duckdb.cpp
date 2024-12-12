@@ -1,9 +1,11 @@
 #include "pgduckdb/pgduckdb_duckdb.hpp"
+#include "columnstore/columnstore.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 #include "pgduckdb/pgduckdb_guc.h"
 #include "duckdb/main/extension_util.hpp"
+#include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 
 #include "pgduckdb/catalog/pgduckdb_storage.hpp"
@@ -15,6 +17,7 @@
 extern "C" {
 #include "postgres.h"
 #include "catalog/namespace.h"
+#include "commands/sequence.h"
 #include "lib/stringinfo.h"
 #include "utils/lsyscache.h"  // get_relname_relid
 #include "utils/fmgrprotos.h" // pg_sequence_last_value
@@ -28,6 +31,31 @@ extern "C" {
 
 #include <sys/stat.h>
 #include <unistd.h>
+
+namespace duckdb {
+
+static void
+PgNextval(DataChunk &args, ExpressionState &state, Vector &result) {
+	auto &input = args.data[0];
+	D_ASSERT(input.GetVectorType() == VectorType::CONSTANT_VECTOR);
+	Oid seqid = *ConstantVector::GetData<Oid>(input);
+
+	result.SetVectorType(VectorType::FLAT_VECTOR);
+	auto result_data = FlatVector::GetData<int64_t>(result);
+	for (idx_t i = 0; i < args.size(); i++) {
+		result_data[i] = PostgresFunctionGuard(nextval_internal, seqid, false /*check_permissions*/);
+	}
+}
+
+static void
+LoadPgNextval(ClientContext &context) {
+	ScalarFunction pg_nextval("pg_nextval", {LogicalType::UINTEGER}, LogicalType::BIGINT, PgNextval);
+	pg_nextval.stability = FunctionStability::VOLATILE;
+	CreateScalarFunctionInfo info(std::move(pg_nextval));
+	context.RegisterFunction(info);
+}
+
+} // namespace duckdb
 
 // FIXME - this file should not depend on PG, rather DataDir should be provided
 extern char *DataDir;
@@ -189,6 +217,7 @@ DuckDBManager::Initialize() {
 	auto &db_manager = duckdb::DatabaseManager::Get(context);
 	default_dbname = db_manager.GetDefaultDatabase(context);
 	pgduckdb::DuckDBQueryOrThrow(context, "ATTACH DATABASE 'pgduckdb' (TYPE pgduckdb)");
+	pgduckdb::DuckDBQueryOrThrow(context, "ATTACH DATABASE 'pgmooncake' (TYPE pgduckdb)");
 	pgduckdb::DuckDBQueryOrThrow(context, "ATTACH DATABASE ':memory:' AS pg_temp;");
 
 	if (pgduckdb::IsMotherDuckEnabled()) {
@@ -202,8 +231,9 @@ DuckDBManager::Initialize() {
 		                             "SET motherduck_background_catalog_refresh_inactivity_timeout='99 years'");
 	}
 
+	duckdb::LoadPgNextval(context);
 	LoadFunctions(context);
-	LoadExtensions(context);
+	// LoadExtensions(context);
 }
 
 void
@@ -221,7 +251,7 @@ DuckDBManager::LoadFunctions(duckdb::ClientContext &context) {
 
 int64
 GetSeqLastValue(const char *seq_name) {
-	Oid duckdb_namespace = get_namespace_oid("duckdb", false);
+	Oid duckdb_namespace = get_namespace_oid("mooncake", false);
 	Oid table_seq_oid = get_relname_relid(seq_name, duckdb_namespace);
 	return PostgresFunctionGuard(DirectFunctionCall1Coll, pg_sequence_last_value, InvalidOid, table_seq_oid);
 }
@@ -312,36 +342,37 @@ DuckDBManager::LoadExtensions(duckdb::ClientContext &context) {
 
 void
 DuckDBManager::RefreshConnectionState(duckdb::ClientContext &context) {
-	const auto extensions_table_last_seq = GetSeqLastValue("extensions_table_seq");
-	if (IsExtensionsSeqLessThan(extensions_table_last_seq)) {
-		LoadExtensions(context);
-		UpdateExtensionsSeq(extensions_table_last_seq);
-	}
+	// const auto extensions_table_last_seq = GetSeqLastValue("extensions_table_seq");
+	// if (IsExtensionsSeqLessThan(extensions_table_last_seq)) {
+	// 	LoadExtensions(context);
+	// 	UpdateExtensionsSeq(extensions_table_last_seq);
+	// }
 
 	const auto secret_table_last_seq = GetSeqLastValue("secrets_table_seq");
 	if (IsSecretSeqLessThan(secret_table_last_seq)) {
-		DropSecrets(context);
-		LoadSecrets(context);
+		// DropSecrets(context);
+		// LoadSecrets(context);
+		duckdb::Columnstore::LoadSecrets(context);
 		UpdateSecretSeq(secret_table_last_seq);
 	}
 
-	auto http_file_cache_set_dir_query =
-	    duckdb::StringUtil::Format("SET http_file_cache_dir TO '%s';", CreateOrGetDirectoryPath("duckdb_cache"));
-	DuckDBQueryOrThrow(context, http_file_cache_set_dir_query);
+	// auto http_file_cache_set_dir_query =
+	//     duckdb::StringUtil::Format("SET http_file_cache_dir TO '%s';", CreateOrGetDirectoryPath("duckdb_cache"));
+	// DuckDBQueryOrThrow(context, http_file_cache_set_dir_query);
 
-	if (duckdb_disabled_filesystems != NULL && !superuser()) {
-		/*
-		 * DuckDB does not allow us to disable this setting on the
-		 * database after the DuckDB connection is created for a non
-		 * superuser, any further connections will inherit this
-		 * restriction. This means that once a non-superuser used a
-		 * DuckDB connection in aside a Postgres backend, any loter
-		 * connection will inherit these same filesystem restrictions.
-		 * This shouldn't be a problem in practice.
-		 */
-		pgduckdb::DuckDBQueryOrThrow(context,
-		                             "SET disabled_filesystems='" + std::string(duckdb_disabled_filesystems) + "'");
-	}
+	// if (duckdb_disabled_filesystems != NULL && !superuser()) {
+	// 	/*
+	// 	 * DuckDB does not allow us to disable this setting on the
+	// 	 * database after the DuckDB connection is created for a non
+	// 	 * superuser, any further connections will inherit this
+	// 	 * restriction. This means that once a non-superuser used a
+	// 	 * DuckDB connection in aside a Postgres backend, any loter
+	// 	 * connection will inherit these same filesystem restrictions.
+	// 	 * This shouldn't be a problem in practice.
+	// 	 */
+	// 	pgduckdb::DuckDBQueryOrThrow(context,
+	// 	                             "SET disabled_filesystems='" + std::string(duckdb_disabled_filesystems) + "'");
+	// }
 }
 
 /*
@@ -351,9 +382,9 @@ DuckDBManager::RefreshConnectionState(duckdb::ClientContext &context) {
  */
 duckdb::unique_ptr<duckdb::Connection>
 DuckDBManager::CreateConnection() {
-	if (!pgduckdb::IsDuckdbExecutionAllowed()) {
-		elog(ERROR, "DuckDB execution is not allowed because you have not been granted the duckdb.postgres_role");
-	}
+	// if (!pgduckdb::IsDuckdbExecutionAllowed()) {
+	// 	elog(ERROR, "DuckDB execution is not allowed because you have not been granted the duckdb.postgres_role");
+	// }
 
 	auto &instance = Get();
 	auto connection = duckdb::make_uniq<duckdb::Connection>(*instance.database);

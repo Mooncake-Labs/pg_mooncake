@@ -1,48 +1,55 @@
 #include "duckdb.hpp"
 
+#include "pgduckdb/pgduckdb_planner.hpp"
+#include "pgduckdb/pg/transactions.hpp"
+#include "pgduckdb/pgduckdb_xact.hpp"
+#include "pgduckdb/pgduckdb_utils.hpp"
+
 extern "C" {
 #include "postgres.h"
 
-#include "catalog/namespace.h"
 #include "catalog/pg_namespace.h"
 #include "commands/extension.h"
 #include "nodes/nodes.h"
 #include "nodes/nodeFuncs.h"
+#include "nodes/print.h"
 #include "nodes/primnodes.h"
 #include "tcop/utility.h"
 #include "tcop/pquery.h"
 #include "utils/rel.h"
 #include "utils/relcache.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/planner.h"
 }
 
-#include "columnstore/columnstore.hpp"
-#include "columnstore_handler.hpp"
 #include "pgduckdb/pgduckdb.h"
+#include "pgduckdb/pgduckdb_guc.h"
 #include "pgduckdb/pgduckdb_metadata_cache.hpp"
 #include "pgduckdb/pgduckdb_ddl.hpp"
-#include "pgduckdb/pgduckdb_planner.hpp"
 #include "pgduckdb/pgduckdb_table_am.hpp"
 #include "pgduckdb/utility/copy.hpp"
 #include "pgduckdb/vendor/pg_explain.hpp"
 #include "pgduckdb/vendor/pg_list.hpp"
+#include "pgduckdb/pgduckdb_node.hpp"
+#include "pgduckdb/utility/cpp_wrapper.hpp"
 
 static planner_hook_type prev_planner_hook = NULL;
-static ProcessUtility_hook_type prev_process_utility_hook = NULL;
+static ExecutorStart_hook_type prev_executor_start_hook = NULL;
+static ExecutorFinish_hook_type prev_executor_finish_hook = NULL;
 static ExplainOneQuery_hook_type prev_explain_one_query_hook = NULL;
 
 static bool
-IsCatalogTable(List *tables) {
-	foreach_node(RangeTblEntry, table, tables) {
-		if (table->rtekind == RTE_SUBQUERY) {
+ContainsCatalogTable(List *rtes) {
+	foreach_node(RangeTblEntry, rte, rtes) {
+		if (rte->rtekind == RTE_SUBQUERY) {
 			/* Check Subquery rtable list if any table is from PG catalog */
-			if (IsCatalogTable(table->subquery->rtable)) {
+			if (ContainsCatalogTable(rte->subquery->rtable)) {
 				return true;
 			}
 		}
 
-		if (table->relid) {
-			auto rel = RelationIdGetRelation(table->relid);
+		if (rte->relid) {
+			auto rel = RelationIdGetRelation(rte->relid);
 			auto namespace_oid = RelationGetNamespace(rel);
 			RelationClose(rel);
 			if (namespace_oid == PG_CATALOG_NAMESPACE || namespace_oid == PG_TOAST_NAMESPACE) {
@@ -54,9 +61,16 @@ IsCatalogTable(List *tables) {
 }
 
 static bool
-ContainsColumnstoreTables(List *rte_list) {
-	foreach_node(RangeTblEntry, rte, rte_list) {
-		if (IsColumnstoreTable(rte->relid)) {
+ContainsPartitionedTable(List *rtes) {
+	foreach_node(RangeTblEntry, rte, rtes) {
+		if (rte->rtekind == RTE_SUBQUERY) {
+			/* Check whether any table in the subquery is a partitioned table */
+			if (ContainsPartitionedTable(rte->subquery->rtable)) {
+				return true;
+			}
+		}
+
+		if (rte->relkind == RELKIND_PARTITIONED_TABLE) {
 			return true;
 		}
 	}
@@ -92,7 +106,7 @@ ContainsDuckdbItems(Node *node, void *context) {
 
 	if (IsA(node, Query)) {
 		Query *query = (Query *)node;
-		if (ContainsColumnstoreTables(query->rtable) || ContainsDuckdbTables(query->rtable)) {
+		if (ContainsDuckdbTables(query->rtable)) {
 			return true;
 		}
 #if PG_VERSION_NUM >= 160000
@@ -116,7 +130,7 @@ ContainsDuckdbItems(Node *node, void *context) {
 #endif
 }
 
-bool
+static bool
 NeedsDuckdbExecution(Query *query) {
 	return ContainsDuckdbItems((Node *)query, NULL);
 }
@@ -131,13 +145,19 @@ IsAllowedStatement(Query *query, bool throw_error = false) {
 	}
 
 	/* We don't support modifying statements on Postgres tables yet */
-	// if (query->commandType != CMD_SELECT) {
-	// 	RangeTblEntry *resultRte = list_nth_node(RangeTblEntry, query->rtable, query->resultRelation - 1);
-	// 	if (!IsDuckdbTable(resultRte->relid)) {
-	// 		elog(elevel, "DuckDB does not support modififying Postgres tables");
-	// 		return false;
-	// 	}
-	// }
+	if (query->commandType != CMD_SELECT) {
+		RangeTblEntry *resultRte = list_nth_node(RangeTblEntry, query->rtable, query->resultRelation - 1);
+		if (!IsDuckdbTable(resultRte->relid)) {
+			elog(elevel, "DuckDB does not support modififying Postgres tables");
+			return false;
+		}
+		if (pgduckdb::pg::IsInTransactionBlock(true)) {
+			if (pgduckdb::pg::DidWalWrites()) {
+				elog(elevel, "Writing to DuckDB and Postgres tables in the same transaction block is not supported");
+				return false;
+			}
+		}
+	}
 
 	/*
 	 * If there's no rtable, we're only selecting constants. There's no point
@@ -153,47 +173,16 @@ IsAllowedStatement(Query *query, bool throw_error = false) {
 	 * because DuckDB has its own pg_catalog tables that contain different data
 	 * then Postgres its pg_catalog tables.
 	 */
-	if (IsCatalogTable(query->rtable)) {
+	if (ContainsCatalogTable(query->rtable)) {
 		elog(elevel, "DuckDB does not support querying PG catalog tables");
 		return false;
 	}
 
 	/*
-	 * We don't support multi-statement transactions yet, so don't try to
-	 * execute queries in them even if duckdb.force_execution is enabled.
+	 * When accessing the partitioned table, we temporarily let PG handle it instead of DuckDB.
 	 */
-	// if (IsInTransactionBlock(true)) {
-	// 	if (throw_error) {
-	// 		/*
-	// 		 * We don't elog manually here, because PreventInTransactionBlock
-	// 		 * provides very detailed errors.
-	// 		 */
-	// 		PreventInTransactionBlock(true, "DuckDB queries");
-	// 	}
-	// 	return false;
-	// }
-
-	if (query->returningList) {
-		elog(elevel, "RETURNING clause is not supported yet");
-		return false;
-	}
-
-	if (query->commandType == CMD_UPDATE && query->hasSubLinks) {
-		ListCell *l;
-		foreach (l, query->targetList) {
-			TargetEntry *tle = (TargetEntry *)lfirst(l);
-			if (tle->resjunk && IsA(tle->expr, SubLink)) {
-				SubLink *sl = (SubLink *)tle->expr;
-				if (sl->subLinkType == MULTIEXPR_SUBLINK) {
-					elog(elevel, "DuckDB does not support UPDATE with multi-column assignment");
-					return false;
-				}
-			}
-		}
-	}
-
-	if (query->commandType == CMD_MERGE) {
-		elog(elevel, "DuckDB does not support MERGE INTO statement");
+	if (ContainsPartitionedTable(query->rtable)) {
+		elog(elevel, "DuckDB does not support querying PG partitioned table");
 		return false;
 	}
 
@@ -202,7 +191,7 @@ IsAllowedStatement(Query *query, bool throw_error = false) {
 }
 
 static PlannedStmt *
-DuckdbPlannerHook(Query *parse, const char *query_string, int cursor_options, ParamListInfo bound_params) {
+DuckdbPlannerHook_Cpp(Query *parse, const char *query_string, int cursor_options, ParamListInfo bound_params) {
 	if (pgduckdb::IsExtensionRegistered()) {
 		if (NeedsDuckdbExecution(parse)) {
 			IsAllowedStatement(parse, true);
@@ -215,7 +204,21 @@ DuckdbPlannerHook(Query *parse, const char *query_string, int cursor_options, Pa
 			}
 			/* If we can't create a plan, we'll fall back to Postgres */
 		}
+		if (parse->commandType != CMD_SELECT && pgduckdb::ddb::DidWrites() &&
+		    pgduckdb::pg::IsInTransactionBlock(true)) {
+			elog(ERROR, "Writing to DuckDB and Postgres tables in the same transaction block is not supported");
+		}
 	}
+
+	/*
+	 * If we're executing a PG query, then if we'll execute a DuckDB
+	 * later in the same transaction that means that DuckDB query was
+	 * not executed at the top level, but internally by that PG query.
+	 * A common case where this happens is a plpgsql function that
+	 * executes a DuckDB query.
+	 */
+
+	pgduckdb::MarkStatementNotTopLevel();
 
 	if (prev_planner_hook) {
 		return prev_planner_hook(parse, query_string, cursor_options, bound_params);
@@ -224,53 +227,119 @@ DuckdbPlannerHook(Query *parse, const char *query_string, int cursor_options, Pa
 	}
 }
 
-static void
-DuckdbUtilityHook(PlannedStmt *pstmt, const char *query_string, bool read_only_tree, ProcessUtilityContext context,
-                  ParamListInfo params, struct QueryEnvironment *query_env, DestReceiver *dest, QueryCompletion *qc) {
-	Node *parsetree = pstmt->utilityStmt;
-	if (pgduckdb::IsExtensionRegistered()) {
-		if (IsA(parsetree, AlterTableStmt)) {
-			AlterTableStmt *stmt = (AlterTableStmt *)pstmt->utilityStmt;
-			if (IsColumnstoreTable(RangeVarGetRelid(stmt->relation, AccessShareLock, false /*missing_ok*/))) {
-				elog(ERROR, "ALTER TABLE on columnstore table is not supported");
-			}
-			ListCell *lcmd;
-			foreach (lcmd, stmt->cmds) {
-				AlterTableCmd *cmd = lfirst_node(AlterTableCmd, lcmd);
-				if (cmd->subtype == AT_SetAccessMethod && strcmp(cmd->name, "columnstore") == 0) {
-					elog(ERROR, "ALTER TABLE changing ACCESS METHOD to columnstore is not supported");
-				}
-			}
-		} else if (IsA(parsetree, CopyStmt)) {
-			uint64 processed;
-			if (DuckdbCopy(pstmt, query_string, query_env, &processed)) {
-				if (qc) {
-					SetQueryCompletion(qc, CMDTAG_COPY, processed);
-				}
-				return;
-			}
-		} else if (IsA(parsetree, CreateTableAsStmt)) {
-			CreateTableAsStmt *stmt = (CreateTableAsStmt *)pstmt->utilityStmt;
-			if (stmt->into->accessMethod && strcmp(stmt->into->accessMethod, "columnstore") == 0) {
-				elog(ERROR, "CREATE TABLE AS USING columnstore is not supported");
-			}
+static PlannedStmt *
+DuckdbPlannerHook(Query *parse, const char *query_string, int cursor_options, ParamListInfo bound_params) {
+	return InvokeCPPFunc(DuckdbPlannerHook_Cpp, parse, query_string, cursor_options, bound_params);
+}
+
+bool
+IsDuckdbPlan(PlannedStmt *stmt) {
+	Plan *plan = stmt->planTree;
+	if (!plan) {
+		return false;
+	}
+
+	/* If the plan is a Material node, we need to extract the actual plan to
+	 * see if it is our CustomScan node. A Matarial containing our CustomScan
+	 * node gets created for backward scanning cursors. See our usage of.
+	 * materialize_finished_plan. */
+	if (IsA(plan, Material)) {
+		Material *material = castNode(Material, plan);
+		plan = material->plan.lefttree;
+		if (!plan) {
+			return false;
 		}
 	}
 
-	// if (pgduckdb::IsExtensionRegistered()) {
-	// 	DuckdbHandleDDL(parsetree, query_string);
-	// }
-
-	if (prev_process_utility_hook) {
-		(*prev_process_utility_hook)(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc);
-	} else {
-		standard_ProcessUtility(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc);
+	if (!IsA(plan, CustomScan)) {
+		return false;
 	}
+
+	CustomScan *custom_scan = castNode(CustomScan, plan);
+	if (custom_scan->methods != &duckdb_scan_scan_methods) {
+		return false;
+	}
+
+	return true;
 }
 
-extern "C" {
-#include "nodes/print.h"
+/*
+ * Claim the current command id for obvious DuckDB writes.
+ *
+ * If we're not in a transaction, this triggers the command to be executed
+ * outside of any implicit transaction.
+ *
+ * This claims the command ID if we're doing a INSERT/UPDATE/DELETE on a DuckDB
+ * table. This isn't strictly necessary for safety, as the ExecutorFinishHook
+ * would catch it anyway, but this allows us to fail early, i.e. before doing
+ * the potentially time-consuming write operation.
+ */
+static void
+DuckdbExecutorStartHook_Cpp(QueryDesc *queryDesc) {
+	if (!IsDuckdbPlan(queryDesc->plannedstmt)) {
+		/*
+		 * If we're executing a PG query, then if we'll execute a DuckDB
+		 * later in the same transaction that means that DuckDB query was
+		 * not executed at the top level, but internally by that PG query.
+		 * A common case where this happens is a plpgsql function that
+		 * executes a DuckDB query.
+		 */
+
+		pgduckdb::MarkStatementNotTopLevel();
+		return;
+	}
+
+	pgduckdb::AutocommitSingleStatementQueries();
+
+	if (queryDesc->operation == CMD_SELECT) {
+		return;
+	}
+	pgduckdb::ClaimCurrentCommandId();
 }
+
+static void
+DuckdbExecutorStartHook(QueryDesc *queryDesc, int eflags) {
+	if (!pgduckdb::IsExtensionRegistered()) {
+		pgduckdb::MarkStatementNotTopLevel();
+		prev_executor_start_hook(queryDesc, eflags);
+		return;
+	}
+
+	prev_executor_start_hook(queryDesc, eflags);
+	InvokeCPPFunc(DuckdbExecutorStartHook_Cpp, queryDesc);
+}
+
+/*
+ * Claim the current command id for non-obvious DuckDB writes.
+ *
+ * It's possible that a Postgres SELECT query writes to DuckDB, for example
+ * when using one of our UDFs that that internally writes to DuckDB. This
+ * function claims the command ID in those cases.
+ */
+static void
+DuckdbExecutorFinishHook_Cpp(QueryDesc *queryDesc) {
+	if (!IsDuckdbPlan(queryDesc->plannedstmt)) {
+		return;
+	}
+
+	if (!pgduckdb::ddb::DidWrites()) {
+		return;
+	}
+
+	pgduckdb::ClaimCurrentCommandId();
+}
+
+static void
+DuckdbExecutorFinishHook(QueryDesc *queryDesc) {
+	if (!pgduckdb::IsExtensionRegistered()) {
+		prev_executor_finish_hook(queryDesc);
+		return;
+	}
+
+	prev_executor_finish_hook(queryDesc);
+	InvokeCPPFunc(DuckdbExecutorFinishHook_Cpp, queryDesc);
+}
+
 void
 DuckdbExplainOneQueryHook(Query *query, int cursorOptions, IntoClause *into, ExplainState *es, const char *queryString,
                           ParamListInfo params, QueryEnvironment *queryEnv) {
@@ -290,24 +359,18 @@ DuckdbExplainOneQueryHook(Query *query, int cursorOptions, IntoClause *into, Exp
 }
 
 void
-DuckdbXactCallback(XactEvent event, void *arg) {
-	if (event == XactEvent::XACT_EVENT_ABORT) {
-		duckdb::Columnstore::Abort();
-	} else if (event == XactEvent::XACT_EVENT_COMMIT) {
-		duckdb::Columnstore::Commit();
-	}
-}
-
-void
 DuckdbInitHooks(void) {
 	prev_planner_hook = planner_hook;
 	planner_hook = DuckdbPlannerHook;
 
-	prev_process_utility_hook = ProcessUtility_hook ? ProcessUtility_hook : standard_ProcessUtility;
-	ProcessUtility_hook = DuckdbUtilityHook;
+	prev_executor_start_hook = ExecutorStart_hook ? ExecutorStart_hook : standard_ExecutorStart;
+	ExecutorStart_hook = DuckdbExecutorStartHook;
+
+	prev_executor_finish_hook = ExecutorFinish_hook ? ExecutorFinish_hook : standard_ExecutorFinish;
+	ExecutorFinish_hook = DuckdbExecutorFinishHook;
 
 	prev_explain_one_query_hook = ExplainOneQuery_hook ? ExplainOneQuery_hook : standard_ExplainOneQuery;
 	ExplainOneQuery_hook = DuckdbExplainOneQueryHook;
 
-	RegisterXactCallback(DuckdbXactCallback, NULL /*arg*/);
+	DuckdbInitUtilityHook();
 }

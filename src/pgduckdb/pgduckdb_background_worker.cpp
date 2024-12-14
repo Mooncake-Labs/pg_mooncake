@@ -13,6 +13,8 @@
 #include "duckdb/storage/table_storage_info.hpp"
 #include "duckdb/main/attached_database.hpp"
 #include "pgduckdb/pgduckdb_types.hpp"
+#include "pgduckdb/pgduckdb_utils.hpp"
+#include "pgduckdb/utility/cpp_wrapper.hpp"
 #include <string>
 #include <unordered_map>
 
@@ -46,10 +48,10 @@ extern "C" {
 }
 
 #include "pgduckdb/pgduckdb.h"
+#include "pgduckdb/pgduckdb_guc.h"
 #include "pgduckdb/pgduckdb_duckdb.hpp"
 #include "pgduckdb/pgduckdb_background_worker.hpp"
 #include "pgduckdb/pgduckdb_metadata_cache.hpp"
-#include "pgduckdb/pgduckdb_utils.hpp"
 
 static bool is_background_worker = false;
 static std::unordered_map<std::string, std::string> last_known_motherduck_catalog_versions;
@@ -57,7 +59,7 @@ static uint64 initial_cache_version = 0;
 
 extern "C" {
 PGDLLEXPORT void
-pgduckdb_background_worker_main(Datum main_arg) {
+pgduckdb_background_worker_main(Datum /* main_arg */) {
 	elog(LOG, "started pg_duckdb background worker");
 	// Set up a signal handler for SIGTERM
 	pqsignal(SIGTERM, die);
@@ -97,7 +99,7 @@ pgduckdb_background_worker_main(Datum main_arg) {
 		ResetLatch(MyLatch);
 	}
 
-	proc_exit(0);
+	// Unreachable
 }
 
 PG_FUNCTION_INFO_V1(force_motherduck_sync);
@@ -524,10 +526,12 @@ CreateSchemaIfNotExists(const char *postgres_schema_name, bool is_default_db) {
 		ObjectAddress schema_address = {
 		    .classId = NamespaceRelationId,
 		    .objectId = schema_oid,
+		    .objectSubId = 0,
 		};
 		ObjectAddress extension_address = {
 		    .classId = ExtensionRelationId,
 		    .objectId = pgduckdb::ExtensionOid(),
+		    .objectSubId = 0,
 		};
 		recordDependencyOn(&schema_address, &extension_address, DEPENDENCY_NORMAL);
 	}
@@ -538,26 +542,33 @@ CreateSchemaIfNotExists(const char *postgres_schema_name, bool is_default_db) {
 	return true;
 }
 
-void SyncMotherDuckCatalogsWithPg_Unsafe(bool drop_with_cascade);
+void SyncMotherDuckCatalogsWithPg_Cpp(bool drop_with_cascade);
 
 void
 SyncMotherDuckCatalogsWithPg(bool drop_with_cascade) {
-	pgduckdb::DuckDBFunctionGuard<void>(SyncMotherDuckCatalogsWithPg_Unsafe, "SyncMotherDuckCatalogsWithPg",
-	                                    drop_with_cascade);
+	InvokeCPPFunc(SyncMotherDuckCatalogsWithPg_Cpp, drop_with_cascade);
 }
 
 void
-SyncMotherDuckCatalogsWithPg_Unsafe(bool drop_with_cascade) {
-	initial_cache_version = pgduckdb::CacheVersion();
-
-	auto connection = pgduckdb::DuckDBManager::Get().CreateConnection();
-	auto &context = *connection->context;
+SyncMotherDuckCatalogsWithPg_Cpp(bool drop_with_cascade) {
 	if (!pgduckdb::IsMotherDuckEnabled()) {
 		throw std::runtime_error("MotherDuck support is not enabled");
 	}
 
+	initial_cache_version = pgduckdb::CacheVersion();
+
+	/*
+	 * We don't use GetConnection, because we want to be able to precisely
+	 * control the transaction lifecycle. We commit Postgres connections
+	 * throughout this function, and the GetConnect its cached connection its
+	 * lifecycle would be linked to those postgres transactions, which we
+	 * don't want.
+	 */
+	auto connection = pgduckdb::DuckDBManager::Get().CreateConnection();
+	auto &context = *connection->context;
+
 	auto &db_manager = duckdb::DatabaseManager::Get(context);
-	auto default_db = db_manager.GetDefaultDatabase(context);
+	const auto &default_db = db_manager.GetDefaultDatabase(context);
 	auto result =
 	    context.Query("SELECT alias, server_catalog_version::text FROM __md_local_databases_metadata()", false);
 	if (result->HasError()) {
@@ -671,9 +682,10 @@ SyncMotherDuckCatalogsWithPg_Unsafe(bool drop_with_cascade) {
 			continue;
 		}
 
-		Oid arg_types[] = {TEXTOID, TEXTOID};
+		Oid arg_types[] = {TEXTOID, TEXTOID, TEXTOID};
 		Datum values[] = {CStringGetTextDatum(motherduck_db.c_str()),
-		                  CStringGetTextDatum(pgduckdb::current_motherduck_catalog_version)};
+		                  CStringGetTextDatum(pgduckdb::current_motherduck_catalog_version),
+		                  CStringGetTextDatum(default_db.c_str())};
 
 		/*
 		 * We use a cursor here instead of plain SPI_execute, to put a limit on
@@ -684,7 +696,10 @@ SyncMotherDuckCatalogsWithPg_Unsafe(bool drop_with_cascade) {
 		Portal deleted_tables_portal =
 		    SPI_cursor_open_with_args(nullptr, R"(
 			SELECT relid::text FROM duckdb.tables
-			WHERE duckdb_db = $1 AND motherduck_catalog_version != $2
+			WHERE duckdb_db = $1 AND (
+				motherduck_catalog_version != $2 OR
+				default_database != $3
+			)
 			)",
 		                              lengthof(arg_types), arg_types, values, NULL, false, 0);
 

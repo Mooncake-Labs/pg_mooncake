@@ -1,6 +1,6 @@
-extern "C" {
-#include "postgres.h"
-#include "nodes/nodes.h"
-}
-void DuckdbHandleDDL(Node *ParseTree, const char *queryString);
+#pragma once
+
+#include "pgduckdb/pg/declarations.hpp"
+
 void DuckdbTruncateTable(Oid relation_oid);
+void DuckdbInitUtilityHook();

@@ -1,5 +1,10 @@
 
 #include "duckdb.hpp"
+#include "duckdb/common/exception/conversion_exception.hpp"
+#include "duckdb/common/exception.hpp"
+
+#include "pgduckdb/pgduckdb_planner.hpp"
+#include "pgduckdb/pgduckdb_types.hpp"
 
 extern "C" {
 #include "postgres.h"
@@ -10,10 +15,8 @@ extern "C" {
 }
 
 #include "pgduckdb/pgduckdb_node.hpp"
-#include "pgduckdb/pgduckdb_types.hpp"
 #include "pgduckdb/pgduckdb_duckdb.hpp"
-#include "pgduckdb/pgduckdb_planner.hpp"
-#include "pgduckdb/pgduckdb_utils.hpp"
+#include "pgduckdb/utility/cpp_wrapper.hpp"
 
 /* global variables */
 CustomScanMethods duckdb_scan_scan_methods;
@@ -24,7 +27,7 @@ static CustomExecMethods duckdb_scan_exec_methods;
 typedef struct DuckdbScanState {
 	CustomScanState css; /* must be first field */
 	const Query *query;
-	EState *estate;
+	ParamListInfo params;
 	duckdb::Connection *duckdb_connection;
 	duckdb::PreparedStatement *prepared_statement;
 	bool is_executed;
@@ -47,11 +50,6 @@ CleanupDuckdbScanState(DuckdbScanState *state) {
 		delete state->prepared_statement;
 		state->prepared_statement = nullptr;
 	}
-
-	if (state->duckdb_connection) {
-		delete state->duckdb_connection;
-		state->duckdb_connection = nullptr;
-	}
 }
 
 /* static callbacks */
@@ -73,23 +71,27 @@ Duckdb_CreateCustomScanState(CustomScan *cscan) {
 }
 
 void
-Duckdb_BeginCustomScan(CustomScanState *cscanstate, EState *estate, int eflags) {
+Duckdb_BeginCustomScan_Cpp(CustomScanState *cscanstate, EState *estate, int /*eflags*/) {
 	DuckdbScanState *duckdb_scan_state = (DuckdbScanState *)cscanstate;
-	auto prepare_result = DuckdbPrepare(duckdb_scan_state->query);
-	auto prepared_query = std::move(std::get<0>(prepare_result));
-	auto duckdb_connection = std::move(std::get<1>(prepare_result));
+	duckdb::unique_ptr<duckdb::PreparedStatement> prepared_query = DuckdbPrepare(duckdb_scan_state->query);
 
 	if (prepared_query->HasError()) {
-		elog(ERROR, "DuckDB re-planning failed %s", prepared_query->GetError().c_str());
+		throw duckdb::Exception(duckdb::ExceptionType::EXECUTOR,
+		                        "DuckDB re-planning failed: " + prepared_query->GetError());
 	}
 
-	duckdb_scan_state->duckdb_connection = duckdb_connection.release();
+	duckdb_scan_state->duckdb_connection = pgduckdb::DuckDBManager::GetConnection();
 	duckdb_scan_state->prepared_statement = prepared_query.release();
-	duckdb_scan_state->estate = estate;
+	duckdb_scan_state->params = estate->es_param_list_info;
 	duckdb_scan_state->is_executed = false;
 	duckdb_scan_state->fetch_next = true;
 	duckdb_scan_state->css.ss.ps.ps_ResultTupleDesc = duckdb_scan_state->css.ss.ss_ScanTupleSlot->tts_tupleDescriptor;
 	HOLD_CANCEL_INTERRUPTS();
+}
+
+void
+Duckdb_BeginCustomScan(CustomScanState *cscanstate, EState *estate, int eflags) {
+	InvokeCPPFunc(Duckdb_BeginCustomScan_Cpp, cscanstate, estate, eflags);
 }
 
 static void
@@ -97,7 +99,7 @@ ExecuteQuery(DuckdbScanState *state) {
 	auto &prepared = *state->prepared_statement;
 	auto &query_results = state->query_results;
 	auto &connection = state->duckdb_connection;
-	auto pg_params = state->estate->es_param_list_info;
+	auto pg_params = state->params;
 	const auto num_params = pg_params ? pg_params->numParams : 0;
 	duckdb::vector<duckdb::Value> duckdb_params;
 	for (int i = 0; i < num_params; i++) {
@@ -153,14 +155,14 @@ ExecuteQuery(DuckdbScanState *state) {
 }
 
 static TupleTableSlot *
-Duckdb_ExecCustomScan(CustomScanState *node) {
+Duckdb_ExecCustomScan_Cpp(CustomScanState *node) {
 	DuckdbScanState *duckdb_scan_state = (DuckdbScanState *)node;
 	TupleTableSlot *slot = duckdb_scan_state->css.ss.ss_ScanTupleSlot;
 	MemoryContext old_context;
 
 	bool already_executed = duckdb_scan_state->is_executed;
 	if (!already_executed) {
-		pgduckdb::DuckDBFunctionGuard<void>(ExecuteQuery, "ExecuteQuery", duckdb_scan_state);
+		ExecuteQuery(duckdb_scan_state);
 	}
 
 	if (duckdb_scan_state->fetch_next) {
@@ -172,11 +174,6 @@ Duckdb_ExecCustomScan(CustomScanState *node) {
 			ExecClearTuple(slot);
 			return slot;
 		}
-	}
-
-	if (duckdb_scan_state->query_results->properties.return_type == duckdb::StatementReturnType::CHANGED_ROWS) {
-		duckdb_scan_state->estate->es_processed =
-		    duckdb_scan_state->current_data_chunk->GetValue(0, 0).GetValue<int64_t>();
 	}
 
 	MemoryContextReset(duckdb_scan_state->css.ss.ps.ps_ExprContext->ecxt_per_tuple_memory);
@@ -194,7 +191,7 @@ Duckdb_ExecCustomScan(CustomScanState *node) {
 			slot->tts_isnull[col] = false;
 			if (!pgduckdb::ConvertDuckToPostgresValue(slot, value, col)) {
 				CleanupDuckdbScanState(duckdb_scan_state);
-				elog(ERROR, "(PGDuckDB/Duckdb_ExecCustomScan) Value conversion failed");
+				throw duckdb::ConversionException("Value conversion failed");
 			}
 		}
 	}
@@ -211,21 +208,31 @@ Duckdb_ExecCustomScan(CustomScanState *node) {
 	return slot;
 }
 
+static TupleTableSlot *
+Duckdb_ExecCustomScan(CustomScanState *node) {
+	return InvokeCPPFunc(Duckdb_ExecCustomScan_Cpp, node);
+}
+
 void
-Duckdb_EndCustomScan(CustomScanState *node) {
+Duckdb_EndCustomScan_Cpp(CustomScanState *node) {
 	DuckdbScanState *duckdb_scan_state = (DuckdbScanState *)node;
 	CleanupDuckdbScanState(duckdb_scan_state);
 	RESUME_CANCEL_INTERRUPTS();
 }
 
 void
-Duckdb_ReScanCustomScan(CustomScanState *node) {
+Duckdb_EndCustomScan(CustomScanState *node) {
+	InvokeCPPFunc(Duckdb_EndCustomScan_Cpp, node);
 }
 
 void
-Duckdb_ExplainCustomScan(CustomScanState *node, List *ancestors, ExplainState *es) {
+Duckdb_ReScanCustomScan(CustomScanState * /*node*/) {
+}
+
+void
+Duckdb_ExplainCustomScan_Cpp(CustomScanState *node, ExplainState *es) {
 	DuckdbScanState *duckdb_scan_state = (DuckdbScanState *)node;
-	pgduckdb::DuckDBFunctionGuard<void>(ExecuteQuery, "ExecuteQuery", duckdb_scan_state);
+	ExecuteQuery(duckdb_scan_state);
 
 	auto chunk = duckdb_scan_state->query_results->Fetch();
 	if (!chunk || chunk->size() == 0) {
@@ -246,17 +253,22 @@ Duckdb_ExplainCustomScan(CustomScanState *node, List *ancestors, ExplainState *e
 	ExplainPropertyText("DuckDB Execution Plan", explain_output.c_str(), es);
 }
 
+void
+Duckdb_ExplainCustomScan(CustomScanState *node, List * /*ancestors*/, ExplainState *es) {
+	InvokeCPPFunc(Duckdb_ExplainCustomScan_Cpp, node, es);
+}
+
 extern "C" void
 DuckdbInitNode() {
 	/* setup scan methods */
 	memset(&duckdb_scan_scan_methods, 0, sizeof(duckdb_scan_scan_methods));
-	duckdb_scan_scan_methods.CustomName = "MooncakeDuckDBScan";
+	duckdb_scan_scan_methods.CustomName = "DuckDBScan";
 	duckdb_scan_scan_methods.CreateCustomScanState = Duckdb_CreateCustomScanState;
 	RegisterCustomScanMethods(&duckdb_scan_scan_methods);
 
 	/* setup exec methods */
 	memset(&duckdb_scan_exec_methods, 0, sizeof(duckdb_scan_exec_methods));
-	duckdb_scan_exec_methods.CustomName = "MooncakeDuckDBScan";
+	duckdb_scan_exec_methods.CustomName = "DuckDBScan";
 
 	duckdb_scan_exec_methods.BeginCustomScan = Duckdb_BeginCustomScan;
 	duckdb_scan_exec_methods.ExecCustomScan = Duckdb_ExecCustomScan;

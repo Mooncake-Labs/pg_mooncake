@@ -1,8 +1,16 @@
 
 #include "duckdb.hpp"
 
+#include <filesystem>
+#include <fstream>
+
+#include "pgduckdb/pgduckdb_types.hpp"
+#include "pgduckdb/pgduckdb_utils.hpp"
+
 extern "C" {
 #include "postgres.h"
+#include "miscadmin.h"
+#include "funcapi.h"
 #include "access/genam.h"
 #include "access/relation.h"
 #include "access/table.h"
@@ -18,7 +26,8 @@ extern "C" {
 
 #include "pgduckdb/pgduckdb_options.hpp"
 #include "pgduckdb/pgduckdb_duckdb.hpp"
-#include "pgduckdb/pgduckdb_utils.hpp"
+#include "pgduckdb/pgduckdb_xact.hpp"
+#include "pgduckdb/utility/cpp_wrapper.hpp"
 
 namespace pgduckdb {
 
@@ -46,6 +55,43 @@ DatumToString(Datum datum) {
 	return column_value;
 }
 
+bool
+DoesSecretRequiresKeyIdOrSecret(const SecretType type) {
+	return type == SecretType::S3 || type == SecretType::GCS || type == SecretType::R2;
+}
+
+SecretType
+StringToSecretType(const std::string &type) {
+	auto uc_type = duckdb::StringUtil::Upper(type);
+	if (uc_type == "S3") {
+		return SecretType::S3;
+	} else if (uc_type == "R2") {
+		return SecretType::R2;
+	} else if (uc_type == "GCS") {
+		return SecretType::GCS;
+	} else if (uc_type == "AZURE") {
+		return SecretType::AZURE;
+	} else {
+		throw std::runtime_error("Invalid secret type: '" + type + "'");
+	}
+}
+
+std::string
+SecretTypeToString(SecretType type) {
+	switch (type) {
+	case SecretType::S3:
+		return "S3";
+	case SecretType::R2:
+		return "R2";
+	case SecretType::GCS:
+		return "GCS";
+	case SecretType::AZURE:
+		return "AZURE";
+	default:
+		throw std::runtime_error("Invalid secret type: '" + std::to_string(type) + "'");
+	}
+}
+
 std::vector<DuckdbSecret>
 ReadDuckdbSecrets() {
 	HeapTuple tuple = NULL;
@@ -61,9 +107,21 @@ ReadDuckdbSecrets() {
 		heap_deform_tuple(tuple, RelationGetDescr(duckdb_secret_relation), datum_array, is_null_array);
 		DuckdbSecret secret;
 
-		secret.type = DatumToString(datum_array[Anum_duckdb_secret_type - 1]);
-		secret.key_id = DatumToString(datum_array[Anum_duckdb_secret_key_id - 1]);
-		secret.secret = DatumToString(datum_array[Anum_duckdb_secret_secret - 1]);
+		auto type_str = DatumToString(datum_array[Anum_duckdb_secret_type - 1]);
+		secret.type = StringToSecretType(type_str);
+		if (!is_null_array[Anum_duckdb_secret_key_id - 1])
+			secret.key_id = DatumToString(datum_array[Anum_duckdb_secret_key_id - 1]);
+		else if (DoesSecretRequiresKeyIdOrSecret(secret.type)) {
+			elog(WARNING, "Invalid '%s' secret: key id is required.", type_str.c_str());
+			continue;
+		}
+
+		if (!is_null_array[Anum_duckdb_secret_secret - 1])
+			secret.secret = DatumToString(datum_array[Anum_duckdb_secret_secret - 1]);
+		else if (DoesSecretRequiresKeyIdOrSecret(secret.type)) {
+			elog(WARNING, "Invalid '%s' secret: secret is required.", type_str.c_str());
+			continue;
+		}
 
 		if (!is_null_array[Anum_duckdb_secret_region - 1])
 			secret.region = DatumToString(datum_array[Anum_duckdb_secret_region - 1]);
@@ -81,6 +139,13 @@ ReadDuckdbSecrets() {
 			secret.use_ssl = DatumGetBool(DatumGetBool(datum_array[Anum_duckdb_secret_use_ssl - 1]));
 		else
 			secret.use_ssl = true;
+
+		if (!is_null_array[Anum_duckdb_secret_scope - 1])
+			secret.scope = DatumToString(datum_array[Anum_duckdb_secret_scope - 1]);
+
+		if (!is_null_array[Anum_duckdb_secret_connection_string - 1])
+			secret.connection_string = DatumToString(datum_array[Anum_duckdb_secret_connection_string - 1]);
+
 		duckdb_secrets.push_back(secret);
 	}
 
@@ -117,7 +182,6 @@ ReadDuckdbExtensions() {
 
 static bool
 DuckdbInstallExtension(Datum name_datum) {
-
 	auto extension_name = DatumToString(name_datum);
 	auto install_extension_command = duckdb::StringUtil::Format("INSTALL %s;", extension_name.c_str());
 	pgduckdb::DuckDBQueryOrThrow(install_extension_command);
@@ -149,75 +213,154 @@ CanCacheRemoteObject(std::string remote_object) {
 
 static bool
 DuckdbCacheObject(Datum object, Datum type) {
-	auto con = DuckDBManager::CreateConnection();
-	auto &context = *con->context;
-	auto object_type = DatumToString(type);
-
-	if (object_type != "parquet" && object_type != "csv") {
-		elog(WARNING, "(PGDuckDB/DuckdbCacheObject) Cache object type should be 'parquet' or 'csv'.");
-		return false;
-	}
-
-	auto object_type_fun = object_type == "parquet" ? "read_parquet" : "read_csv";
-
-	context.Query("SET enable_http_file_cache TO true;", false);
-
 	auto object_path = DatumToString(object);
-
 	if (!CanCacheRemoteObject(object_path)) {
 		elog(WARNING, "(PGDuckDB/DuckdbCacheObject) Object path '%s' can't be cached.", object_path.c_str());
 		return false;
 	}
 
-	auto cache_object_query =
-	    duckdb::StringUtil::Format("SELECT 1 FROM %s('%s');", object_type_fun, object_path.c_str());
-	auto res = context.Query(cache_object_query, false);
-	auto query_has_errors = res->HasError();
-
-	if (query_has_errors) {
-		elog(WARNING, "(PGDuckDB/DuckdbCacheObject) %s", res->GetError().c_str());
+	auto object_type = DatumToString(type);
+	if (object_type != "parquet" && object_type != "csv") {
+		elog(WARNING, "(PGDuckDB/DuckdbCacheObject) Cache object type should be 'parquet' or 'csv'.");
+		return false;
 	}
 
-	context.Query("SET enable_http_file_cache TO false;", false);
+	/* Use a separate connection to cache the objects, so we are sure not to
+	 * leak the value change of enable_http_file_cache in case of an error */
+	auto con = DuckDBManager::CreateConnection();
+	auto &context = *con->context;
 
-	return query_has_errors;
+	DuckDBQueryOrThrow(context, "SET enable_http_file_cache TO true;");
+
+	auto object_type_fun = object_type == "parquet" ? "read_parquet" : "read_csv";
+	auto cache_object_query =
+	    duckdb::StringUtil::Format("SELECT 1 FROM %s('%s');", object_type_fun, object_path.c_str());
+	DuckDBQueryOrThrow(context, cache_object_query);
+
+	return true;
+}
+
+typedef struct CacheFileInfo {
+	std::string cache_key;
+	std::string remote_path;
+	int64_t file_size;
+	Timestamp file_timestamp;
+} CacheFileInfo;
+
+static std::vector<CacheFileInfo>
+DuckdbGetCachedFilesInfos() {
+	std::string ext(".meta");
+	std::vector<CacheFileInfo> cache_info;
+	for (auto &p : std::filesystem::recursive_directory_iterator(CreateOrGetDirectoryPath("duckdb_cache"))) {
+		if (p.path().extension() == ext) {
+			std::ifstream cache_file_metadata(p.path());
+			std::string metadata;
+			std::vector<std::string> metadata_tokens;
+			while (std::getline(cache_file_metadata, metadata, ',')) {
+				metadata_tokens.push_back(metadata);
+			}
+			if (metadata_tokens.size() != 4) {
+				elog(WARNING, "(PGDuckDB/DuckdbGetCachedFilesInfos) Invalid '%s' cache metadata file",
+				     p.path().c_str());
+				break;
+			}
+			cache_info.push_back(CacheFileInfo {metadata_tokens[0], metadata_tokens[1], std::stoi(metadata_tokens[2]),
+			                                    std::stoi(metadata_tokens[3])});
+		}
+	}
+	return cache_info;
+}
+
+static bool
+DuckdbCacheDelete(Datum cache_key_datum) {
+	auto cache_key = DatumToString(cache_key_datum);
+	if (!cache_key.size()) {
+		elog(WARNING, "(PGDuckDB/DuckdbGetCachedFilesInfos) Empty cache key");
+		return false;
+	}
+	auto cache_filename = CreateOrGetDirectoryPath("duckdb_cache") + "/" + cache_key;
+	bool removed = !std::remove(cache_filename.c_str());
+	std::remove(std::string(cache_filename + ".meta").c_str());
+	return removed;
 }
 
 } // namespace pgduckdb
 
 extern "C" {
 
-PG_FUNCTION_INFO_V1(install_extension);
-Datum
-install_extension(PG_FUNCTION_ARGS) {
+DECLARE_PG_FUNCTION(install_extension) {
 	Datum extension_name = PG_GETARG_DATUM(0);
 	bool result = pgduckdb::DuckdbInstallExtension(extension_name);
 	PG_RETURN_BOOL(result);
 }
 
-PG_FUNCTION_INFO_V1(pgduckdb_raw_query);
-Datum
-pgduckdb_raw_query(PG_FUNCTION_ARGS) {
+DECLARE_PG_FUNCTION(pgduckdb_raw_query) {
 	const char *query = text_to_cstring(PG_GETARG_TEXT_PP(0));
-	typedef duckdb::unique_ptr<duckdb::QueryResult> (*DuckDBQueryOrThrow)(const std::string &);
-	auto result = pgduckdb::DuckDBFunctionGuard<duckdb::unique_ptr<duckdb::QueryResult>, DuckDBQueryOrThrow>(
-	    pgduckdb::DuckDBQueryOrThrow, "pgduckdb_raw_query", query);
+	auto result = pgduckdb::DuckDBQueryOrThrow(query);
 	elog(NOTICE, "result: %s", result->ToString().c_str());
 	PG_RETURN_BOOL(true);
 }
 
-PG_FUNCTION_INFO_V1(cache);
-Datum
-cache(PG_FUNCTION_ARGS) {
+DECLARE_PG_FUNCTION(cache) {
 	Datum object = PG_GETARG_DATUM(0);
 	Datum type = PG_GETARG_DATUM(1);
 	bool result = pgduckdb::DuckdbCacheObject(object, type);
 	PG_RETURN_BOOL(result);
 }
 
-PG_FUNCTION_INFO_V1(pgduckdb_recycle_ddb);
-Datum
-pgduckdb_recycle_ddb(PG_FUNCTION_ARGS) {
+DECLARE_PG_FUNCTION(cache_info) {
+	ReturnSetInfo *rsinfo = (ReturnSetInfo *)fcinfo->resultinfo;
+	Tuplestorestate *tuple_store;
+	TupleDesc cache_info_tuple_desc;
+
+	auto result = pgduckdb::DuckdbGetCachedFilesInfos();
+
+	cache_info_tuple_desc = CreateTemplateTupleDesc(4);
+	TupleDescInitEntry(cache_info_tuple_desc, (AttrNumber)1, "remote_path", TEXTOID, -1, 0);
+	TupleDescInitEntry(cache_info_tuple_desc, (AttrNumber)2, "cache_file_name", TEXTOID, -1, 0);
+	TupleDescInitEntry(cache_info_tuple_desc, (AttrNumber)3, "cache_file_size", INT8OID, -1, 0);
+	TupleDescInitEntry(cache_info_tuple_desc, (AttrNumber)4, "cache_file_timestamp", TIMESTAMPTZOID, -1, 0);
+
+	// We need to switch to long running memory context
+	MemoryContext oldcontext = MemoryContextSwitchTo(rsinfo->econtext->ecxt_per_query_memory);
+	tuple_store = tuplestore_begin_heap(rsinfo->allowedModes & SFRM_Materialize_Random, false, work_mem);
+	MemoryContextSwitchTo(oldcontext);
+
+	for (auto &cache_info : result) {
+		Datum values[4] = {0};
+		bool nulls[4] = {0};
+
+		values[0] = CStringGetTextDatum(cache_info.remote_path.c_str());
+		values[1] = CStringGetTextDatum(cache_info.cache_key.c_str());
+		values[2] = cache_info.file_size;
+		/* We have stored timestamp in *seconds* from epoch. We need to convert this to PG timestamptz. */
+		values[3] = (cache_info.file_timestamp * 1000000) - pgduckdb::PGDUCKDB_DUCK_TIMESTAMP_OFFSET;
+
+		HeapTuple tuple = heap_form_tuple(cache_info_tuple_desc, values, nulls);
+		tuplestore_puttuple(tuple_store, tuple);
+		heap_freetuple(tuple);
+	}
+
+	rsinfo->returnMode = SFRM_Materialize;
+	rsinfo->setResult = tuple_store;
+	rsinfo->setDesc = cache_info_tuple_desc;
+
+	return (Datum)0;
+}
+
+DECLARE_PG_FUNCTION(cache_delete) {
+	Datum cache_key = PG_GETARG_DATUM(0);
+	bool result = pgduckdb::DuckdbCacheDelete(cache_key);
+	PG_RETURN_BOOL(result);
+}
+
+DECLARE_PG_FUNCTION(pgduckdb_recycle_ddb) {
+	/*
+	 * We cannot safely run this in a transaction block, because a DuckDB
+	 * transaction might have already started. Recycling the database will
+	 * violate our assumptions about DuckDB its transaction lifecycle
+	 */
+	pgduckdb::pg::PreventInTransactionBlock("duckdb.recycle_ddb()");
 	pgduckdb::DuckDBManager::Get().Reset();
 	PG_RETURN_BOOL(true);
 }

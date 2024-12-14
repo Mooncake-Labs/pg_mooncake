@@ -13,6 +13,10 @@
 
 #if PG_VERSION_NUM >= 170000 && PG_VERSION_NUM < 180000
 
+#pragma GCC diagnostic ignored "-Wshadow" // ignore any compiler warnings
+#pragma GCC diagnostic ignored "-Wsign-compare" // ignore any compiler warnings
+#pragma GCC diagnostic ignored "-Wunused-parameter" // ignore any compiler warnings
+
 #include <ctype.h>
 #include <unistd.h>
 #include <fcntl.h>
@@ -6175,13 +6179,19 @@ get_setop_query(Node *setOp, Query *query, deparse_context *context,
 		Query	   *subquery = rte->subquery;
 
 		Assert(subquery != NULL);
-		Assert(subquery->setOperations == NULL);
-		/* Need parens if WITH, ORDER BY, FOR UPDATE, or LIMIT; see gram.y */
+
+		/*
+		 * We need parens if WITH, ORDER BY, FOR UPDATE, or LIMIT; see gram.y.
+		 * Also add parens if the leaf query contains its own set operations.
+		 * (That shouldn't happen unless one of the other clauses is also
+		 * present, see transformSetOperationTree; but let's be safe.)
+		 */
 		need_paren = (subquery->cteList ||
 					  subquery->sortClause ||
 					  subquery->rowMarks ||
 					  subquery->limitOffset ||
-					  subquery->limitCount);
+					  subquery->limitCount ||
+					  subquery->setOperations);
 		if (need_paren)
 			appendStringInfoChar(buf, '(');
 		get_query_def(subquery, buf, context->namespaces, resultDesc,
@@ -6682,8 +6692,15 @@ get_insert_query_def(Query *query, deparse_context *context,
 		if (tle->resjunk)
 			continue;			/* ignore junk entries */
 
-		if (IsA(tle->expr, NextValueExpr))
-			continue;
+		/*
+		 * If it's an INSERT ... SELECT or multi-row VALUES, the entry
+		 * with the default value is ignored unless it is specified
+		 */
+		if (values_rte || select_rte)
+		{
+			if (!pgduckdb_is_not_default_expr((Node *) tle, NULL))
+				continue;
+		}
 
 		appendStringInfoString(buf, sep);
 		sep = ", ";

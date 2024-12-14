@@ -9,7 +9,7 @@ extern "C" {
 #include "pgduckdb/pgduckdb.h"
 #include "pgduckdb/pgduckdb_node.hpp"
 #include "pgduckdb/pgduckdb_background_worker.hpp"
-#include "pgmooncake.hpp"
+#include "pgduckdb/pgduckdb_xact.hpp"
 
 static void DuckdbInitGUC(void);
 
@@ -18,6 +18,7 @@ int duckdb_max_threads_per_postgres_scan = 1;
 int duckdb_motherduck_enabled = MotherDuckEnabled::MOTHERDUCK_AUTO;
 char *duckdb_motherduck_token = strdup("");
 char *duckdb_motherduck_postgres_database = strdup("postgres");
+char *duckdb_motherduck_default_database = strdup("");
 char *duckdb_postgres_role = strdup("");
 
 int duckdb_maximum_threads = -1;
@@ -25,12 +26,14 @@ char *duckdb_maximum_memory = strdup("4GB");
 char *duckdb_disabled_filesystems = strdup("LocalFileSystem");
 bool duckdb_enable_external_access = true;
 bool duckdb_allow_unsigned_extensions = false;
+bool duckdb_autoinstall_known_extensions = true;
+bool duckdb_autoload_known_extensions = true;
 
 extern "C" {
-// PG_MODULE_MAGIC;
+PG_MODULE_MAGIC;
 
 void
-Duckdb_PG_init(void) {
+_PG_init(void) {
 	if (!process_shared_preload_libraries_in_progress) {
 		ereport(ERROR, (errmsg("pg_duckdb needs to be loaded via shared_preload_libraries"),
 		                errhint("Add pg_duckdb to shared_preload_libraries.")));
@@ -40,32 +43,39 @@ Duckdb_PG_init(void) {
 	DuckdbInitHooks();
 	DuckdbInitNode();
 	DuckdbInitBackgroundWorker();
+	pgduckdb::RegisterDuckdbXactCallback();
 }
 } // extern "C"
 
 static void
 DefineCustomVariable(const char *name, const char *short_desc, bool *var, GucContext context = PGC_USERSET,
-                     int flags = 0) {
-	DefineCustomBoolVariable(name, gettext_noop(short_desc), NULL, var, *var, context, flags, NULL, NULL, NULL);
+                     int flags = 0, GucBoolCheckHook check_hook = NULL, GucBoolAssignHook assign_hook = NULL,
+                     GucShowHook show_hook = NULL) {
+	DefineCustomBoolVariable(name, gettext_noop(short_desc), NULL, var, *var, context, flags, check_hook, assign_hook,
+	                         show_hook);
 }
 
 static void
 DefineCustomVariable(const char *name, const char *short_desc, char **var, GucContext context = PGC_USERSET,
-                     int flags = 0) {
-	DefineCustomStringVariable(name, gettext_noop(short_desc), NULL, var, *var, context, flags, NULL, NULL, NULL);
+                     int flags = 0, GucStringCheckHook check_hook = NULL, GucStringAssignHook assign_hook = NULL,
+                     GucShowHook show_hook = NULL) {
+	DefineCustomStringVariable(name, gettext_noop(short_desc), NULL, var, *var, context, flags, check_hook, assign_hook,
+	                           show_hook);
 }
 
 static void
 DefineCustomVariable(const char *name, const char *short_desc, int *var, const struct config_enum_entry *options,
-                     GucContext context = PGC_USERSET, int flags = 0) {
-	DefineCustomEnumVariable(name, gettext_noop(short_desc), NULL, var, *var, options, context, flags, NULL, NULL,
-	                         NULL);
+                     GucContext context = PGC_USERSET, int flags = 0, GucEnumCheckHook check_hook = NULL,
+                     GucEnumAssignHook assign_hook = NULL, GucShowHook show_hook = NULL) {
+	DefineCustomEnumVariable(name, gettext_noop(short_desc), NULL, var, *var, options, context, flags, check_hook,
+	                         assign_hook, show_hook);
 }
 
 template <typename T>
 static void
 DefineCustomVariable(const char *name, const char *short_desc, T *var, T min, T max, GucContext context = PGC_USERSET,
-                     int flags = 0) {
+                     int flags = 0, GucIntCheckHook check_hook = NULL, GucIntAssignHook assign_hook = NULL,
+                     GucShowHook show_hook = NULL) {
 	/* clang-format off */
 	void (*func)(
 			const char *name,
@@ -89,7 +99,7 @@ DefineCustomVariable(const char *name, const char *short_desc, T *var, T min, T 
 	} else {
 		static_assert("Unsupported type");
 	}
-	func(name, gettext_noop(short_desc), NULL, var, *var, min, max, context, flags, NULL, NULL, NULL);
+	func(name, gettext_noop(short_desc), NULL, var, *var, min, max, context, flags, check_hook, assign_hook, show_hook);
 }
 
 /*
@@ -122,6 +132,16 @@ DuckdbInitGUC(void) {
 	DefineCustomVariable("duckdb.allow_unsigned_extensions",
 	                     "Allow DuckDB to load extensions with invalid or missing signatures",
 	                     &duckdb_allow_unsigned_extensions, PGC_SUSET);
+
+	DefineCustomVariable(
+	    "duckdb.autoinstall_known_extensions",
+	    "Whether known extensions are allowed to be automatically installed when a DuckDB query depends on them",
+	    &duckdb_autoinstall_known_extensions, PGC_SUSET);
+
+	DefineCustomVariable(
+	    "duckdb.autoload_known_extensions",
+	    "Whether known extensions are allowed to be automatically loaded when a DuckDB query depends on them",
+	    &duckdb_autoload_known_extensions, PGC_SUSET);
 
 	DefineCustomVariable("duckdb.max_memory", "The maximum memory DuckDB can use (e.g., 1GB)", &duckdb_maximum_memory,
 	                     PGC_SUSET);
@@ -156,16 +176,9 @@ DuckdbInitGUC(void) {
 	                     PGC_POSTMASTER, GUC_SUPERUSER_ONLY);
 
 	DefineCustomVariable("duckdb.motherduck_postgres_database", "Which database to enable MotherDuck support in",
-	                     &duckdb_motherduck_postgres_database);
-}
+	                     &duckdb_motherduck_postgres_database, PGC_POSTMASTER, GUC_SUPERUSER_ONLY);
 
-void
-MooncakeInitGUC() {
-	DefineCustomVariable("mooncake.allow_local_tables", "Allow columnstore tables on local disk",
-	                     &mooncake_allow_local_tables);
-
-	DefineCustomVariable("mooncake.default_bucket", "Default bucket for columnstore tables", &mooncake_default_bucket);
-
-	DefineCustomVariable("mooncake.enable_local_cache", "Enable local cache for columnstore tables",
-	                     &mooncake_enable_local_cache);
+	DefineCustomVariable("duckdb.motherduck_default_database",
+	                     "Which database in MotherDuck to designate as default (in place of my_db)",
+	                     &duckdb_motherduck_default_database, PGC_POSTMASTER, GUC_SUPERUSER_ONLY);
 }

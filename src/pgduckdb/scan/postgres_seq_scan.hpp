@@ -2,21 +2,17 @@
 
 #include "duckdb.hpp"
 
-extern "C" {
-#include "postgres.h"
-#include "access/tableam.h"
-#include "access/heapam.h"
-#include "storage/bufmgr.h"
-}
+#include "pgduckdb/pgduckdb_guc.h"
+#include "pgduckdb/pg/declarations.hpp"
 
-#include "pgduckdb/pgduckdb.h"
-#include "pgduckdb/scan/postgres_scan.hpp"
-#include "pgduckdb/scan/heap_reader.hpp"
-
-#include <mutex>
-#include <atomic>
+#include "pgduckdb/utility/cpp_only_file.hpp" // Must be last include.
 
 namespace pgduckdb {
+
+class HeapReaderGlobalState;
+class HeapReader;
+class PostgresScanGlobalState;
+class PostgresScanLocalState;
 
 // Global State
 
@@ -51,11 +47,11 @@ public:
 
 struct PostgresSeqScanFunctionData : public duckdb::TableFunctionData {
 public:
-	PostgresSeqScanFunctionData(::Relation rel, uint64_t cardinality, Snapshot snapshot);
+	PostgresSeqScanFunctionData(Relation rel, uint64_t cardinality, Snapshot snapshot);
 	~PostgresSeqScanFunctionData() override;
 
 public:
-	::Relation m_rel;
+	Relation m_rel;
 	uint64_t m_cardinality;
 	Snapshot m_snapshot;
 };
@@ -72,20 +68,11 @@ public:
 	static duckdb::unique_ptr<duckdb::LocalTableFunctionState>
 	PostgresSeqScanInitLocal(duckdb::ExecutionContext &context, duckdb::TableFunctionInitInput &input,
 	                         duckdb::GlobalTableFunctionState *gstate);
-	// static idx_t PostgresMaxThreads(ClientContext &context, const FunctionData *bind_data_p);
-	// static bool PostgresParallelStateNext(ClientContext &context, const FunctionData *bind_data_p,
-	// LocalTableFunctionState *lstate, GlobalTableFunctionState *gstate); static double PostgresProgress(ClientContext
-	// &context, const FunctionData *bind_data_p, const GlobalTableFunctionState *gstate);
 	static void PostgresSeqScanFunc(duckdb::ClientContext &context, duckdb::TableFunctionInput &data,
 	                                duckdb::DataChunk &output);
 
 	static duckdb::unique_ptr<duckdb::NodeStatistics> PostgresSeqScanCardinality(duckdb::ClientContext &context,
 	                                                                             const duckdb::FunctionData *data);
-
-	// static idx_t PostgresGetBatchIndex(ClientContext &context, const FunctionData *bind_data_p,
-	// LocalTableFunctionState *local_state, GlobalTableFunctionState *global_state); static void
-	// PostgresSerialize(Serializer &serializer, const optional_ptr<FunctionData> bind_data, const TableFunction
-	// &function);
 };
 
 } // namespace pgduckdb

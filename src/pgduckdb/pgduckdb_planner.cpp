@@ -1,4 +1,10 @@
+#include "pgduckdb/pgduckdb_planner.hpp"
+
 #include "duckdb.hpp"
+
+#include "pgduckdb/catalog/pgduckdb_transaction.hpp"
+#include "pgduckdb/scan/postgres_scan.hpp"
+#include "pgduckdb/pgduckdb_types.hpp"
 
 extern "C" {
 #include "postgres.h"
@@ -8,6 +14,8 @@ extern "C" {
 #include "nodes/nodes.h"
 #include "nodes/params.h"
 #include "optimizer/optimizer.h"
+#include "optimizer/planner.h"
+#include "optimizer/planmain.h"
 #include "tcop/pquery.h"
 #include "utils/syscache.h"
 #include "utils/guc.h"
@@ -16,23 +24,15 @@ extern "C" {
 }
 
 #include "pgduckdb/pgduckdb_duckdb.hpp"
-#include "pgduckdb/scan/postgres_scan.hpp"
 #include "pgduckdb/pgduckdb_node.hpp"
-#include "pgduckdb/pgduckdb_planner.hpp"
+#include "pgduckdb/vendor/pg_list.hpp"
+#include "pgduckdb/utility/cpp_wrapper.hpp"
 #include "pgduckdb/pgduckdb_types.hpp"
-#include "pgduckdb/pgduckdb_utils.hpp"
 
 bool duckdb_explain_analyze = false;
 
-std::tuple<duckdb::unique_ptr<duckdb::PreparedStatement>, duckdb::unique_ptr<duckdb::Connection>>
+duckdb::unique_ptr<duckdb::PreparedStatement>
 DuckdbPrepare(const Query *query) {
-	/*
-	 * For now, we don't support DuckDB queries in transactions. To support
-	 * write queries in transactions we'll need to link Postgres and DuckdB
-	 * their transaction lifecycles.
-	 */
-	// PreventInTransactionBlock(true, "DuckDB queries");
-
 	Query *copied_query = (Query *)copyObjectImpl(query);
 	const char *query_string = pgduckdb_get_querydef(copied_query);
 
@@ -46,9 +46,9 @@ DuckdbPrepare(const Query *query) {
 
 	elog(DEBUG2, "(PGDuckDB/DuckdbPrepare) Preparing: %s", query_string);
 
-	auto duckdb_connection = pgduckdb::DuckDBManager::CreateConnection();
-	auto prepared_query = duckdb_connection->context->Prepare(query_string);
-	return {std::move(prepared_query), std::move(duckdb_connection)};
+	auto con = pgduckdb::DuckDBManager::GetConnection();
+	auto prepared_query = con->context->Prepare(query_string);
+	return prepared_query;
 }
 
 static Plan *
@@ -57,8 +57,8 @@ CreatePlan(Query *query, bool throw_error) {
 	/*
 	 * Prepare the query, se we can get the returned types and column names.
 	 */
-	auto prepare_result = DuckdbPrepare(query);
-	auto prepared_query = std::move(std::get<0>(prepare_result));
+
+	duckdb::unique_ptr<duckdb::PreparedStatement> prepared_query = DuckdbPrepare(query);
 
 	if (prepared_query->HasError()) {
 		elog(elevel, "(PGDuckDB/CreatePlan) Prepared query returned an error: '%s", prepared_query->GetError().c_str());
@@ -69,7 +69,7 @@ CreatePlan(Query *query, bool throw_error) {
 
 	auto &prepared_result_types = prepared_query->GetTypes();
 
-	for (auto i = 0; i < prepared_result_types.size(); i++) {
+	for (size_t i = 0; i < prepared_result_types.size(); i++) {
 		auto &column = prepared_result_types[i];
 		Oid postgresColumnOid = pgduckdb::GetPostgresDuckDBType(column);
 
@@ -89,11 +89,26 @@ CreatePlan(Query *query, bool throw_error) {
 
 		typtup = (Form_pg_type)GETSTRUCT(tp);
 
-		Var *var = makeVar(INDEX_VAR, i + 1, postgresColumnOid, typtup->typtypmod, typtup->typcollation, 0);
+		/* We fill in the varno later, once we know the index of the custom RTE
+		 * that we create. We'll know this at the end of DuckdbPlanNode. This
+		 * can probably be simplified when we don't call the standard_planner
+		 * anymore inside DuckdbPlanNode, because then we only need a single
+		 * RTE. */
+		Var *var = makeVar(0, i + 1, postgresColumnOid, typtup->typtypmod, typtup->typcollation, 0);
 
-		duckdb_node->custom_scan_tlist =
-		    lappend(duckdb_node->custom_scan_tlist,
-		            makeTargetEntry((Expr *)var, i + 1, (char *)pstrdup(prepared_query->GetNames()[i].c_str()), false));
+		TargetEntry *target_entry =
+		    makeTargetEntry((Expr *)var, i + 1, (char *)pstrdup(prepared_query->GetNames()[i].c_str()), false);
+
+		/* Our custom scan node needs the custom_scan_tlist to be set */
+		duckdb_node->custom_scan_tlist = lappend(duckdb_node->custom_scan_tlist, copyObjectImpl(target_entry));
+
+		/* For the plan its targetlist we use INDEX_VAR as the varno, which
+		 * means it references our custom_scan_tlist. */
+		var->varno = INDEX_VAR;
+
+		/* But we also need an actual target list, because Postgres expects it
+		 * for things like materialization */
+		duckdb_node->scan.plan.targetlist = lappend(duckdb_node->scan.plan.targetlist, target_entry);
 
 		ReleaseSysCache(tp);
 	}
@@ -104,22 +119,44 @@ CreatePlan(Query *query, bool throw_error) {
 	return (Plan *)duckdb_node;
 }
 
+/* Creates a matching RangeTblEntry for the given CustomScan node */
+static RangeTblEntry *
+DuckdbRangeTableEntry(CustomScan *custom_scan) {
+	List *column_names = NIL;
+	foreach_node(TargetEntry, target_entry, custom_scan->scan.plan.targetlist) {
+		column_names = lappend(column_names, makeString(target_entry->resname));
+	}
+	RangeTblEntry *rte = makeNode(RangeTblEntry);
+
+	/* We need to choose an RTE kind here. RTE_RELATION does not work due to
+	 * various asserts that fail due to us not setting some of the fields on
+	 * the entry. Instead of filling those fields in with dummy values we use
+	 * RTE_NAMEDTUPLESTORE, for which no special fields exist. */
+	rte->rtekind = RTE_NAMEDTUPLESTORE;
+	rte->eref = makeAlias("duckdb_scan", column_names);
+	rte->inFromCl = true;
+
+	return rte;
+}
+
 PlannedStmt *
 DuckdbPlanNode(Query *parse, const char *query_string, int cursor_options, ParamListInfo bound_params,
                bool throw_error) {
-	if (cursor_options & CURSOR_OPT_SCROLL) {
-		if (throw_error) {
-			elog(ERROR, "PGDuckDB does not support scrollable cursor");
-		}
-		return nullptr;
-	}
-
 	/* We need to check can we DuckDB create plan */
-	Plan *plan = pgduckdb::DuckDBFunctionGuard<Plan *>(CreatePlan, "CreatePlan", parse, throw_error);
-	Plan *duckdb_plan = (Plan *)castNode(CustomScan, plan);
+
+	Plan *duckdb_plan = InvokeCPPFunc(CreatePlan, parse, throw_error);
+	CustomScan *custom_scan = castNode(CustomScan, duckdb_plan);
 
 	if (!duckdb_plan) {
 		return nullptr;
+	}
+
+	/*
+	 * If creating a plan for a scrollable cursor add a Material node at the
+	 * top because or CustomScan does not support backwards scanning.
+	 */
+	if (cursor_options & CURSOR_OPT_SCROLL) {
+		duckdb_plan = materialize_finished_plan(duckdb_plan);
 	}
 
 	/*
@@ -139,6 +176,19 @@ DuckdbPlanNode(Query *parse, const char *query_string, int cursor_options, Param
 	PlannedStmt *postgres_plan = standard_planner(copied_query, query_string, cursor_options, bound_params);
 
 	postgres_plan->planTree = duckdb_plan;
+
+	/* Put a DuckdDB RTE at the end of the rtable */
+	RangeTblEntry *rte = DuckdbRangeTableEntry(custom_scan);
+	postgres_plan->rtable = lappend(postgres_plan->rtable, rte);
+
+	/* Update the varno of the Var nodes in the custom_scan_tlist, to point to
+	 * our new RTE. This should not be necessary anymore when we stop relying
+	 * on the standard_planner here. */
+	foreach_node(TargetEntry, target_entry, custom_scan->custom_scan_tlist) {
+		Var *var = castNode(Var, target_entry->expr);
+
+		var->varno = list_length(postgres_plan->rtable);
+	}
 
 	return postgres_plan;
 }

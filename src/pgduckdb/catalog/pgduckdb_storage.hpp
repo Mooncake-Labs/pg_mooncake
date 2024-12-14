@@ -1,18 +1,14 @@
 #pragma once
 
 #include "duckdb/storage/storage_extension.hpp"
-extern "C" {
-#include "postgres.h"
-#include "miscadmin.h"
-#include "utils/snapshot.h"
-#include "nodes/pathnodes.h"
-}
 
-namespace duckdb {
+#include "pgduckdb/utility/cpp_only_file.hpp" // Must be last include.
 
-class PostgresStorageExtension : public StorageExtension {
+namespace pgduckdb {
+
+class PostgresStorageExtension : public duckdb::StorageExtension {
 public:
 	PostgresStorageExtension();
 };
 
-} // namespace duckdb
+} // namespace pgduckdb

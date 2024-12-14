@@ -1,4 +1,5 @@
 #include "duckdb.hpp"
+
 extern "C" {
 #include "postgres.h"
 
@@ -7,6 +8,7 @@ extern "C" {
 #include "catalog/pg_class.h"
 #include "catalog/pg_collation.h"
 #include "commands/dbcommands.h"
+#include "nodes/nodeFuncs.h"
 #include "lib/stringinfo.h"
 #include "utils/builtins.h"
 #include "utils/guc.h"
@@ -20,7 +22,6 @@ extern "C" {
 #include "pgduckdb/vendor/pg_ruleutils.h"
 }
 
-#include "columnstore_handler.hpp"
 #include "pgduckdb/pgduckdb.h"
 #include "pgduckdb/pgduckdb_table_am.hpp"
 #include "pgduckdb/pgduckdb_duckdb.hpp"
@@ -32,6 +33,7 @@ pgduckdb_function_name(Oid function_oid) {
 	if (!pgduckdb::IsDuckdbOnlyFunction(function_oid)) {
 		return nullptr;
 	}
+
 	auto func_name = get_func_name(function_oid);
 	return psprintf("system.main.%s", quote_identifier(func_name));
 }
@@ -42,11 +44,7 @@ pgduckdb_function_name(Oid function_oid) {
  * are not escaped yet.
  */
 List *
-pgduckdb_db_and_schema(const char *postgres_schema_name, bool is_duckdb_table, bool is_columnstore_table) {
-	if (is_columnstore_table) {
-		return list_make2((void *)"pgmooncake", (void *)postgres_schema_name);
-	}
-
+pgduckdb_db_and_schema(const char *postgres_schema_name, bool is_duckdb_table) {
 	if (!is_duckdb_table) {
 		return list_make2((void *)"pgduckdb", (void *)postgres_schema_name);
 	}
@@ -112,11 +110,10 @@ pgduckdb_db_and_schema(const char *postgres_schema_name, bool is_duckdb_table, b
  * database are quoted if necessary.
  */
 const char *
-pgduckdb_db_and_schema_string(const char *postgres_schema_name, bool is_duckdb_table, bool is_columnstore_table) {
-	List *db_and_schema = pgduckdb_db_and_schema(postgres_schema_name, is_duckdb_table, is_columnstore_table);
+pgduckdb_db_and_schema_string(const char *postgres_schema_name, bool is_duckdb_table) {
+	List *db_and_schema = pgduckdb_db_and_schema(postgres_schema_name, is_duckdb_table);
 	const char *db_name = (const char *)linitial(db_and_schema);
 	const char *schema_name = (const char *)lsecond(db_and_schema);
-	return psprintf("%s.%s", quote_identifier(db_name), quote_identifier(schema_name));
 	return psprintf("%s.%s", quote_identifier(db_name), quote_identifier(schema_name));
 }
 
@@ -127,7 +124,6 @@ pgduckdb_db_and_schema_string(const char *postgres_schema_name, bool is_duckdb_t
  */
 char *
 pgduckdb_relation_name(Oid relation_oid) {
-
 	HeapTuple tp = SearchSysCache1(RELOID, ObjectIdGetDatum(relation_oid));
 	if (!HeapTupleIsValid(tp))
 		elog(ERROR, "cache lookup failed for relation %u", relation_oid);
@@ -156,9 +152,7 @@ pgduckdb_relation_name(Oid relation_oid) {
 		}
 	}
 
-	bool is_columnstore_table = IsColumnstoreTable(relation_oid);
-	const char *db_and_schema =
-	    pgduckdb_db_and_schema_string(postgres_schema_name, is_duckdb_table, is_columnstore_table);
+	const char *db_and_schema = pgduckdb_db_and_schema_string(postgres_schema_name, is_duckdb_table);
 	char *result = psprintf("%s.%s", db_and_schema, quote_identifier(relname));
 
 	ReleaseSysCache(tp);
@@ -203,8 +197,7 @@ pgduckdb_get_tabledef(Oid relation_oid) {
 	Relation relation = relation_open(relation_oid, AccessShareLock);
 	const char *relation_name = pgduckdb_relation_name(relation_oid);
 	const char *postgres_schema_name = get_namespace_name_or_temp(relation->rd_rel->relnamespace);
-	const char *db_and_schema = pgduckdb_db_and_schema_string(postgres_schema_name, pgduckdb::IsDuckdbTable(relation),
-	                                                          IsColumnstoreTable(relation));
+	const char *db_and_schema = pgduckdb_db_and_schema_string(postgres_schema_name, pgduckdb::IsDuckdbTable(relation));
 
 	StringInfoData buffer;
 	initStringInfo(&buffer);
@@ -373,5 +366,31 @@ pgduckdb_get_tabledef(Oid relation_oid) {
 	relation_close(relation, AccessShareLock);
 
 	return (buffer.data);
+}
+
+/*
+ * Recursively check Const nodes and Var nodes for handling more complex DEFAULT clauses
+ */
+bool
+pgduckdb_is_not_default_expr(Node *node, void *context) {
+	if (node == NULL) {
+		return false;
+	}
+
+	if (IsA(node, Var)) {
+		return true;
+	} else if (IsA(node, Const)) {
+		/* If location is -1, it comes from the DEFAULT clause */
+		Const *con = (Const *)node;
+		if (con->location != -1) {
+			return true;
+		}
+	}
+
+#if PG_VERSION_NUM >= 160000
+	return expression_tree_walker(node, pgduckdb_is_not_default_expr, context);
+#else
+	return expression_tree_walker(node, (bool (*)())((void *)pgduckdb_is_not_default_expr), context);
+#endif
 }
 }

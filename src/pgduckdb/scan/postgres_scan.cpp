@@ -12,8 +12,13 @@
 #include "duckdb/common/enums/statement_type.hpp"
 #include "duckdb/common/enums/expression_type.hpp"
 
+#include "pgduckdb/scan/postgres_scan.hpp"
+#include "pgduckdb/pgduckdb_types.hpp"
+#include "pgduckdb/pgduckdb_utils.hpp"
+
 extern "C" {
 #include "postgres.h"
+#include "access/htup_details.h"
 #include "catalog/namespace.h"
 #include "catalog/pg_class.h"
 #include "optimizer/planmain.h"
@@ -25,9 +30,6 @@ extern "C" {
 }
 
 #include "pgduckdb/pgduckdb_process_lock.hpp"
-#include "pgduckdb/scan/postgres_scan.hpp"
-#include "pgduckdb/pgduckdb_types.hpp"
-#include "pgduckdb/pgduckdb_utils.hpp"
 
 namespace pgduckdb {
 
@@ -39,9 +41,33 @@ PostgresScanGlobalState::InitGlobalState(duckdb::TableFunctionInitInput &input) 
 		return;
 	}
 
-	/* We need ordered columns ids for reading tuple. */
-	for (duckdb::idx_t i = 0; i < input.column_ids.size(); i++) {
-		m_read_columns_ids[input.column_ids[i]] = i;
+	/*
+	 * We need to read columns from the Postgres tuple in column order, but for
+	 * outputting them we care about the DuckDB order. A map automatically
+	 * orders them based on key, which in this case is the Postgres column
+	 * order
+	 */
+	duckdb::map<AttrNumber, duckdb::idx_t> pg_column_order;
+	duckdb::idx_t scan_index = 0;
+	for (const auto &pg_column : input.column_ids) {
+		/* Postgres AttrNumbers are 1-based */
+		pg_column_order[pg_column + 1] = scan_index++;
+	}
+
+	auto table_filters = input.filters.get();
+	m_column_filters.resize(input.column_ids.size(), 0);
+
+	for (auto const &[att_num, duckdb_scanned_index] : pg_column_order) {
+		m_columns_to_scan.emplace_back(att_num, duckdb_scanned_index);
+
+		if (!table_filters) {
+			continue;
+		}
+
+		auto column_filter_it = table_filters->filters.find(duckdb_scanned_index);
+		if (column_filter_it != table_filters->filters.end()) {
+			m_column_filters[duckdb_scanned_index] = column_filter_it->second.get();
+		}
 	}
 
 	/* We need to check do we consider projection_ids or column_ids list to be used
@@ -51,16 +77,15 @@ PostgresScanGlobalState::InitGlobalState(duckdb::TableFunctionInitInput &input) 
 	 * to upper layers of query execution.
 	 */
 	if (input.CanRemoveFilterColumns()) {
-		for (duckdb::idx_t i = 0; i < input.projection_ids.size(); i++) {
-			m_output_columns_ids[i] = input.column_ids[input.projection_ids[i]];
+		for (const auto &projection_id : input.projection_ids) {
+			m_output_columns.emplace_back(projection_id, input.column_ids[projection_id] + 1);
 		}
 	} else {
-		for (duckdb::idx_t i = 0; i < input.column_ids.size(); i++) {
-			m_output_columns_ids[i] = input.column_ids[i];
+		duckdb::idx_t output_index = 0;
+		for (const auto &column_id : input.column_ids) {
+			m_output_columns.emplace_back(output_index++, column_id + 1);
 		}
 	}
-
-	m_filters = input.filters.get();
 }
 
 void
@@ -68,7 +93,7 @@ PostgresScanGlobalState::InitRelationMissingAttrs(TupleDesc tuple_desc) {
 	std::lock_guard<std::mutex> lock(DuckdbProcessLock::GetLock());
 	for (int attnum = 0; attnum < tuple_desc->natts; attnum++) {
 		bool is_null = false;
-		Datum attr = getmissingattr(tuple_desc, attnum + 1, &is_null);
+		Datum attr = PostgresFunctionGuard(getmissingattr, tuple_desc, attnum + 1, &is_null);
 		/* Add missing attr datum if not null*/
 		if (!is_null) {
 			m_relation_missing_attrs[attnum] = attr;
@@ -82,22 +107,23 @@ FindMatchingRelation(const duckdb::string &schema, const duckdb::string &table) 
 	if (!schema.empty()) {
 		name_list = lappend(name_list, makeString(pstrdup(schema.c_str())));
 	}
+
 	name_list = lappend(name_list, makeString(pstrdup(table.c_str())));
 
 	RangeVar *table_range_var = makeRangeVarFromNameList(name_list);
-	Oid relOid = RangeVarGetRelid(table_range_var, AccessShareLock, true);
-	if (relOid != InvalidOid) {
-		return relOid;
-	}
-	return InvalidOid;
+	return RangeVarGetRelid(table_range_var, AccessShareLock, true);
+}
+
+const char *
+pgduckdb_pg_get_viewdef(Oid view) {
+	auto oid = ObjectIdGetDatum(view);
+	Datum viewdef = DirectFunctionCall1(pg_get_viewdef, oid);
+	return text_to_cstring(DatumGetTextP(viewdef));
 }
 
 duckdb::unique_ptr<duckdb::TableRef>
 ReplaceView(Oid view) {
-	auto oid = ObjectIdGetDatum(view);
-	Datum viewdef = PostgresFunctionGuard<Datum>(
-	    [](PGFunction func, Datum arg) { return DirectFunctionCall1(func, arg); }, pg_get_viewdef, oid);
-	auto view_definition = text_to_cstring(DatumGetTextP(viewdef));
+	const auto view_definition = PostgresFunctionGuard(pgduckdb_pg_get_viewdef, view);
 
 	if (!view_definition) {
 		throw duckdb::InvalidInputException("Could not retrieve view definition for Relation with relid: %u", view);
@@ -105,7 +131,7 @@ ReplaceView(Oid view) {
 
 	duckdb::Parser parser;
 	parser.ParseQuery(view_definition);
-	auto statements = std::move(parser.statements);
+	auto &statements = parser.statements;
 	if (statements.size() != 1) {
 		throw duckdb::InvalidInputException("View definition contained more than 1 statement!");
 	}
@@ -116,35 +142,33 @@ ReplaceView(Oid view) {
 	}
 
 	auto select = duckdb::unique_ptr_cast<duckdb::SQLStatement, duckdb::SelectStatement>(std::move(statements[0]));
-	auto subquery = duckdb::make_uniq<duckdb::SubqueryRef>(std::move(select));
-	return std::move(subquery);
+	return duckdb::make_uniq<duckdb::SubqueryRef>(std::move(select));
 }
 
 duckdb::unique_ptr<duckdb::TableRef>
-PostgresReplacementScan(duckdb::ClientContext &context, duckdb::ReplacementScanInput &input,
-                        duckdb::optional_ptr<duckdb::ReplacementScanData> data) {
+PostgresReplacementScan(duckdb::ClientContext &, duckdb::ReplacementScanInput &input,
+                        duckdb::optional_ptr<duckdb::ReplacementScanData>) {
 
 	auto &schema_name = input.schema_name;
 	auto &table_name = input.table_name;
 
-	auto relid = FindMatchingRelation(schema_name, table_name);
-
+	auto relid = PostgresFunctionGuard(FindMatchingRelation, schema_name, table_name);
 	if (relid == InvalidOid) {
 		return nullptr;
 	}
 
-	auto tuple = PostgresFunctionGuard<HeapTuple>(SearchSysCache1, RELOID, ObjectIdGetDatum(relid));
+	auto tuple = PostgresFunctionGuard(SearchSysCache1, RELOID, ObjectIdGetDatum(relid));
 	if (!HeapTupleIsValid(tuple)) {
 		elog(WARNING, "(PGDuckDB/PostgresReplacementScan) Cache lookup failed for relation %u", relid);
 		return nullptr;
 	}
 
 	auto relForm = (Form_pg_class)GETSTRUCT(tuple);
-
 	if (relForm->relkind != RELKIND_VIEW) {
 		PostgresFunctionGuard(ReleaseSysCache, tuple);
 		return nullptr;
 	}
+
 	PostgresFunctionGuard(ReleaseSysCache, tuple);
 	return ReplaceView(relid);
 }

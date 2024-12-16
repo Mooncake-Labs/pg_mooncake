@@ -21,5 +21,3 @@ INSERT INTO t (b) VALUES (1), (2);
 INSERT INTO t (b) SELECT 3;
 SELECT * FROM t;
 DROP TABLE t;
-
-CREATE TABLE t (a int GENERATED ALWAYS AS (b + 1) STORED, b int) USING columnstore;

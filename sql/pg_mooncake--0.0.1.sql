@@ -18,6 +18,221 @@ CREATE TABLE mooncake.data_files (
 CREATE INDEX data_files_oid ON mooncake.data_files (oid);
 CREATE UNIQUE INDEX data_files_file_name ON mooncake.data_files (file_name);
 
+CREATE FUNCTION mooncake.read_parquet(path text, binary_as_string BOOLEAN DEFAULT FALSE,
+                                                   filename BOOLEAN DEFAULT FALSE,
+                                                   file_row_number BOOLEAN DEFAULT FALSE,
+                                                   hive_partitioning BOOLEAN DEFAULT FALSE,
+                                                   union_by_name BOOLEAN DEFAULT FALSE)
+RETURNS SETOF record LANGUAGE 'plpgsql'
+SET search_path = pg_catalog, pg_temp
+AS
+$func$
+BEGIN
+    RAISE EXCEPTION 'Function `read_parquet(TEXT)` only works with Duckdb execution.';
+END;
+$func$;
+
+CREATE FUNCTION mooncake.read_parquet(path text[], binary_as_string BOOLEAN DEFAULT FALSE,
+                                                     filename BOOLEAN DEFAULT FALSE,
+                                                     file_row_number BOOLEAN DEFAULT FALSE,
+                                                     hive_partitioning BOOLEAN DEFAULT FALSE,
+                                                     union_by_name BOOLEAN DEFAULT FALSE)
+RETURNS SETOF record LANGUAGE 'plpgsql'
+SET search_path = pg_catalog, pg_temp
+AS
+$func$
+BEGIN
+    RAISE EXCEPTION 'Function `read_parquet(TEXT[])` only works with Duckdb execution.';
+END;
+$func$;
+
+-- Arguments 'columns' and 'nullstr' are currently not supported for read_csv
+
+CREATE FUNCTION mooncake.read_csv(path text, all_varchar BOOLEAN DEFAULT FALSE,
+                                               allow_quoted_nulls BOOLEAN DEFAULT TRUE,
+                                               auto_detect BOOLEAN DEFAULT TRUE,
+                                               auto_type_candidates TEXT[] DEFAULT ARRAY[]::TEXT[],
+                                               compression VARCHAR DEFAULT 'auto',
+                                               dateformat VARCHAR DEFAULT '',
+                                               decimal_separator VARCHAR DEFAULT '.',
+                                               delim VARCHAR DEFAULT ',',
+                                               escape VARCHAR DEFAULT '"',
+                                               filename BOOLEAN DEFAULT FALSE,
+                                               force_not_null TEXT[] DEFAULT ARRAY[]::TEXT[],
+                                               header BOOLEAN DEFAULT FALSE,
+                                               hive_partitioning BOOLEAN DEFAULT FALSE,
+                                               ignore_errors BOOLEAN DEFAULT FALSE,
+                                               max_line_size BIGINT DEFAULT 2097152,
+                                               names TEXT[] DEFAULT ARRAY[]::TEXT[],
+                                               new_line VARCHAR DEFAULT '',
+                                               normalize_names BOOLEAN DEFAULT FALSE,
+                                               null_padding BOOLEAN DEFAULT FALSE,
+                                               nullstr TEXT[] DEFAULT ARRAY[]::TEXT[],
+                                               parallel BOOLEAN DEFAULT FALSE,
+                                               quote VARCHAR DEFAULT '"',
+                                               sample_size BIGINT DEFAULT 20480,
+                                               sep VARCHAR DEFAULT ',',
+                                               skip BIGINT DEFAULT 0,
+                                               timestampformat VARCHAR DEFAULT '',
+                                               types TEXT[] DEFAULT ARRAY[]::TEXT[],
+                                               union_by_name BOOLEAN DEFAULT FALSE)
+RETURNS SETOF record LANGUAGE 'plpgsql'
+SET search_path = pg_catalog, pg_temp
+AS
+$func$
+BEGIN
+    RAISE EXCEPTION 'Function `read_csv(TEXT)` only works with Duckdb execution.';
+END;
+$func$;
+
+CREATE FUNCTION mooncake.read_csv(path text[],  all_varchar BOOLEAN DEFAULT FALSE,
+                                                  allow_quoted_nulls BOOLEAN DEFAULT TRUE,
+                                                  auto_detect BOOLEAN DEFAULT TRUE,
+                                                  auto_type_candidates TEXT[] DEFAULT ARRAY[]::TEXT[],
+                                                  compression VARCHAR DEFAULT 'auto',
+                                                  dateformat VARCHAR DEFAULT '',
+                                                  decimal_separator VARCHAR DEFAULT '.',
+                                                  delim VARCHAR DEFAULT ',',
+                                                  escape VARCHAR DEFAULT '"',
+                                                  filename BOOLEAN DEFAULT FALSE,
+                                                  force_not_null TEXT[] DEFAULT ARRAY[]::TEXT[],
+                                                  header BOOLEAN DEFAULT FALSE,
+                                                  hive_partitioning BOOLEAN DEFAULT FALSE,
+                                                  ignore_errors BOOLEAN DEFAULT FALSE,
+                                                  max_line_size BIGINT DEFAULT 2097152,
+                                                  names TEXT[] DEFAULT ARRAY[]::TEXT[],
+                                                  new_line VARCHAR DEFAULT '',
+                                                  normalize_names BOOLEAN DEFAULT FALSE,
+                                                  null_padding BOOLEAN DEFAULT FALSE,
+                                                  nullstr TEXT[] DEFAULT ARRAY[]::TEXT[],
+                                                  parallel BOOLEAN DEFAULT FALSE,
+                                                  quote VARCHAR DEFAULT '"',
+                                                  sample_size BIGINT DEFAULT 20480,
+                                                  sep VARCHAR DEFAULT ',',
+                                                  skip BIGINT DEFAULT 0,
+                                                  timestampformat VARCHAR DEFAULT '',
+                                                  types TEXT[] DEFAULT ARRAY[]::TEXT[],
+                                                  union_by_name BOOLEAN DEFAULT FALSE)
+RETURNS SETOF record LANGUAGE 'plpgsql'
+SET search_path = pg_catalog, pg_temp
+AS
+$func$
+BEGIN
+    RAISE EXCEPTION 'Function `read_csv(TEXT[])` only works with Duckdb execution.';
+END;
+$func$;
+
+CREATE FUNCTION mooncake.read_json(path text, auto_detect BOOLEAN DEFAULT FALSE,
+                                                 compression VARCHAR DEFAULT 'auto',
+                                                 dateformat VARCHAR DEFAULT 'iso',
+                                                 format VARCHAR DEFAULT 'array',
+                                                 ignore_errors BOOLEAN DEFAULT FALSE,
+                                                 maximum_depth BIGINT DEFAULT -1,
+                                                 maximum_object_size INT DEFAULT 16777216,
+                                                 records VARCHAR DEFAULT 'records',
+                                                 sample_size BIGINT DEFAULT 20480,
+                                                 timestampformat VARCHAR DEFAULT 'iso',
+                                                 union_by_name BOOLEAN DEFAULT FALSE)
+RETURNS SETOF record LANGUAGE 'plpgsql'
+SET search_path = pg_catalog, pg_temp
+AS
+$func$
+BEGIN
+    RAISE EXCEPTION 'Function `read_json(TEXT)` only works with Duckdb execution.';
+END;
+$func$;
+
+CREATE FUNCTION mooncake.read_json(path text[], auto_detect BOOLEAN DEFAULT FALSE,
+                                                   compression VARCHAR DEFAULT 'auto',
+                                                   dateformat VARCHAR DEFAULT 'iso',
+                                                   format VARCHAR DEFAULT 'array',
+                                                   ignore_errors BOOLEAN DEFAULT FALSE,
+                                                   maximum_depth BIGINT DEFAULT -1,
+                                                   maximum_object_size INT DEFAULT 16777216,
+                                                   records VARCHAR DEFAULT 'records',
+                                                   sample_size BIGINT DEFAULT 20480,
+                                                   timestampformat VARCHAR DEFAULT 'iso',
+                                                   union_by_name BOOLEAN DEFAULT FALSE)
+RETURNS SETOF record LANGUAGE 'plpgsql'
+SET search_path = pg_catalog, pg_temp
+AS
+$func$
+BEGIN
+    RAISE EXCEPTION 'Function `read_json(TEXT[])` only works with Duckdb execution.';
+END;
+$func$;
+
+-- iceberg_* functions optional parameters are extract from source code;
+-- https://github.com/duckdb/duckdb_iceberg/tree/main/src/iceberg_functions
+
+CREATE FUNCTION mooncake.iceberg_scan(path text, allow_moved_paths BOOLEAN DEFAULT FALSE,
+                                                   mode TEXT DEFAULT '',
+                                                   metadata_compression_codec TEXT DEFAULT 'none',
+                                                   skip_schema_inference BOOLEAN DEFAULT FALSE,
+                                                   version TEXT DEFAULT 'version-hint.text',
+                                                   version_name_format TEXT DEFAULT 'v%s%s.metadata.json,%s%s.metadata.json')
+RETURNS SETOF record LANGUAGE 'plpgsql'
+SET search_path = pg_catalog, pg_temp
+AS
+$func$
+BEGIN
+    RAISE EXCEPTION 'Function `iceberg_scan(TEXT)` only works with Duckdb execution.';
+END;
+$func$;
+
+CREATE TYPE mooncake.iceberg_metadata_record AS (
+  manifest_path TEXT,
+  manifest_sequence_number NUMERIC,
+  manifest_content  TEXT,
+  status TEXT,
+  content TEXT,
+  file_path TEXT
+);
+
+CREATE FUNCTION mooncake.iceberg_metadata(path text, allow_moved_paths BOOLEAN DEFAULT FALSE,
+                                                       metadata_compression_codec TEXT DEFAULT 'none',
+                                                       skip_schema_inference BOOLEAN DEFAULT FALSE,
+                                                       version TEXT DEFAULT 'version-hint.text',
+                                                       version_name_format TEXT DEFAULT 'v%s%s.metadata.json,%s%s.metadata.json')
+RETURNS SETOF mooncake.iceberg_metadata_record LANGUAGE 'plpgsql'
+SET search_path = pg_catalog, pg_temp
+AS
+$func$
+BEGIN
+    RAISE EXCEPTION 'Function `iceberg_metadata(TEXT)` only works with Duckdb execution.';
+END;
+$func$;
+
+CREATE TYPE mooncake.iceberg_snapshots_record AS (
+  sequence_number BIGINT,
+  snapshot_id BIGINT,
+  timestamp_ms TIMESTAMP,
+  manifest_list TEXT
+);
+
+CREATE FUNCTION mooncake.iceberg_snapshots(path text, metadata_compression_codec TEXT DEFAULT 'none',
+                                                        skip_schema_inference BOOLEAN DEFAULT FALSE,
+                                                        version TEXT DEFAULT 'version-hint.text',
+                                                        version_name_format TEXT DEFAULT 'v%s%s.metadata.json,%s%s.metadata.json')
+RETURNS SETOF mooncake.iceberg_snapshots_record LANGUAGE 'plpgsql'
+SET search_path = pg_catalog, pg_temp
+AS
+$func$
+BEGIN
+    RAISE EXCEPTION 'Function `iceberg_snapshots(TEXT)` only works with Duckdb execution.';
+END;
+$func$;
+
+CREATE FUNCTION mooncake.delta_scan(path text)
+RETURNS SETOF record LANGUAGE 'plpgsql'
+SET search_path = pg_catalog, pg_temp
+AS
+$func$
+BEGIN
+    RAISE EXCEPTION 'Function `delta_scan(TEXT)` only works with Duckdb execution.';
+END;
+$func$;
+
 CREATE TABLE mooncake.secrets (
     name TEXT NOT NULL,
     type TEXT NOT NULL,

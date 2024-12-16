@@ -141,6 +141,12 @@ DuckdbXactCallback_Cpp(XactEvent event) {
 		return;
 	}
 
+	if (event == XACT_EVENT_ABORT || event == XACT_EVENT_PARALLEL_ABORT) {
+		duckdb::Columnstore::Abort();
+	} else if (event == XACT_EVENT_COMMIT || event == XACT_EVENT_PARALLEL_COMMIT) {
+		duckdb::Columnstore::Commit();
+	}
+
 	auto connection = DuckDBManager::GetConnectionUnsafe();
 	auto &context = *connection->context;
 	if (!context.transaction.HasActiveTransaction()) {
@@ -169,7 +175,6 @@ DuckdbXactCallback_Cpp(XactEvent event) {
 		duckdb_command_id = -1;
 		// Abort the DuckDB transaction too
 		context.transaction.Rollback(nullptr);
-		duckdb::Columnstore::Abort();
 		break;
 
 	case XACT_EVENT_PREPARE:
@@ -179,7 +184,6 @@ DuckdbXactCallback_Cpp(XactEvent event) {
 
 	case XACT_EVENT_COMMIT:
 	case XACT_EVENT_PARALLEL_COMMIT:
-		duckdb::Columnstore::Commit();
 		// No action needed for commit event, we already did committed the
 		// DuckDB transaction in the PRE_COMMIT event. We don't commit the
 		// DuckDB transaction here, because any failure to commit would

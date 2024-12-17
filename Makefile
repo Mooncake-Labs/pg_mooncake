@@ -3,13 +3,13 @@
 # ========================
 BUILD_TYPE ?= debug
 BUILD_DIR := build/$(BUILD_TYPE)
-BUILD_SRC_RUST := $(BUILD_DIR)/src/rust_extensions
-CURRENT_BUILD := build/current
-DUCKDB_DIR := third_party/duckdb
+BUILD_SRC_RUST := build/src/rust_extensions
+CURRENT_BUILD := $(BUILD_DIR)/current
 DELTA_DIR := rust_extensions/delta
-DUCKDB_BUILD := $(DUCKDB_DIR)/build/$(BUILD_TYPE)/src/libduckdb.so
-DELTA_LIB := $(DELTA_DIR)/target/$(BUILD_TYPE)/libdelta.a
 DELTA_HEADER := $(DELTA_DIR)/target/cxxbridge/delta/src/lib.rs.h
+DELTA_LIB := $(DELTA_DIR)/target/$(BUILD_TYPE)/libdelta.a
+DUCKDB_DIR := third_party/duckdb
+DUCKDB_BUILD := $(DUCKDB_DIR)/build/$(BUILD_TYPE)/src/libduckdb.so
 SRC_DIR := src
 
 # ========================
@@ -22,9 +22,9 @@ MAKEFLAGS := --no-print-directory
 # ========================
 # Phony Targets
 # ========================
-.PHONY: .BUILD all release debug clean clean-all format install installcheck uninstall \
-        duckdb duckdb-fast clean-duckdb \
-        delta clean-delta format-delta help
+.PHONY: .BUILD all clean clean-all clean-delta clean-duckdb debug delta \
+        duckdb duckdb-fast format format-delta help install installcheck \
+        release uninstall
 
 # ========================
 # Default Target: Help
@@ -36,20 +36,20 @@ help:
 	@echo ""
 	@echo "Available targets:"
 	@echo "  all              Build DuckDB and Delta extension"
-	@echo "  release          Build in release mode (BUILD_TYPE=release)"
-	@echo "  debug            Build in debug mode (BUILD_TYPE=debug)"
 	@echo "  clean            Remove build artifacts"
 	@echo "  clean-all        Remove all build artifacts and clean everything"
-	@echo "  format           Format source files"
-	@echo "  install          Install built artifacts"
-	@echo "  installcheck     Run regression tests"
-	@echo "  uninstall        Uninstall built artifacts"
+	@echo "  clean-delta      Clean Delta extension artifacts"
+	@echo "  clean-duckdb     Clean DuckDB build artifacts"
+	@echo "  debug            Build in debug mode (BUILD_TYPE=debug)"
+	@echo "  delta            Build Delta extension"
 	@echo "  duckdb           Build DuckDB library"
 	@echo "  duckdb-fast      Install prebuilt DuckDB binary"
-	@echo "  clean-duckdb     Clean DuckDB build artifacts"
-	@echo "  delta            Build Delta extension"
-	@echo "  clean-delta      Clean Delta extension artifacts"
+	@echo "  format           Format source files"
 	@echo "  format-delta     Format Delta extension code"
+	@echo "  install          Install built artifacts"
+	@echo "  installcheck     Run regression tests"
+	@echo "  release          Build in release mode (BUILD_TYPE=release)"
+	@echo "  uninstall        Uninstall built artifacts"
 
 # ========================
 # Build Setup
@@ -118,7 +118,7 @@ $(DUCKDB_BUILD): | .BUILD
 delta: | .BUILD
 	cargo build --manifest-path=$(DELTA_DIR)/Cargo.toml $(CARGO_FLAGS)
 	@mkdir -p $(BUILD_SRC_RUST)
-	install -C $(shell readlink -f $(DELTA_HEADER)) $(BUILD_SRC_RUST)/delta.hpp
+	install -C $(DELTA_HEADER) $(BUILD_SRC_RUST)/delta.hpp
 	install -C $(DELTA_LIB) $(BUILD_DIR)/libdelta.a
 
 clean-delta:

@@ -1,6 +1,7 @@
 # ========================
 # Shared Variables
 # ========================
+BUILD_TYPE ?= debug
 BUILD_DIR := build/$(BUILD_TYPE)
 BUILD_SRC_RUST := $(BUILD_DIR)/src/rust_extensions
 CURRENT_BUILD := build/current
@@ -23,7 +24,31 @@ MAKEFLAGS := --no-print-directory
 # ========================
 .PHONY: .BUILD all release debug clean format install installcheck uninstall \
         duckdb duckdb-fast clean-duckdb \
-        delta clean-delta format-delta
+        delta clean-delta format-delta help
+
+# ========================
+# Default Target: Help
+# ========================
+help:
+	@echo "Usage: make [TARGET] [BUILD_TYPE=debug|release]"
+	@echo ""
+	@echo "Default BUILD_TYPE is 'debug'."
+	@echo ""
+	@echo "Available targets:"
+	@echo "  all              Build DuckDB and Delta extension"
+	@echo "  release          Build in release mode (BUILD_TYPE=release)"
+	@echo "  debug            Build in debug mode (BUILD_TYPE=debug)"
+	@echo "  clean            Remove build artifacts"
+	@echo "  format           Format source files"
+	@echo "  install          Install built artifacts"
+	@echo "  installcheck     Run regression tests"
+	@echo "  uninstall        Uninstall built artifacts"
+	@echo "  duckdb           Build DuckDB library"
+	@echo "  duckdb-fast      Install prebuilt DuckDB binary"
+	@echo "  clean-duckdb     Clean DuckDB build artifacts"
+	@echo "  delta            Build Delta extension"
+	@echo "  clean-delta      Clean Delta extension artifacts"
+	@echo "  format-delta     Format Delta extension code"
 
 # ========================
 # Build Setup

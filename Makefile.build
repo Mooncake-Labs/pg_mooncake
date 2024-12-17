@@ -1,43 +1,69 @@
-MODULE_big := pg_mooncake
-MODULES := libduckdb
-EXTENSION := ../../pg_mooncake
-DATA := ../../sql/pg_mooncake--0.0.1.sql
+# ========================
+# Shared Variables
+# ========================
+SRC_DIR := ../../src
+TEST_DIR := ../../test
+SQL_DIR := ../../sql
+BUILD_DIR := ../../build
+DUCKDB_DIR := ../../third_party/duckdb
+DUCKDB_INCLUDE := $(DUCKDB_DIR)/src/include
+DUCKDB_PARQUET_INCLUDE := $(DUCKDB_DIR)/extension/parquet/include
+DUCKDB_THRIFT_INCLUDE := $(DUCKDB_DIR)/third_party/thrift
+PG_LIB := $(shell $(PG_CONFIG) --pkglibdir)
+EXTENSION_NAME := pg_mooncake
+DATA_FILE := $(SQL_DIR)/pg_mooncake--0.0.1.sql
 
-SRCS_C := $(shell cd ../../src; find * -name '*.c')
-SRCS_CXX := $(shell cd ../../src; find * -name '*.cpp')
-SRCS := $(SRCS_C) $(SRCS_CXX) thrift/transport/TBufferTransports.cpp
+# ========================
+# PostgreSQL Setup
+# ========================
+MODULE_big := $(EXTENSION_NAME)
+MODULES := libduckdb
+EXTENSION := ../../$(EXTENSION_NAME)
+DATA := $(DATA_FILE)
+
+# Source Files
+SRCS_C := $(shell cd $(SRC_DIR); find * -name '*.c')
+SRCS_CXX := $(shell cd $(SRC_DIR); find * -name '*.cpp')
+SRCS := $(SRCS_C) $(SRCS_CXX)
 OBJS := $(SRCS:%=%.o) libduckdb.so libdelta.a
 DEPS := $(SRCS:%=%.d)
 
-REGRESS_SQL := $(shell cd ../../test/sql; find * -name '*.sql')
+# Regression Tests
+REGRESS_SQL := $(shell cd $(TEST_DIR)/sql; find * -name '*.sql')
 REGRESS := $(REGRESS_SQL:%.sql=%)
-REGRESS_OPTS = --inputdir=../../test --load-extension=pg_mooncake
+REGRESS_OPTS = --inputdir=$(TEST_DIR) --load-extension=$(EXTENSION_NAME)
 
-PG_CONFIG ?= pg_config
-PG_LIB := $(shell $(PG_CONFIG) --pkglibdir)
-PGXS := $(shell $(PG_CONFIG) --pgxs)
-
-PG_CPPFLAGS := -I../../src \
-               -I../../third_party/duckdb/extension/parquet/include \
-               -I../../third_party/duckdb/src/include \
-               -I../../third_party/duckdb/third_party/parquet \
-               -I../../third_party/duckdb/third_party/thrift \
+# Compilation Flags
+PG_CPPFLAGS := -I$(SRC_DIR) \
+               -I$(DUCKDB_PARQUET_INCLUDE) \
+               -I$(DUCKDB_INCLUDE) \
+               -I$(DUCKDB_DIR)/third_party/parquet \
+               -I$(DUCKDB_THRIFT_INCLUDE) \
                -I../src \
                -MMD -MP
 PG_CFLAGS := $(if $(DEBUG),-ggdb3 -O0,-O2)
 PG_CXXFLAGS := $(if $(DEBUG),-ggdb3 -O0,-O2) -Werror -Wno-register -Wno-sign-compare -std=c++17
 SHLIB_LINK := -L. -Wl,-rpath,$(PG_LIB) -lduckdb -lstdc++
 
+# PGXS Configuration
+PG_CONFIG ?= pg_config
+PGXS := $(shell $(PG_CONFIG) --pgxs)
 override with_llvm := no
 include $(PGXS)
 
+# ========================
+# Phony Targets
+# ========================
 .PHONY: installcheck-dirs
 
-$(SRCS_C:%=%.o): %.o: ../../src/%
+# ========================
+# Compilation Rules
+# ========================
+$(SRCS_C:%=%.o): %.o: $(SRC_DIR)/%
 	@mkdir -p $(dir $@)
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
-$(SRCS_CXX:%=%.o): %.o: ../../src/%
+$(SRCS_CXX:%=%.o): %.o: $(SRC_DIR)/%
 	@mkdir -p $(dir $@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 
@@ -50,4 +76,5 @@ installcheck: installcheck-dirs
 installcheck-dirs:
 	mkdir -p $(addprefix results/, $(sort $(dir $(REGRESS))))
 
+# Include Dependency Files
 -include $(DEPS)

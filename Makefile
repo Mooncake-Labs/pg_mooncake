@@ -22,7 +22,7 @@ MAKEFLAGS := --no-print-directory
 # ========================
 # Phony Targets
 # ========================
-.PHONY: .BUILD all release debug clean format install installcheck uninstall \
+.PHONY: .BUILD all release debug clean clean-all format install installcheck uninstall \
         duckdb duckdb-fast clean-duckdb \
         delta clean-delta format-delta help
 
@@ -39,6 +39,7 @@ help:
 	@echo "  release          Build in release mode (BUILD_TYPE=release)"
 	@echo "  debug            Build in debug mode (BUILD_TYPE=debug)"
 	@echo "  clean            Remove build artifacts"
+	@echo "  clean-all        Remove all build artifacts and clean everything"
 	@echo "  format           Format source files"
 	@echo "  install          Install built artifacts"
 	@echo "  installcheck     Run regression tests"
@@ -72,7 +73,12 @@ debug:
 	@$(MAKE) BUILD_TYPE=debug all
 
 clean: clean-delta
+	rm -rf $(BUILD_DIR)
+
+clean-all: clean clean-duckdb clean-delta
 	rm -rf build
+	rm -rf $(DUCKDB_DIR)/build
+	rm -rf $(DELTA_DIR)/target
 
 format: format-delta
 	find $(SRC_DIR) -name '*.c' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' | xargs clang-format -i

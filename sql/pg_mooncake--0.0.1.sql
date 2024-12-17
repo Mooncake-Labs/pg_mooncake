@@ -233,6 +233,16 @@ BEGIN
 END;
 $func$;
 
+CREATE FUNCTION mooncake.approx_count_distinct(a anyelement)
+RETURNS bigint LANGUAGE 'plpgsql'
+SET search_path = pg_catalog, pg_temp
+AS
+$func$
+BEGIN
+    RAISE EXCEPTION 'Function `approx_count_distinct(ANYELEMENT)` only works with Duckdb execution.';
+END;
+$func$;
+
 CREATE TABLE mooncake.secrets (
     name TEXT NOT NULL,
     type TEXT NOT NULL,

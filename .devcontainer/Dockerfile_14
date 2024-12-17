@@ -32,8 +32,8 @@ RUN echo 'source /workspaces/pg_mooncake/.devcontainer/.bashrc' >> .bashrc
 RUN curl https://sh.rustup.rs | sh -s -- -y
 
 ENV PATH="/usr/local/pgsql/bin:${PATH}"
-RUN curl https://ftp.postgresql.org/pub/source/v16.6/postgresql-16.6.tar.bz2 | bzip2 -d | tar x \
- && cd postgresql-16.6 \
+RUN curl https://ftp.postgresql.org/pub/source/v14.15/postgresql-14.15.tar.bz2 | bzip2 -d | tar x \
+ && cd postgresql-14.15 \
  && ./configure --enable-cassert --enable-debug CFLAGS='-ggdb3' \
  && make -j$(nproc) \
  && sudo make install \

@@ -1,4 +1,4 @@
-\getenv pwd PWD
+\set pwd `pwd`
 \set csv_file '\'' :pwd '/results/copy.csv'  '\''
 
 COPY (SELECT * FROM generate_series(1, 5)) TO :csv_file;

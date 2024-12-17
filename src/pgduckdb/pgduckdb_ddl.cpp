@@ -108,6 +108,7 @@ DuckdbUtilityHook_Cpp(PlannedStmt *pstmt, const char *query_string, bool read_on
 		if (IsColumnstoreTable(RangeVarGetRelid(stmt->relation, AccessShareLock, false /*missing_ok*/))) {
 			elog(ERROR, "ALTER TABLE on columnstore table is not supported");
 		}
+#if PG_VERSION_NUM >= 150000
 		ListCell *lcmd;
 		foreach (lcmd, stmt->cmds) {
 			AlterTableCmd *cmd = lfirst_node(AlterTableCmd, lcmd);
@@ -115,6 +116,7 @@ DuckdbUtilityHook_Cpp(PlannedStmt *pstmt, const char *query_string, bool read_on
 				elog(ERROR, "ALTER TABLE changing ACCESS METHOD to columnstore is not supported");
 			}
 		}
+#endif
 	} else if (IsA(parsetree, CopyStmt)) {
 		auto copy_query = PostgresFunctionGuard(MakeDuckdbCopyQuery, pstmt, query_string, query_env);
 		if (copy_query) {

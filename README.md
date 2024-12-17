@@ -37,7 +37,7 @@ docker run -it --rm --link mooncake-demo:postgres mooncakelabs/pg_mooncake psql 
 ```
 
 ### From Source:
-You can compile and install **pg_mooncake** extension to add it to your PostgreSQL instance. PostgreSQL versions 15, 16, and 17 are currently supported.
+You can compile and install **pg_mooncake** extension to add it to your PostgreSQL instance. PostgreSQL versions 14, 15, 16, and 17 are currently supported.
 ```bash
 git submodule update --init --recursive
 make release -j$(nproc)
@@ -186,9 +186,9 @@ df = pl.DataFrame(delta_table.to_pyarrow_table())
 - [x] **Join with regular Postgres tables**
 - [x] **Write Delta Lake format**
 - [x] **Directly insert Parquet files into columnstore tables**
+- [x] **Read existing Iceberg or Delta Lake tables**
 - [ ] **Write Iceberg format**
 - [ ] **Secondary indexes and constraints (primary, unique, and foreign keys)**
-- [ ] **Read existing Iceberg or Delta Lake tables**
 - [ ] **Partitioned tables**
 
 > [!CAUTION]

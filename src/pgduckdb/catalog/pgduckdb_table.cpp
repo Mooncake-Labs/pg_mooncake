@@ -15,6 +15,7 @@ extern "C" {
 #include "postgres.h"
 
 #include "catalog/dependency.h"
+#include "utils/rel.h"
 }
 
 namespace pgduckdb {
@@ -62,7 +63,7 @@ PostgresTable::SetTableInfo(duckdb::CreateTableInfo &info, Relation rel) {
 			}
 			Const *val = castNode(Const, node);
 			if (val->constisnull) {
-				column.SetDefaultValue(make_uniq<ConstantExpression>(Value(duck_type)));
+				column.SetDefaultValue(make_uniq<ConstantExpression>(duckdb::Value(duck_type)));
 			} else {
 				column.SetDefaultValue(make_uniq<ConstantExpression>(
 				    pgduckdb::ConvertPostgresParameterToDuckValue(val->constvalue, val->consttype)));
@@ -74,7 +75,7 @@ PostgresTable::SetTableInfo(duckdb::CreateTableInfo &info, Relation rel) {
 			Oid seqid = getIdentitySequence(RelationGetRelid(rel), i + 1, false /*missing_ok*/);
 #endif
 			vector<unique_ptr<ParsedExpression>> children;
-			children.push_back(make_uniq<ConstantExpression>(Value::UINTEGER(seqid)));
+			children.push_back(make_uniq<ConstantExpression>(duckdb::Value::UINTEGER(seqid)));
 			column.SetDefaultValue(make_uniq<FunctionExpression>("pg_nextval", std::move(children)));
 		}
 		info.columns.AddColumn(std::move(column));

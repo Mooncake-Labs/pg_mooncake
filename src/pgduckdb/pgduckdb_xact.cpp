@@ -41,7 +41,7 @@ PreventInTransactionBlock(const char *statement_type) {
  * IMPORTANT: This function should only be called at trasaction commit. At
  * other points in the transaction lifecycle its return value is not reliable.
  */
-static bool
+[[maybe_unused]] static bool
 DidWritesAtTransactionEnd() {
 	return pg::DidWalWrites() || pg::GetCurrentCommandId() > duckdb_command_id + 1;
 }
@@ -87,10 +87,10 @@ ClaimCurrentCommandId() {
 		return;
 	}
 
-	if (new_command_id != duckdb_command_id + 1) {
-		throw duckdb::NotImplementedException(
-		    "Writing to DuckDB and Postgres tables in the same transaction block is not supported");
-	}
+	// if (new_command_id != duckdb_command_id + 1) {
+	// 	throw duckdb::NotImplementedException(
+	// 	    "Writing to DuckDB and Postgres tables in the same transaction block is not supported");
+	// }
 
 	duckdb_command_id = new_command_id;
 }
@@ -157,12 +157,12 @@ DuckdbXactCallback_Cpp(XactEvent event) {
 	switch (event) {
 	case XACT_EVENT_PRE_COMMIT:
 	case XACT_EVENT_PARALLEL_PRE_COMMIT:
-		if (pg::IsInTransactionBlock(top_level_statement)) {
-			if (pg::DidWritesAtTransactionEnd() && ddb::DidWrites(context)) {
-				throw duckdb::NotImplementedException(
-				    "Writing to DuckDB and Postgres tables in the same transaction block is not supported");
-			}
-		}
+		// if (pg::IsInTransactionBlock(top_level_statement)) {
+		// 	if (pg::DidWritesAtTransactionEnd() && ddb::DidWrites(context)) {
+		// 		throw duckdb::NotImplementedException(
+		// 		    "Writing to DuckDB and Postgres tables in the same transaction block is not supported");
+		// 	}
+		// }
 		top_level_statement = true;
 		duckdb_command_id = -1;
 		// Commit the DuckDB transaction too

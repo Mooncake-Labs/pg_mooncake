@@ -234,15 +234,22 @@ BEGIN
 END;
 $func$;
 
-CREATE FUNCTION mooncake.approx_count_distinct(a anyelement)
+CREATE FUNCTION mooncake.approx_count_distinct_sfunc(bigint, anyelement)
 RETURNS bigint LANGUAGE 'plpgsql'
 SET search_path = pg_catalog, pg_temp
 AS
 $func$
 BEGIN
-    RAISE EXCEPTION 'Function `approx_count_distinct(ANYELEMENT)` only works with Duckdb execution.';
+    RAISE EXCEPTION 'Aggregate `approx_count_distinct(ANYELEMENT)` only works with Duckdb execution.';
 END;
 $func$;
+
+CREATE AGGREGATE mooncake.approx_count_distinct(anyelement)
+(
+    sfunc = mooncake.approx_count_distinct_sfunc,
+    stype = bigint,
+    initcond = 0
+);
 
 CREATE TABLE mooncake.secrets (
     name TEXT NOT NULL,

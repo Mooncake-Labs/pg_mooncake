@@ -7,4 +7,27 @@ SELECT mooncake.approx_count_distinct(a), mooncake.approx_count_distinct(b) FROM
                      5 |                     9
 (1 row)
 
+SELECT a, mooncake.approx_count_distinct(b) FROM t GROUP BY a ORDER BY a;
+ a | approx_count_distinct 
+---+-----------------------
+ 1 |                     1
+ 2 |                     2
+ 3 |                     2
+ 4 |                     2
+ 5 |                     1
+(5 rows)
+
+SELECT a, mooncake.approx_count_distinct(b) OVER (PARTITION BY a) FROM t ORDER BY a;
+ a | approx_count_distinct 
+---+-----------------------
+ 1 |                     1
+ 2 |                     2
+ 2 |                     2
+ 3 |                     2
+ 3 |                     2
+ 4 |                     2
+ 4 |                     2
+ 5 |                     1
+(8 rows)
+
 DROP TABLE t;

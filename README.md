@@ -5,7 +5,7 @@
 [![Documentation](https://img.shields.io/badge/Docs-pgmooncake.com-orange?logo=read-the-docs)]([https://pgmooncake.com/docs])
 
 
-[**pg_mooncake**](https://pgmooncake.com) is a PostgreSQL extension that adds native columnstore tables with DuckDB execution for 1000x faster analytics. 
+[**pg_mooncake**](https://pgmooncake.com) is a PostgreSQL extension that adds native columnstore tables with DuckDB execution for 1000x faster analytics.
 
 Columnstore tables are stored as [Iceberg](https://github.com/apache/iceberg) or [Delta Lake](https://github.com/delta-io/delta) tables (parquet files + metadata) in object storage.
 

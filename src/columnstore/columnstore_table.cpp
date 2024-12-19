@@ -226,6 +226,7 @@ void ColumnstoreTable::Delete(ClientContext &context, vector<row_t> &row_ids) {
 
 vector<string> ColumnstoreTable::GetFilePaths(const string &path, const vector<string> &file_names) {
     vector<string> file_paths;
+    file_paths.reserve(file_names.size());
     if (mooncake_enable_local_cache && FileSystem::IsRemoteFile(path)) {
         auto local_fs = FileSystem::CreateLocal();
         for (auto &file_name : file_names) {

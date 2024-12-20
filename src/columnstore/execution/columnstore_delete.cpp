@@ -8,7 +8,7 @@ namespace duckdb {
 
 class ColumnstoreDeleteGlobalState : public GlobalSinkState {
 public:
-    vector<row_t> row_ids;
+    unordered_set<row_t> row_ids;
 };
 
 class ColumnstoreDelete : public PhysicalOperator {
@@ -47,7 +47,7 @@ public:
         row_ids.Flatten(chunk.size());
         auto row_ids_data = FlatVector::GetData<row_t>(row_ids);
         for (idx_t i = 0; i < chunk.size(); i++) {
-            gstate.row_ids.push_back(row_ids_data[i]);
+            gstate.row_ids.insert(row_ids_data[i]);
         }
         return SinkResultType::NEED_MORE_INPUT;
     }

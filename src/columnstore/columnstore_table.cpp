@@ -173,7 +173,8 @@ void ColumnstoreTable::FinalizeInsert() {
     }
 }
 
-void ColumnstoreTable::Delete(ClientContext &context, vector<row_t> &row_ids) {
+void ColumnstoreTable::Delete(ClientContext &context, unordered_set<row_t> &row_ids_set) {
+    vector<row_t> row_ids(row_ids_set.begin(), row_ids_set.end());
     std::sort(row_ids.begin(), row_ids.end());
     auto path = metadata->TablesSearch(oid);
     auto file_names = metadata->DataFilesSearch(oid);
@@ -195,8 +196,7 @@ void ColumnstoreTable::Delete(ClientContext &context, vector<row_t> &row_ids) {
 
         DataChunk chunk;
         chunk.Initialize(context, reader.GetTypes());
-        SelectionVector sel;
-        sel.Initialize(STANDARD_VECTOR_SIZE);
+        SelectionVector sel(STANDARD_VECTOR_SIZE);
         uint32_t file_row_number = 0;
         reader.Scan(state, chunk);
         while (chunk.size()) {

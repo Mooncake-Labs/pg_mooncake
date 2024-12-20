@@ -12,7 +12,7 @@ public:
     }
 
     DataChunk chunk;
-    vector<row_t> row_ids;
+    unordered_set<row_t> row_ids;
 };
 
 class ColumnstoreUpdate : public PhysicalOperator {
@@ -50,9 +50,20 @@ public:
         auto &row_ids = chunk.data[chunk.ColumnCount() - 1];
         row_ids.Flatten(chunk.size());
         auto row_ids_data = FlatVector::GetData<row_t>(row_ids);
+
+        SelectionVector sel(STANDARD_VECTOR_SIZE);
+        idx_t count = 0;
         for (idx_t i = 0; i < chunk.size(); i++) {
-            gstate.row_ids.push_back(row_ids_data[i]);
+            row_t row_id = row_ids_data[i];
+            if (gstate.row_ids.find(row_id) == gstate.row_ids.end()) {
+                gstate.row_ids.insert(row_id);
+                sel.set_index(count++, i);
+            }
         }
+        if (count != chunk.size()) {
+            chunk.Slice(sel, count);
+        }
+
         gstate.chunk.SetCardinality(chunk);
         for (idx_t i = 0; i < columns.size(); i++) {
             gstate.chunk.data[columns[i].index].Reference(chunk.data[i]);

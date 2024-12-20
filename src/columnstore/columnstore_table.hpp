@@ -29,7 +29,7 @@ public:
 
     void FinalizeInsert();
 
-    void Delete(ClientContext &context, vector<row_t> &row_ids);
+    void Delete(ClientContext &context, unordered_set<row_t> &row_ids_set);
 
 private:
     vector<string> GetFilePaths(const string &path, const vector<string> &file_names);

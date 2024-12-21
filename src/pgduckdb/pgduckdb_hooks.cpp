@@ -198,8 +198,9 @@ IsAllowedStatement(Query *query, bool throw_error = false) {
 		return false;
 	}
 
-	if (query->returningList) {
-		elog(elevel, "RETURNING clause is not supported yet");
+	// TODO(hjiang): RETURNING clause only supports INSERT for now, implement DELETE and UPDATE.
+	if (query->returningList != NULL && query->commandType != CMD_INSERT) {
+		elog(elevel, "RETURNING clause only supports INSERT");
 		return false;
 	}
 

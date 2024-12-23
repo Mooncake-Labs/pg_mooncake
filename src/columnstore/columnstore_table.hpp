@@ -9,6 +9,18 @@ class ColumnstoreMetadata;
 class ColumnstoreWriter;
 class DataChunk;
 
+struct ColumnstoreStats {
+    void AddStats(const string &column, BaseStatistics &stats);
+
+    BaseStatistics *GetStats(const string &column);
+
+    void Serialize(Serializer &serializer);
+
+    static ColumnstoreStats Deserialize(Deserializer &deserializer);
+
+    map<string, unique_ptr<BaseStatistics>> stats_map;
+};
+
 class ColumnstoreTable : public TableCatalogEntry {
 public:
     ColumnstoreTable(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info, Oid oid, Snapshot snapshot);

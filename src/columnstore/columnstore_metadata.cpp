@@ -23,7 +23,7 @@ namespace duckdb {
 namespace {
 
 constexpr int x_tables_natts = 2;
-constexpr int x_data_files_natts = 2;
+constexpr int x_data_files_natts = 3;
 constexpr int x_secrets_natts = 5;
 
 Oid Mooncake() {
@@ -137,11 +137,12 @@ void ColumnstoreMetadata::GetTableMetadata(Oid oid, string &table_name /*out*/, 
     table_close(table, AccessShareLock);
 }
 
-void ColumnstoreMetadata::DataFilesInsert(Oid oid, const string &file_name) {
+void ColumnstoreMetadata::DataFilesInsert(Oid oid, const string &file_name, const char *stats, int stats_size) {
     ::Relation table = table_open(DataFiles(), RowExclusiveLock);
     TupleDesc desc = RelationGetDescr(table);
-    Datum values[x_data_files_natts] = {oid, CStringGetTextDatum(file_name.c_str())};
-    bool isnull[x_data_files_natts] = {false, false};
+    Datum values[x_data_files_natts] = {oid, CStringGetTextDatum(file_name.c_str()),
+                                        PointerGetDatum(cstring_to_text_with_len(stats, stats_size))};
+    bool isnull[x_data_files_natts] = {false, false, false};
     HeapTuple tuple = heap_form_tuple(desc, values, isnull);
     PostgresFunctionGuard(CatalogTupleInsert, table, tuple);
     CommandCounterIncrement();
@@ -185,7 +186,8 @@ void ColumnstoreMetadata::DataFilesDelete(Oid oid) {
     table_close(table, RowExclusiveLock);
 }
 
-vector<string> ColumnstoreMetadata::DataFilesSearch(Oid oid) {
+vector<string>
+ColumnstoreMetadata::DataFilesSearch(Oid oid, std::function<void(std::string, const char *, int)> collect_stats_fn) {
     ::Relation table = table_open(DataFiles(), AccessShareLock);
     ::Relation index = index_open(DataFilesOid(), AccessShareLock);
     TupleDesc desc = RelationGetDescr(table);
@@ -200,6 +202,12 @@ vector<string> ColumnstoreMetadata::DataFilesSearch(Oid oid) {
     while (HeapTupleIsValid(tuple = systable_getnext_ordered(scan, ForwardScanDirection))) {
         heap_deform_tuple(tuple, desc, values, isnull);
         file_names.emplace_back(TextDatumGetCString(values[1]));
+        if (collect_stats_fn) {
+            bytea *data = DatumGetByteaP(values[2]);
+            int len = VARSIZE(data) - VARHDRSZ;
+            const char *binary_data = VARDATA(data);
+            collect_stats_fn(*file_names.rbegin(), binary_data, len);
+        }
     }
 
     systable_endscan_ordered(scan);

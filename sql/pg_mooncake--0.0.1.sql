@@ -13,7 +13,8 @@ CREATE UNIQUE INDEX tables_oid ON mooncake.tables (oid);
 
 CREATE TABLE mooncake.data_files (
     oid OID NOT NULL,
-    file_name TEXT NOT NULL
+    file_name TEXT NOT NULL,
+    column_stats BYTEA
 );
 CREATE INDEX data_files_oid ON mooncake.data_files (oid);
 CREATE UNIQUE INDEX data_files_file_name ON mooncake.data_files (file_name);

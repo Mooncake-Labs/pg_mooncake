@@ -1,4 +1,5 @@
 #pragma once
+#include <functional>
 
 #include "duckdb/common/vector.hpp"
 #include "pgduckdb/pg/declarations.hpp"
@@ -18,10 +19,11 @@ public:
     void GetTableMetadata(Oid oid, string &table_name /*out*/, vector<string> &column_names /*out*/,
                           vector<string> &column_types /*out*/);
 
-    void DataFilesInsert(Oid oid, const string &file_name);
+    void DataFilesInsert(Oid oid, const string &file_name, const char *stats, int stats_size);
     void DataFilesDelete(const string &file_name);
     void DataFilesDelete(Oid oid);
-    vector<string> DataFilesSearch(Oid oid);
+    vector<string> DataFilesSearch(Oid oid,
+                                   std::function<void(std::string, const char *, int)> collect_stats_fn = nullptr);
 
     vector<string> SecretsGetDuckdbQueries();
     string SecretsSearchDeltaOptions(const string &path);

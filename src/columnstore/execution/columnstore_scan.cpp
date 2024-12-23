@@ -2,10 +2,28 @@
 #include "columnstore/columnstore_table.hpp"
 #include "duckdb/catalog/catalog_entry/table_function_catalog_entry.hpp"
 #include "duckdb/common/multi_file_reader.hpp"
+#include "duckdb/common/serializer/binary_deserializer.hpp"
+#include "duckdb/common/serializer/memory_stream.hpp"
 #include "duckdb/main/extension_util.hpp"
 #include "duckdb/parser/tableref/table_function_ref.hpp"
 
 namespace duckdb {
+
+struct ColumnstoreStatsMap {
+    void LoadStats(const string file, ColumnstoreStats &&stats) {
+        file_stats[file] = std::move(stats);
+    }
+    BaseStatistics *GetStats(const string path, const string col) {
+        auto file_name = StringUtil::GetFileName(path);
+        if (file_stats.count(file_name) == 0) {
+            return nullptr;
+        }
+        return file_stats[file_name].GetStats(col);
+    }
+    map<string, ColumnstoreStats> file_stats;
+};
+
+ColumnstoreStatsMap stats_map;
 
 struct ColumnstoreScanMultiFileReaderGlobalState : public MultiFileReaderGlobalState {
     ColumnstoreScanMultiFileReaderGlobalState(vector<LogicalType> extra_columns,
@@ -79,6 +97,30 @@ struct ColumnstoreScanMultiFileReader : public MultiFileReader {
             chunk.data[gstate.row_id_index].Reference(*gstate.row_ids);
         }
     }
+
+    unique_ptr<MultiFileList> DynamicFilterPushdown(ClientContext &context, const MultiFileList &files,
+                                                    const MultiFileReaderOptions &options, const vector<string> &names,
+                                                    const vector<LogicalType> &types,
+                                                    const vector<column_t> &column_ids,
+                                                    TableFilterSet &filters) override {
+        vector<string> filtered_files;
+        for (auto path : files.GetPaths()) {
+            bool skip_chunk = false;
+            for (auto &entry : filters.filters) {
+                BaseStatistics *stats = stats_map.GetStats(path, names[column_ids[entry.first]]);
+                if (stats && entry.second->CheckStatistics(*stats) == FilterPropagateResult::FILTER_ALWAYS_FALSE) {
+                    skip_chunk = true;
+                }
+            }
+            if (!skip_chunk) {
+                filtered_files.push_back(path);
+            }
+        }
+        if (filtered_files.size() == files.GetPaths().size()) {
+            return nullptr;
+        }
+        return make_uniq<SimpleMultiFileList>(filtered_files);
+    }
 };
 
 void EmptyColumnstoreScan(ClientContext &context, TableFunctionInput &data, DataChunk &output) {}
@@ -109,7 +151,17 @@ unique_ptr<GlobalTableFunctionState> ColumnstoreScanInitGlobal(ClientContext &co
 
 TableFunction ColumnstoreTable::GetScanFunction(ClientContext &context, unique_ptr<FunctionData> &bind_data) {
     auto path = metadata->TablesSearch(oid);
-    auto file_names = metadata->DataFilesSearch(oid);
+    auto file_names = metadata->DataFilesSearch(oid, [&](std::string file, const char *data, int len) {
+        MemoryStream stream((data_ptr_t)(data), len);
+        BinaryDeserializer deserializer(stream);
+        deserializer.Begin();
+        // DevNote: BaseStatistics needs type to deserialize correctly.
+        // For now set to Integer since we only support NumericStats
+        //
+        deserializer.Set<const LogicalType &>(LogicalType::INTEGER);
+        stats_map.LoadStats(file, ColumnstoreStats::Deserialize(deserializer));
+        deserializer.End();
+    });
     auto file_paths = GetFilePaths(path, file_names);
     if (file_paths.empty()) {
         return TableFunction("columnstore_scan", {} /*arguments*/, EmptyColumnstoreScan);

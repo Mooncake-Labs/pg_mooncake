@@ -81,8 +81,10 @@ thrift/transport/TBufferTransports.cpp.o: ../../third_party/duckdb/third_party/t
 
 installcheck: installcheck-dirs
 
-installcheck-dirs:
-	mkdir -p $(addprefix results/, $(sort $(dir $(REGRESS))))
+results/%:
+	@mkdir -p $@
+
+installcheck-dirs: $(addprefix results/, $(sort $(dir $(REGRESS))))
 
 # ========================
 # Include Dependency Files

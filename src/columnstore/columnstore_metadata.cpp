@@ -1,4 +1,5 @@
 #include "columnstore/columnstore_metadata.hpp"
+#include "columnstore/columnstore_stats.hpp"
 #include "pgduckdb/pgduckdb_utils.hpp"
 #include "pgmooncake_guc.hpp"
 
@@ -186,8 +187,7 @@ void ColumnstoreMetadata::DataFilesDelete(Oid oid) {
     table_close(table, RowExclusiveLock);
 }
 
-vector<string>
-ColumnstoreMetadata::DataFilesSearch(Oid oid, std::function<void(std::string, const char *, int)> collect_stats_fn) {
+vector<string> ColumnstoreMetadata::DataFilesSearch(Oid oid, ColumnstoreStatsMap *stats_map) {
     ::Relation table = table_open(DataFiles(), AccessShareLock);
     ::Relation index = index_open(DataFilesOid(), AccessShareLock);
     TupleDesc desc = RelationGetDescr(table);
@@ -202,11 +202,11 @@ ColumnstoreMetadata::DataFilesSearch(Oid oid, std::function<void(std::string, co
     while (HeapTupleIsValid(tuple = systable_getnext_ordered(scan, ForwardScanDirection))) {
         heap_deform_tuple(tuple, desc, values, isnull);
         file_names.emplace_back(TextDatumGetCString(values[1]));
-        if (collect_stats_fn) {
+        if (stats_map) {
             bytea *data = DatumGetByteaP(values[2]);
             int len = VARSIZE(data) - VARHDRSZ;
             const char *binary_data = VARDATA(data);
-            collect_stats_fn(*file_names.rbegin(), binary_data, len);
+            stats_map->LoadStats(*file_names.rbegin(), binary_data, len);
         }
     }
 

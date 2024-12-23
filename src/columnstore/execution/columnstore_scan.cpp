@@ -1,4 +1,5 @@
 #include "columnstore/columnstore_metadata.hpp"
+#include "columnstore/columnstore_stats.hpp"
 #include "columnstore/columnstore_table.hpp"
 #include "duckdb/catalog/catalog_entry/table_function_catalog_entry.hpp"
 #include "duckdb/common/multi_file_reader.hpp"
@@ -8,20 +9,6 @@
 #include "duckdb/parser/tableref/table_function_ref.hpp"
 
 namespace duckdb {
-
-struct ColumnstoreStatsMap {
-    void LoadStats(const string file, ColumnstoreStats &&stats) {
-        file_stats[file] = std::move(stats);
-    }
-    BaseStatistics *GetStats(const string path, const string col) {
-        auto file_name = StringUtil::GetFileName(path);
-        if (file_stats.count(file_name) == 0) {
-            return nullptr;
-        }
-        return file_stats[file_name].GetStats(col);
-    }
-    map<string, ColumnstoreStats> file_stats;
-};
 
 ColumnstoreStatsMap stats_map;
 
@@ -151,17 +138,7 @@ unique_ptr<GlobalTableFunctionState> ColumnstoreScanInitGlobal(ClientContext &co
 
 TableFunction ColumnstoreTable::GetScanFunction(ClientContext &context, unique_ptr<FunctionData> &bind_data) {
     auto path = metadata->TablesSearch(oid);
-    auto file_names = metadata->DataFilesSearch(oid, [&](std::string file, const char *data, int len) {
-        MemoryStream stream((data_ptr_t)(data), len);
-        BinaryDeserializer deserializer(stream);
-        deserializer.Begin();
-        // DevNote: BaseStatistics needs type to deserialize correctly.
-        // For now set to Integer since we only support NumericStats
-        //
-        deserializer.Set<const LogicalType &>(LogicalType::INTEGER);
-        stats_map.LoadStats(file, ColumnstoreStats::Deserialize(deserializer));
-        deserializer.End();
-    });
+    auto file_names = metadata->DataFilesSearch(oid, &stats_map);
     auto file_paths = GetFilePaths(path, file_names);
     if (file_paths.empty()) {
         return TableFunction("columnstore_scan", {} /*arguments*/, EmptyColumnstoreScan);

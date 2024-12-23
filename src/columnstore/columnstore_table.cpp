@@ -1,5 +1,6 @@
 #include "columnstore/columnstore_table.hpp"
 #include "columnstore/columnstore_metadata.hpp"
+#include "columnstore/columnstore_stats.hpp"
 #include "duckdb/common/serializer/binary_deserializer.hpp"
 #include "duckdb/common/serializer/binary_serializer.hpp"
 #include "duckdb/common/serializer/memory_stream.hpp"
@@ -56,6 +57,18 @@ ColumnstoreStats ColumnstoreStats::Deserialize(Deserializer &deserializer) {
         ret.stats_map[c[i]].swap(s[i]);
     }
     return ret;
+}
+
+void ColumnstoreStatsMap::LoadStats(const string file_name, const char *data, int len) {
+    MemoryStream stream((data_ptr_t)(data), len);
+    BinaryDeserializer deserializer(stream);
+    deserializer.Begin();
+    // DevNote: BaseStatistics needs type to deserialize correctly.
+    // For now set to Integer since we only support NumericStats
+    //
+    deserializer.Set<const LogicalType &>(LogicalType::INTEGER);
+    file_stats[file_name] = std::move(ColumnstoreStats::Deserialize(deserializer));
+    deserializer.End();
 }
 
 class SingleFileCachedWriteFileSystem : public FileSystem {
@@ -152,9 +165,9 @@ public:
                 NumericStats::SetMin(group_stats, min);
                 NumericStats::SetMax(group_stats, max);
                 group_stats.Set(StatsInfo::CAN_HAVE_NULL_AND_VALID_VALUES);
-		        if (parquet_stats.__isset.null_count && parquet_stats.null_count == 0) {
-			        group_stats.Set(StatsInfo::CANNOT_HAVE_NULL_VALUES);
-		        }
+                if (parquet_stats.__isset.null_count && parquet_stats.null_count == 0) {
+                    group_stats.Set(StatsInfo::CANNOT_HAVE_NULL_VALUES);
+                }
                 stats.AddStats(names[i], group_stats);
             }
         }

@@ -1,4 +1,5 @@
 #include "columnstore/columnstore_metadata.hpp"
+#include "columnstore/columnstore_statistics.hpp"
 #include "columnstore/columnstore_table.hpp"
 #include "duckdb/catalog/catalog_entry/table_function_catalog_entry.hpp"
 #include "duckdb/common/multi_file_reader.hpp"
@@ -20,6 +21,27 @@ struct ColumnstoreScanMultiFileReaderGlobalState : public MultiFileReaderGlobalS
 struct ColumnstoreScanMultiFileReader : public MultiFileReader {
     static unique_ptr<MultiFileReader> Create() {
         return std::move(make_uniq<ColumnstoreScanMultiFileReader>());
+    }
+
+    unique_ptr<MultiFileList> DynamicFilterPushdown(ClientContext &context, const MultiFileList &files,
+                                                    const MultiFileReaderOptions &options, const vector<string> &names,
+                                                    const vector<LogicalType> &types,
+                                                    const vector<column_t> &column_ids,
+                                                    TableFilterSet &filters) override {
+        const vector<string> file_paths = files.GetPaths();
+        vector<string> filtered_file_paths;
+        for (auto &file_path : file_paths) {
+            auto file_stats = columnstore_stats.Get<DataFileStatistics>(StringUtil::GetFileName(file_path));
+            auto skip_file = [&](auto &entry) {
+                auto stats = file_stats->Get(names[column_ids[entry.first]]);
+                return stats && entry.second->CheckStatistics(*stats) == FilterPropagateResult::FILTER_ALWAYS_FALSE;
+            };
+            if (!any_of(filters.filters.begin(), filters.filters.end(), skip_file)) {
+                filtered_file_paths.push_back(file_path);
+            }
+        }
+        return filtered_file_paths.size() < file_paths.size() ? make_uniq<SimpleMultiFileList>(filtered_file_paths)
+                                                              : nullptr;
     }
 
     unique_ptr<MultiFileReaderGlobalState>
@@ -109,7 +131,7 @@ unique_ptr<GlobalTableFunctionState> ColumnstoreScanInitGlobal(ClientContext &co
 
 TableFunction ColumnstoreTable::GetScanFunction(ClientContext &context, unique_ptr<FunctionData> &bind_data) {
     auto path = metadata->TablesSearch(oid);
-    auto file_names = metadata->DataFilesSearch(oid);
+    auto file_names = metadata->DataFilesSearch(oid, &context, &columns);
     auto file_paths = GetFilePaths(path, file_names);
     if (file_paths.empty()) {
         return TableFunction("columnstore_scan", {} /*arguments*/, EmptyColumnstoreScan);

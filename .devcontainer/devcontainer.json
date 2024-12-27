@@ -11,5 +11,8 @@
                 "rust-lang.rust-analyzer"
             ]
         }
-    }
+    },
+    "runArgs": [
+        "--cap-add=SYS_PTRACE"
+    ]
 }

@@ -1,12 +1,14 @@
 #pragma once
-#include <functional>
 
 #include "duckdb/common/vector.hpp"
 #include "pgduckdb/pg/declarations.hpp"
 
 namespace duckdb {
 
-class ColumnstoreStatsMap;
+class ClientContext;
+class ColumnList;
+struct string_t;
+
 class ColumnstoreMetadata {
 public:
     explicit ColumnstoreMetadata(Snapshot snapshot) : snapshot(snapshot) {}
@@ -20,10 +22,10 @@ public:
     void GetTableMetadata(Oid oid, string &table_name /*out*/, vector<string> &column_names /*out*/,
                           vector<string> &column_types /*out*/);
 
-    void DataFilesInsert(Oid oid, const string &file_name, const char *stats, int stats_size);
+    void DataFilesInsert(Oid oid, const string &file_name, const string_t &file_metadata);
     void DataFilesDelete(const string &file_name);
     void DataFilesDelete(Oid oid);
-    vector<string> DataFilesSearch(Oid oid, ColumnstoreStatsMap *stats_map = nullptr);
+    vector<string> DataFilesSearch(Oid oid, ClientContext *context = nullptr, const ColumnList *columns = nullptr);
 
     vector<string> SecretsGetDuckdbQueries();
     string SecretsSearchDeltaOptions(const string &path);

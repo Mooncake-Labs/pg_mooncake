@@ -1,8 +1,5 @@
 #include "columnstore/columnstore_table.hpp"
 #include "columnstore/columnstore_metadata.hpp"
-#include "columnstore/columnstore_stats.hpp"
-#include "duckdb/common/serializer/binary_deserializer.hpp"
-#include "duckdb/common/serializer/binary_serializer.hpp"
 #include "duckdb/common/serializer/memory_stream.hpp"
 #include "duckdb/common/types/uuid.hpp"
 #include "lake/lake.hpp"
@@ -14,67 +11,10 @@ namespace duckdb {
 
 const char *x_mooncake_local_cache = "mooncake_local_cache/";
 
-void ColumnstoreStats::AddStats(const string &column, BaseStatistics &col_stats) {
-    if (stats_map.count(column) == 0) {
-        stats_map[column] = col_stats.ToUnique();
-    } else {
-        stats_map[column]->Merge(col_stats);
-    }
-}
-
-BaseStatistics *ColumnstoreStats::GetStats(const string &column) {
-    if (stats_map.count(column)) {
-        return stats_map[column].get();
-    }
-    return nullptr;
-}
-
-void ColumnstoreStats::Serialize(Serializer &serializer) {
-    auto it = stats_map.begin();
-    serializer.WriteList(100, "stats_map", stats_map.size(), [&](Serializer::List &list, idx_t id) {
-        list.WriteObject([&](Serializer &obj) {
-            obj.WriteProperty(200, "column", it->first);
-            it->second->Serialize(obj);
-        });
-        it++;
-    });
-};
-
-ColumnstoreStats ColumnstoreStats::Deserialize(Deserializer &deserializer) {
-    ColumnstoreStats ret;
-    vector<string> c;
-    vector<unique_ptr<BaseStatistics>> s;
-    deserializer.ReadList(100, "stats_map", [&](Deserializer::List &list, idx_t id) {
-        list.ReadObject([&](Deserializer &obj) {
-            string column;
-            obj.ReadProperty(200, "column", column);
-            auto stats = BaseStatistics::Deserialize(obj);
-            c.push_back(column);
-            s.push_back(stats.ToUnique());
-        });
-    });
-    for (int i = 0; i < c.size(); i++) {
-        ret.stats_map[c[i]].swap(s[i]);
-    }
-    return ret;
-}
-
-void ColumnstoreStatsMap::LoadStats(const string file_name, const char *data, int len) {
-    MemoryStream stream((data_ptr_t)(data), len);
-    BinaryDeserializer deserializer(stream);
-    deserializer.Begin();
-    // DevNote: BaseStatistics needs type to deserialize correctly.
-    // For now set to Integer since we only support NumericStats
-    //
-    deserializer.Set<const LogicalType &>(LogicalType::INTEGER);
-    file_stats[file_name] = std::move(ColumnstoreStats::Deserialize(deserializer));
-    deserializer.End();
-}
-
 class SingleFileCachedWriteFileSystem : public FileSystem {
 public:
     SingleFileCachedWriteFileSystem(ClientContext &context, const string &file_name)
-        : fs(GetFileSystem(context)), cached_file_path(x_mooncake_local_cache + file_name), file_size(0) {}
+        : fs(GetFileSystem(context)), cached_file_path(x_mooncake_local_cache + file_name), stream(nullptr) {}
 
 public:
     unique_ptr<FileHandle> OpenFile(const string &path, FileOpenFlags flags,
@@ -89,7 +29,9 @@ public:
     }
 
     int64_t Write(FileHandle &handle, void *buffer, int64_t nr_bytes) override {
-        file_size += nr_bytes;
+        if (stream) {
+            stream->WriteData(data_ptr_cast(buffer), nr_bytes);
+        }
         if (cached_file) {
             int64_t bytes_written = fs.Write(*cached_file, buffer, nr_bytes);
             D_ASSERT(bytes_written == nr_bytes);
@@ -101,8 +43,8 @@ public:
         return "SingleFileCachedWriteFileSystem";
     }
 
-    idx_t GetFileSize() const {
-        return file_size;
+    void StartRecording(MemoryStream &stream) {
+        this->stream = &stream;
     }
 
 private:
@@ -111,19 +53,18 @@ private:
     FileSystem &fs;
     string cached_file_path;
     unique_ptr<FileHandle> cached_file;
-    idx_t file_size;
+    MemoryStream *stream;
 };
 
 class DataFileWriter {
 public:
-    DataFileWriter(ClientContext &context, FileSystem &fs, string file_name, vector<LogicalType> types,
+    DataFileWriter(ClientContext &context, string path, string file_name, vector<LogicalType> types,
                    vector<string> names, ChildFieldIDs field_ids)
-        : collection(context, types, ColumnDataAllocatorType::HYBRID),
-          writer(context, fs, std::move(file_name), types, names,
+        : fs(context, file_name), collection(context, types, ColumnDataAllocatorType::HYBRID),
+          writer(context, fs, path + file_name, std::move(types), std::move(names),
                  duckdb_parquet::format::CompressionCodec::SNAPPY /*codec*/, std::move(field_ids), {} /*kv_metadata*/,
                  {} /*encryption_config*/, 1.0 /*dictionary_compression_ratio_threshold*/, {} /*compression_level*/,
-                 true /*debug_use_openssl*/),
-          types(std::move(types)), names(std::move(names)) {
+                 true /*debug_use_openssl*/) {
         collection.InitializeAppend(append_state);
     }
 
@@ -132,7 +73,7 @@ public:
     bool Write(DataChunk &chunk) {
         collection.Append(append_state, chunk);
         if (collection.Count() >= x_row_group_size || collection.SizeInBytes() >= x_row_group_size_bytes) {
-            FlushRowGroup();
+            writer.Flush(collection);
             append_state.current_chunk_state.handles.clear();
             collection.InitializeAppend(append_state);
             return writer.FileSize() >= x_file_size_bytes;
@@ -140,46 +81,16 @@ public:
         return false;
     }
 
-    void FlushRowGroup() {
-        if (collection.Count() == 0) {
-            return;
-        }
-        PreparedRowGroup prepared_row_group;
-        writer.PrepareRowGroup(collection, prepared_row_group);
-        collection.Reset();
-        writer.FlushRowGroup(prepared_row_group);
-        for (int i = 0; i < types.size(); i++) {
-            auto type = types[i];
-            auto parquet_stats = prepared_row_group.row_group.columns[i].meta_data.statistics;
-            duckdb_parquet::format::SchemaElement schema_ele;
-            schema_ele.type = ParquetWriter::DuckDBTypeToParquetType(type);
-            ParquetWriter::SetSchemaProperties(type, schema_ele);
-            if (types[i].IsNumeric() || types[i].IsTemporal() || types[i].id() == LogicalTypeId::DECIMAL) {
-                Value min;
-                Value max;
-                min =
-                    ParquetStatisticsUtils::ConvertValue(type, schema_ele, parquet_stats.min_value).DefaultCastAs(type);
-                max =
-                    ParquetStatisticsUtils::ConvertValue(type, schema_ele, parquet_stats.max_value).DefaultCastAs(type);
-                auto group_stats = NumericStats::CreateUnknown(type);
-                NumericStats::SetMin(group_stats, min);
-                NumericStats::SetMax(group_stats, max);
-                group_stats.Set(StatsInfo::CAN_HAVE_NULL_AND_VALID_VALUES);
-                if (parquet_stats.__isset.null_count && parquet_stats.null_count == 0) {
-                    group_stats.Set(StatsInfo::CANNOT_HAVE_NULL_VALUES);
-                }
-                stats.AddStats(names[i], group_stats);
-            }
-        }
-    }
-
-    void Finalize() {
-        FlushRowGroup();
+    pair<idx_t, string_t> Finalize() {
+        writer.Flush(collection);
+        idx_t offset = writer.GetWriter().offset;
+        idx_t total_written = writer.GetWriter().total_written;
+        fs.StartRecording(stream);
         writer.Finalize();
-    }
-
-    void WriteStats(Serializer &serializer) {
-        stats.Serialize(serializer);
+        idx_t file_size = total_written + stream.GetPosition();
+        string_t file_metadata{const_char_ptr_cast(stream.GetData()) + offset,
+                               NumericCast<uint32_t>(stream.GetPosition() - offset - 8)};
+        return {file_size, std::move(file_metadata)};
     }
 
 private:
@@ -187,12 +98,11 @@ private:
     static const idx_t x_row_group_size_bytes = x_row_group_size * 1024;
     static const idx_t x_file_size_bytes = 1 << 30;
 
+    SingleFileCachedWriteFileSystem fs;
     ColumnDataCollection collection;
     ColumnDataAppendState append_state;
     ParquetWriter writer;
-    vector<LogicalType> types;
-    vector<string> names;
-    ColumnstoreStats stats;
+    MemoryStream stream;
 };
 
 class ColumnstoreWriter {
@@ -205,12 +115,11 @@ public:
     void Write(ClientContext &context, DataChunk &chunk) {
         if (!writer) {
             file_name = UUID::ToString(UUID::GenerateRandomUUID()) + ".parquet";
-            fs = make_uniq<SingleFileCachedWriteFileSystem>(context, file_name);
             ChildFieldIDs field_ids;
             for (idx_t i = 0; i < names.size(); i++) {
-                (*field_ids.ids)[names[i]] = duckdb::FieldID(i);
+                (*field_ids.ids)[names[i]] = FieldID(i);
             }
-            writer = make_uniq<DataFileWriter>(context, *fs, path + file_name, types, names, std::move(field_ids));
+            writer = make_uniq<DataFileWriter>(context, path, file_name, types, names, std::move(field_ids));
         }
         if (writer->Write(chunk)) {
             FinalizeDataFile();
@@ -225,17 +134,9 @@ public:
 
 private:
     void FinalizeDataFile() {
-        writer->Finalize();
-        MemoryStream stream;
-        BinarySerializer stats(stream);
-        stats.Begin();
-        writer->WriteStats(stats);
-        stats.End();
+        auto [file_size, file_metadata] = writer->Finalize();
+        metadata.DataFilesInsert(oid, file_name, file_metadata);
         writer.reset();
-        idx_t file_size = fs->GetFileSize();
-        fs.reset();
-        metadata.DataFilesInsert(oid, file_name.c_str(), reinterpret_cast<const char *>(stream.GetData()),
-                                 stream.GetPosition());
         LakeAddFile(oid, file_name, file_size);
     }
 
@@ -246,7 +147,6 @@ private:
     string file_name;
     vector<LogicalType> types;
     vector<string> names;
-    unique_ptr<SingleFileCachedWriteFileSystem> fs;
     unique_ptr<DataFileWriter> writer;
 };
 
@@ -291,8 +191,7 @@ void ColumnstoreTable::Delete(ClientContext &context, unordered_set<row_t> &row_
     for (idx_t row_ids_index = 0; row_ids_index < row_ids.size();) {
         int32_t file_number = row_ids[row_ids_index] >> 32;
         uint32_t next_file_row_number = row_ids[row_ids_index] & 0xFFFFFFFF;
-        ParquetOptions parquet_options;
-        ParquetReader reader(context, file_paths[file_number], parquet_options, nullptr /*metadata*/);
+        ParquetReader reader(context, file_paths[file_number], ParquetOptions{});
         for (idx_t i = 0; i < reader.GetTypes().size(); i++) {
             reader.reader_data.column_mapping.push_back(i);
             reader.reader_data.column_ids.push_back(i);

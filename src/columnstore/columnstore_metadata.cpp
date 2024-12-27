@@ -1,7 +1,10 @@
 #include "columnstore/columnstore_metadata.hpp"
-#include "columnstore/columnstore_stats.hpp"
+#include "columnstore/columnstore_statistics.hpp"
+#include "parquet_file_metadata_cache.hpp"
 #include "pgduckdb/pgduckdb_utils.hpp"
 #include "pgmooncake_guc.hpp"
+#include "thrift/protocol/TCompactProtocol.h"
+#include "thrift/transport/TBufferTransports.h"
 
 extern "C" {
 #include "postgres.h"
@@ -22,6 +25,13 @@ extern "C" {
 namespace duckdb {
 
 namespace {
+
+Datum StringGetTextDatum(const string &s) {
+    return PointerGetDatum(cstring_to_text_with_len(s.data(), s.size()));
+}
+Datum StringGetTextDatum(const string_t &s) {
+    return PointerGetDatum(cstring_to_text_with_len(s.GetData(), s.GetSize()));
+}
 
 constexpr int x_tables_natts = 2;
 constexpr int x_data_files_natts = 3;
@@ -54,7 +64,7 @@ Oid Secrets() {
 void ColumnstoreMetadata::TablesInsert(Oid oid, const string &path) {
     ::Relation table = table_open(Tables(), RowExclusiveLock);
     TupleDesc desc = RelationGetDescr(table);
-    Datum values[x_tables_natts] = {oid, CStringGetTextDatum(path.c_str())};
+    Datum values[x_tables_natts] = {oid, StringGetTextDatum(path)};
     bool nulls[x_tables_natts] = {false, false};
     HeapTuple tuple = heap_form_tuple(desc, values, nulls);
     PostgresFunctionGuard(CatalogTupleInsert, table, tuple);
@@ -138,11 +148,10 @@ void ColumnstoreMetadata::GetTableMetadata(Oid oid, string &table_name /*out*/, 
     table_close(table, AccessShareLock);
 }
 
-void ColumnstoreMetadata::DataFilesInsert(Oid oid, const string &file_name, const char *stats, int stats_size) {
+void ColumnstoreMetadata::DataFilesInsert(Oid oid, const string &file_name, const string_t &file_metadata) {
     ::Relation table = table_open(DataFiles(), RowExclusiveLock);
     TupleDesc desc = RelationGetDescr(table);
-    Datum values[x_data_files_natts] = {oid, CStringGetTextDatum(file_name.c_str()),
-                                        PointerGetDatum(cstring_to_text_with_len(stats, stats_size))};
+    Datum values[x_data_files_natts] = {oid, StringGetTextDatum(file_name), StringGetTextDatum(file_metadata)};
     bool isnull[x_data_files_natts] = {false, false, false};
     HeapTuple tuple = heap_form_tuple(desc, values, isnull);
     PostgresFunctionGuard(CatalogTupleInsert, table, tuple);
@@ -154,13 +163,13 @@ void ColumnstoreMetadata::DataFilesDelete(const string &file_name) {
     ::Relation table = table_open(DataFiles(), RowExclusiveLock);
     ::Relation index = index_open(DataFilesFileName(), RowExclusiveLock);
     ScanKeyData key[1];
-    ScanKeyInit(&key[0], 2 /*attributeNumber*/, BTEqualStrategyNumber, F_TEXTEQ,
-                CStringGetTextDatum(file_name.c_str()));
+    ScanKeyInit(&key[0], 2 /*attributeNumber*/, BTEqualStrategyNumber, F_TEXTEQ, StringGetTextDatum(file_name));
     SysScanDesc scan = systable_beginscan_ordered(table, index, snapshot, 1 /*nkeys*/, key);
 
     HeapTuple tuple;
     if (HeapTupleIsValid(tuple = systable_getnext_ordered(scan, ForwardScanDirection))) {
         PostgresFunctionGuard(CatalogTupleDelete, table, &tuple->t_self);
+        columnstore_stats.Delete(file_name);
     }
 
     systable_endscan_ordered(scan);
@@ -172,12 +181,16 @@ void ColumnstoreMetadata::DataFilesDelete(const string &file_name) {
 void ColumnstoreMetadata::DataFilesDelete(Oid oid) {
     ::Relation table = table_open(DataFiles(), RowExclusiveLock);
     ::Relation index = index_open(DataFilesOid(), RowExclusiveLock);
+    TupleDesc desc = RelationGetDescr(table);
     ScanKeyData key[1];
     ScanKeyInit(&key[0], 1 /*attributeNumber*/, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(oid));
     SysScanDesc scan = systable_beginscan_ordered(table, index, snapshot, 1 /*nkeys*/, key);
 
     HeapTuple tuple;
     while (HeapTupleIsValid(tuple = systable_getnext_ordered(scan, ForwardScanDirection))) {
+        bool isnull;
+        auto file_name = TextDatumGetCString(heap_getattr(tuple, 2 /*attnum*/, desc, &isnull));
+        columnstore_stats.Delete(file_name);
         PostgresFunctionGuard(CatalogTupleDelete, table, &tuple->t_self);
     }
 
@@ -187,7 +200,7 @@ void ColumnstoreMetadata::DataFilesDelete(Oid oid) {
     table_close(table, RowExclusiveLock);
 }
 
-vector<string> ColumnstoreMetadata::DataFilesSearch(Oid oid, ColumnstoreStatsMap *stats_map) {
+vector<string> ColumnstoreMetadata::DataFilesSearch(Oid oid, ClientContext *context, const ColumnList *columns) {
     ::Relation table = table_open(DataFiles(), AccessShareLock);
     ::Relation index = index_open(DataFilesOid(), AccessShareLock);
     TupleDesc desc = RelationGetDescr(table);
@@ -201,12 +214,23 @@ vector<string> ColumnstoreMetadata::DataFilesSearch(Oid oid, ColumnstoreStatsMap
     bool isnull[x_data_files_natts];
     while (HeapTupleIsValid(tuple = systable_getnext_ordered(scan, ForwardScanDirection))) {
         heap_deform_tuple(tuple, desc, values, isnull);
-        file_names.emplace_back(TextDatumGetCString(values[1]));
-        if (stats_map) {
-            bytea *data = DatumGetByteaP(values[2]);
-            int len = VARSIZE(data) - VARHDRSZ;
-            const char *binary_data = VARDATA(data);
-            stats_map->LoadStats(*file_names.rbegin(), binary_data, len);
+        auto file_name = TextDatumGetCString(values[1]);
+        file_names.emplace_back(file_name);
+        if (context && !columnstore_stats.Get<DataFileStatistics>(file_name)) {
+            using duckdb_apache::thrift::protocol::TCompactProtocolT;
+            using duckdb_apache::thrift::transport::TMemoryBuffer;
+            using duckdb_parquet::format::FileMetaData;
+
+            auto file_metadata_text = PG_DETOAST_DATUM_PACKED(values[2]);
+            auto transport = std::make_shared<TMemoryBuffer>(data_ptr_cast(VARDATA_ANY(file_metadata_text)),
+                                                             VARSIZE_ANY_EXHDR(file_metadata_text));
+            auto protocol = make_uniq<TCompactProtocolT<TMemoryBuffer>>(std::move(transport));
+            auto file_metadata = make_uniq<FileMetaData>();
+            file_metadata->read(protocol.get());
+            auto metadata = make_shared_ptr<ParquetFileMetadataCache>(std::move(file_metadata), 0 /*read_time*/,
+                                                                      nullptr /*geo_metadata*/);
+            auto file_stats = make_shared_ptr<DataFileStatistics>(*context, *columns, std::move(metadata));
+            columnstore_stats.Put(file_name, std::move(file_stats));
         }
     }
 
@@ -229,7 +253,7 @@ vector<string> ColumnstoreMetadata::SecretsGetDuckdbQueries() {
     while (HeapTupleIsValid(tuple = systable_getnext(scan))) {
         heap_deform_tuple(tuple, desc, values, isnull);
         if (strcmp(TextDatumGetCString(values[1]), "S3") == 0) {
-            queries.push_back(TextDatumGetCString(values[3]));
+            queries.emplace_back(TextDatumGetCString(values[3]));
         }
     }
 

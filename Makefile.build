@@ -5,7 +5,7 @@ DATA := ../../sql/pg_mooncake--0.0.1.sql
 
 SRCS_C := $(shell cd ../../src; find * -name '*.c')
 SRCS_CXX := $(shell cd ../../src; find * -name '*.cpp')
-SRCS := $(SRCS_C) $(SRCS_CXX)
+SRCS := $(SRCS_C) $(SRCS_CXX) thrift/transport/TBufferTransports.cpp
 OBJS := $(SRCS:%=%.o) libduckdb.so libdelta.a
 DEPS := $(SRCS:%=%.d)
 
@@ -38,6 +38,10 @@ $(SRCS_C:%=%.o): %.o: ../../src/%
 	$(CC) $(CPPFLAGS) $(CFLAGS) -c $< -o $@
 
 $(SRCS_CXX:%=%.o): %.o: ../../src/%
+	@mkdir -p $(dir $@)
+	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
+
+thrift/transport/TBufferTransports.cpp.o: ../../third_party/duckdb/third_party/thrift/thrift/transport/TBufferTransports.cpp
 	@mkdir -p $(dir $@)
 	$(CXX) $(CPPFLAGS) $(CXXFLAGS) -c $< -o $@
 

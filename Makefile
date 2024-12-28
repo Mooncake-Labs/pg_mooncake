@@ -9,7 +9,7 @@ DELTA_DIR := rust_extensions/delta
 DELTA_HEADER := $(DELTA_DIR)/target/cxxbridge/delta/src/lib.rs.h
 DELTA_LIB := $(DELTA_DIR)/target/$(BUILD_TYPE)/libdelta.a
 DUCKDB_DIR := third_party/duckdb
-DUCKDB_BUILD := $(DUCKDB_DIR)/build/$(BUILD_TYPE)/src/libduckdb.so
+DUCKDB_LIB := $(DUCKDB_DIR)/build/$(BUILD_TYPE)/src/libduckdb.so
 SRC_DIR := src
 
 # ========================
@@ -94,7 +94,7 @@ uninstall:
 # ========================
 # DuckDB Targets
 # ========================
-$(DUCKDB_BUILD): | .BUILD
+$(DUCKDB_LIB): | .BUILD
 	@$(MAKE) duckdb
 
 duckdb: | .BUILD
@@ -102,10 +102,10 @@ duckdb: | .BUILD
 	CMAKE_BUILD_PARALLEL_LEVEL=$(or $(patsubst -j%,%,$(filter -j%,$(MAKEFLAGS))),1) \
 	$(MAKE) -C $(DUCKDB_DIR) $(BUILD_TYPE)
 ifeq ($(BUILD_TYPE), debug)
-	gdb-add-index $(DUCKDB_BUILD)
+	gdb-add-index $(DUCKDB_LIB)
 endif
 
-duckdb-fast: $(DUCKDB_BUILD)
+duckdb-fast: $(DUCKDB_LIB)
 	install -C $< $(BUILD_DIR)/libduckdb.so
 
 clean-duckdb:

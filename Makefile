@@ -122,7 +122,7 @@ $(BUILD_SRC_RUST):
 
 delta: | .BUILD $(BUILD_SRC_RUST)
 	cargo build --manifest-path=$(DELTA_DIR)/Cargo.toml $(CARGO_FLAGS)
-	install -C $(DELTA_HEADER) $(BUILD_SRC_RUST)/delta.hpp
+	install -C $$(readlink -f $(DELTA_HEADER)) $(BUILD_SRC_RUST)/delta.hpp
 	install -C $(DELTA_LIB) $(BUILD_DIR)/libdelta.a
 
 clean-delta:

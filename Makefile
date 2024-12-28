@@ -74,13 +74,10 @@ release:
 debug:
 	@$(MAKE) BUILD_TYPE=debug all
 
-clean: clean-delta
-	rm -rf $(BUILD_DIR)
+clean:
+	rm -rf build
 
 clean-all: clean clean-duckdb clean-delta
-	rm -rf build
-	rm -rf $(DUCKDB_DIR)/build
-	rm -rf $(DELTA_DIR)/target
 
 format: format-delta
 	find $(SRC_DIR) -name '*.c' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' | xargs clang-format -i

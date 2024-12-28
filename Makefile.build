@@ -1,14 +1,8 @@
 # ========================
 # Shared Variables
 # ========================
-BUILD_DIR := ../../build
 DUCKDB_DIR := ../../third_party/duckdb
-DUCKDB_INCLUDE := $(DUCKDB_DIR)/src/include
-DUCKDB_PARQUET_INCLUDE := $(DUCKDB_DIR)/extension/parquet/include
-DUCKDB_THRIFT_INCLUDE := $(DUCKDB_DIR)/third_party/thrift
 EXTENSION_NAME := pg_mooncake
-PG_CONFIG ?= pg_config
-PG_LIB := $(shell $(PG_CONFIG) --pkglibdir)
 SQL_DIR := ../../sql
 SRC_DIR := ../../src
 TEST_DIR := ../../test
@@ -16,8 +10,8 @@ TEST_DIR := ../../test
 # ========================
 # PostgreSQL Setup
 # ========================
-DATA_FILE := $(SQL_DIR)/pg_mooncake--0.0.1.sql
-DATA := $(DATA_FILE)
+PG_CONFIG ?= pg_config
+PG_LIB := $(shell $(PG_CONFIG) --pkglibdir)
 EXTENSION := ../../$(EXTENSION_NAME)
 MODULES := libduckdb
 MODULE_big := $(EXTENSION_NAME)
@@ -42,10 +36,10 @@ REGRESS_OPTS = --inputdir=$(TEST_DIR) --load-extension=$(EXTENSION_NAME)
 # Compilation Flags
 # ========================
 PG_CPPFLAGS := -I$(SRC_DIR) \
-               -I$(DUCKDB_PARQUET_INCLUDE) \
-               -I$(DUCKDB_INCLUDE) \
+               -I$(DUCKDB_DIR)/extension/parquet/include \
+               -I$(DUCKDB_DIR)/src/include \
                -I$(DUCKDB_DIR)/third_party/parquet \
-               -I$(DUCKDB_THRIFT_INCLUDE) \
+               -I$(DUCKDB_DIR)/third_party/thrift \
                -I../src \
                -MMD -MP
 PG_CFLAGS := $(if $(DEBUG),-ggdb3 -O0,-O2)

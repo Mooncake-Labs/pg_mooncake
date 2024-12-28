@@ -27,7 +27,7 @@ MAKEFLAGS := --no-print-directory
         release uninstall
 
 # ========================
-# Default Target: Help
+# Default Target: help
 # ========================
 help:
 	@echo "Usage: make [TARGET] [BUILD_TYPE=debug|release]"
@@ -115,7 +115,7 @@ clean-duckdb:
 	$(MAKE) -C $(DUCKDB_DIR) clean
 
 # ========================
-# Delta Extension Targets
+# Delta Targets
 # ========================
 $(BUILD_SRC_RUST):
 	@mkdir -p $@

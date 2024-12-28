@@ -21,7 +21,7 @@ MODULE_big := $(EXTENSION_NAME)
 # ========================
 SRCS_C := $(shell cd $(SRC_DIR); find * -name '*.c')
 SRCS_CXX := $(shell cd $(SRC_DIR); find * -name '*.cpp')
-SRCS := $(SRCS_C) $(SRCS_CXX)
+SRCS := $(SRCS_C) $(SRCS_CXX) thrift/transport/TBufferTransports.cpp
 OBJS := $(SRCS:%=%.o) libduckdb.so libdelta.a
 DEPS := $(SRCS:%=%.d)
 

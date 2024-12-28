@@ -30,7 +30,7 @@ MAKEFLAGS := --no-print-directory
 # Default Target: help
 # ========================
 help:
-	@echo "Usage: make [TARGET] [BUILD_TYPE=debug|release]"
+	@echo "Usage: make [TARGET]"
 	@echo ""
 	@echo "Default BUILD_TYPE is 'debug'."
 	@echo ""

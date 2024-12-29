@@ -12,9 +12,6 @@ TEST_DIR := ../../test
 # ========================
 PG_CONFIG ?= pg_config
 PG_LIB := $(shell $(PG_CONFIG) --pkglibdir)
-EXTENSION := ../../$(EXTENSION_NAME)
-MODULES := libduckdb
-MODULE_big := $(EXTENSION_NAME)
 
 # ========================
 # Source Files
@@ -49,6 +46,10 @@ SHLIB_LINK := -L. -Wl,-rpath,$(PG_LIB) -lduckdb -lstdc++
 # ========================
 # PGXS Configuration
 # ========================
+MODULES := libduckdb
+MODULE_big := $(EXTENSION_NAME)
+DATA := $(SQL_DIR)/pg_mooncake--0.0.1.sql
+EXTENSION := ../../$(EXTENSION_NAME)
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 override with_llvm := no
 include $(PGXS)

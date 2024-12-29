@@ -11,7 +11,7 @@ TEST_DIR := ../../test
 # PostgreSQL Setup
 # ========================
 PG_CONFIG ?= pg_config
-PG_LIB := $(shell $(PG_CONFIG) --pkglibdir)
+PG_LIB_DIR := $(shell $(PG_CONFIG) --pkglibdir)
 
 # ========================
 # Source Files
@@ -41,7 +41,7 @@ PG_CPPFLAGS := -I$(SRC_DIR) \
                -MMD -MP
 PG_CFLAGS := $(if $(DEBUG),-ggdb3 -O0,-O2)
 PG_CXXFLAGS := $(if $(DEBUG),-ggdb3 -O0,-O2) -Werror -Wno-register -Wno-sign-compare -std=c++17
-SHLIB_LINK := -L. -Wl,-rpath,$(PG_LIB) -lduckdb -lstdc++
+SHLIB_LINK := -L. -Wl,-rpath,$(PG_LIB_DIR) -lduckdb -lstdc++
 
 # ========================
 # PGXS Configuration

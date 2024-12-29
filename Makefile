@@ -4,7 +4,7 @@
 BUILD_TYPE ?= debug
 BUILD_DIR := build/$(BUILD_TYPE)
 BUILD_SRC_RUST := build/src/rust_extensions
-CURRENT_BUILD := build/current
+CURRENT_BUILD_DIR := build/current
 DELTA_DIR := rust_extensions/delta
 DELTA_HEADER := $(DELTA_DIR)/target/cxxbridge/delta/src/lib.rs.h
 DELTA_LIB := $(DELTA_DIR)/target/$(BUILD_TYPE)/libdelta.a
@@ -51,8 +51,8 @@ $(BUILD_DIR):
 ifeq ($(findstring $(BUILD_TYPE),debug release),)
 	@echo "Invalid BUILD_TYPE = $(BUILD_TYPE)"; exit 1
 endif
-	@rm -f $(CURRENT_BUILD)
-	@ln -s $(BUILD_TYPE) $(CURRENT_BUILD)
+	@rm -f $(CURRENT_BUILD_DIR)
+	@ln -s $(BUILD_TYPE) $(CURRENT_BUILD_DIR)
 
 all: duckdb-fast delta | .BUILD
 	install -C Makefile.build $(BUILD_DIR)/Makefile
@@ -73,13 +73,13 @@ format: format-delta
 	find $(SRC_DIR) -name '*.c' -o -name '*.cpp' -o -name '*.h' -o -name '*.hpp' | xargs clang-format -i
 
 install:
-	@$(MAKE) -C $(CURRENT_BUILD) install
+	@$(MAKE) -C $(CURRENT_BUILD_DIR) install
 
 installcheck:
-	@$(MAKE) -C $(CURRENT_BUILD) installcheck
+	@$(MAKE) -C $(CURRENT_BUILD_DIR) installcheck
 
 uninstall:
-	@$(MAKE) -C $(CURRENT_BUILD) uninstall
+	@$(MAKE) -C $(CURRENT_BUILD_DIR) uninstall
 
 # ========================
 # DuckDB Targets

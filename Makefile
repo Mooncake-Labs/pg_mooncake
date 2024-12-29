@@ -1,7 +1,6 @@
 # ========================
 # Shared Variables
 # ========================
-BUILD_TYPE ?= debug
 BUILD_DIR := build/$(BUILD_TYPE)
 BUILD_RUST_DIR := build/src/rust_extensions
 CURRENT_BUILD_DIR := build/current

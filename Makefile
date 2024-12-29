@@ -3,7 +3,7 @@
 # ========================
 BUILD_TYPE ?= debug
 BUILD_DIR := build/$(BUILD_TYPE)
-BUILD_SRC_RUST := build/src/rust_extensions
+BUILD_RUST_DIR := build/src/rust_extensions
 CURRENT_BUILD_DIR := build/current
 DELTA_DIR := rust_extensions/delta
 DELTA_HEADER := $(DELTA_DIR)/target/cxxbridge/delta/src/lib.rs.h
@@ -104,12 +104,12 @@ clean-duckdb:
 # ========================
 # Delta Targets
 # ========================
-$(BUILD_SRC_RUST):
+$(BUILD_RUST_DIR):
 	@mkdir -p $@
 
-delta: | .BUILD $(BUILD_SRC_RUST)
+delta: | .BUILD $(BUILD_RUST_DIR)
 	cargo build --manifest-path=$(DELTA_DIR)/Cargo.toml $(CARGO_FLAGS)
-	install -C $$(readlink -f $(DELTA_HEADER)) $(BUILD_SRC_RUST)/delta.hpp
+	install -C $$(readlink -f $(DELTA_HEADER)) $(BUILD_RUST_DIR)/delta.hpp
 	install -C $(DELTA_LIB) $(BUILD_DIR)/libdelta.a
 
 clean-delta:

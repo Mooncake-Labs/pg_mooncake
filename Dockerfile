@@ -16,8 +16,7 @@ ENV PATH="/root/.cargo/bin:$PATH"
 COPY . /tmp/pg_mooncake
 
 RUN cd /tmp/pg_mooncake \
- && make clean \
- && make clean-duckdb \
+ && make clean-all \
  && make release \
  && DESTDIR=/out make install
 

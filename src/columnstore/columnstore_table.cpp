@@ -181,7 +181,8 @@ void ColumnstoreTable::FinalizeInsert() {
     }
 }
 
-void ColumnstoreTable::Delete(ClientContext &context, unordered_set<row_t> &row_ids_set) {
+void ColumnstoreTable::Delete(ClientContext &context, unordered_set<row_t> &row_ids_set,
+                              ColumnDataCollection *return_collection) {
     vector<row_t> row_ids(row_ids_set.begin(), row_ids_set.end());
     std::sort(row_ids.begin(), row_ids.end());
     auto path = metadata->TablesSearch(oid);
@@ -203,11 +204,14 @@ void ColumnstoreTable::Delete(ClientContext &context, unordered_set<row_t> &row_
 
         DataChunk chunk;
         chunk.Initialize(context, reader.GetTypes());
-        SelectionVector sel(STANDARD_VECTOR_SIZE);
+        DataChunk delete_chunk;
+        delete_chunk.Initialize(context, reader.GetTypes());
+        SelectionVector remaining_sel(STANDARD_VECTOR_SIZE);
+        SelectionVector delete_sel(STANDARD_VECTOR_SIZE);
         uint32_t file_row_number = 0;
         reader.Scan(state, chunk);
         while (chunk.size()) {
-            idx_t sel_size = 0;
+            idx_t remaining_sel_size = 0;
             for (idx_t chunk_row_number = 0; chunk_row_number < chunk.size(); chunk_row_number++, file_row_number++) {
                 if (file_row_number == next_file_row_number) {
                     row_ids_index++;
@@ -215,10 +219,19 @@ void ColumnstoreTable::Delete(ClientContext &context, unordered_set<row_t> &row_
                         next_file_row_number = row_ids[row_ids_index] & 0xFFFFFFFF;
                     }
                 } else {
-                    sel.set_index(sel_size++, chunk_row_number);
+                    remaining_sel.set_index(remaining_sel_size++, chunk_row_number);
                 }
             }
-            chunk.Slice(sel, sel_size);
+            if (remaining_sel_size < chunk.size()) {
+                if (return_collection) {
+                    idx_t delete_sel_size =
+                        SelectionVector::Inverted(remaining_sel, delete_sel, remaining_sel_size, chunk.size());
+                    delete_chunk.Append(chunk, false /*resize*/, &delete_sel, delete_sel_size);
+                    return_collection->Append(delete_chunk);
+                    delete_chunk.Reset();
+                }
+                chunk.Slice(remaining_sel, remaining_sel_size);
+            }
             if (chunk.size()) {
                 Insert(context, chunk);
             }

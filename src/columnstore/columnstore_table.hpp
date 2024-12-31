@@ -5,6 +5,7 @@
 
 namespace duckdb {
 
+class ColumnDataCollection;
 class ColumnstoreMetadata;
 class ColumnstoreWriter;
 class DataChunk;
@@ -29,7 +30,8 @@ public:
 
     void FinalizeInsert();
 
-    void Delete(ClientContext &context, unordered_set<row_t> &row_ids_set);
+    void Delete(ClientContext &context, unordered_set<row_t> &row_ids_set,
+                ColumnDataCollection *return_collection = nullptr);
 
 private:
     vector<string> GetFilePaths(const string &path, const vector<string> &file_names);

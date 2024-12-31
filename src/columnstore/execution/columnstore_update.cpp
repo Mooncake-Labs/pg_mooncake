@@ -1,29 +1,38 @@
 #include "columnstore/columnstore.hpp"
 #include "columnstore/columnstore_table.hpp"
+#include "duckdb/common/types/column/column_data_collection.hpp"
 #include "duckdb/execution/physical_operator.hpp"
 #include "duckdb/planner/operator/logical_update.hpp"
 
 namespace duckdb {
 
+class ColumnstoreUpdateSourceState : public GlobalSourceState {
+public:
+    ColumnDataScanState scan_state;
+};
+
 class ColumnstoreUpdateGlobalState : public GlobalSinkState {
 public:
-    ColumnstoreUpdateGlobalState(ClientContext &context, const vector<LogicalType> &types) {
+    ColumnstoreUpdateGlobalState(ClientContext &context, const vector<LogicalType> &types)
+        : return_collection(context, types) {
         chunk.Initialize(Allocator::Get(context), types);
     }
 
     DataChunk chunk;
     unordered_set<row_t> row_ids;
+    ColumnDataCollection return_collection;
 };
 
 class ColumnstoreUpdate : public PhysicalOperator {
 public:
     ColumnstoreUpdate(vector<LogicalType> types, idx_t estimated_cardinality, ColumnstoreTable &table,
-                      vector<PhysicalIndex> columns)
+                      vector<PhysicalIndex> columns, bool return_chunk)
         : PhysicalOperator(PhysicalOperatorType::EXTENSION, std::move(types), estimated_cardinality), table(table),
-          columns(std::move(columns)) {}
+          columns(std::move(columns)), return_chunk(return_chunk) {}
 
     ColumnstoreTable &table;
     vector<PhysicalIndex> columns;
+    bool return_chunk;
 
 public:
     string GetName() const override {
@@ -32,11 +41,25 @@ public:
 
 public:
     // Source interface
-    SourceResultType GetData(ExecutionContext &context, DataChunk &chunk, OperatorSourceInput &input) const override {
+    unique_ptr<GlobalSourceState> GetGlobalSourceState(ClientContext &context) const override {
+        auto state = make_uniq<ColumnstoreUpdateSourceState>();
         auto &gstate = sink_state->Cast<ColumnstoreUpdateGlobalState>();
-        chunk.SetCardinality(1);
-        chunk.SetValue(0, 0, Value::BIGINT(NumericCast<int64_t>(gstate.row_ids.size())));
-        return SourceResultType::FINISHED;
+        if (return_chunk) {
+            gstate.return_collection.InitializeScan(state->scan_state);
+        }
+        return std::move(state);
+    }
+
+    SourceResultType GetData(ExecutionContext &context, DataChunk &chunk, OperatorSourceInput &input) const override {
+        auto &state = input.global_state.Cast<ColumnstoreUpdateSourceState>();
+        auto &gstate = sink_state->Cast<ColumnstoreUpdateGlobalState>();
+        if (!return_chunk) {
+            chunk.SetCardinality(1);
+            chunk.SetValue(0, 0, Value::BIGINT(NumericCast<int64_t>(gstate.row_ids.size())));
+            return SourceResultType::FINISHED;
+        }
+        gstate.return_collection.Scan(state.scan_state, chunk);
+        return chunk.size() == 0 ? SourceResultType::FINISHED : SourceResultType::HAVE_MORE_OUTPUT;
     }
 
     bool IsSource() const override {
@@ -69,6 +92,9 @@ public:
             gstate.chunk.data[columns[i].index].Reference(chunk.data[i]);
         }
         table.Insert(context.client, gstate.chunk);
+        if (return_chunk) {
+            gstate.return_collection.Append(gstate.chunk);
+        }
         return SinkResultType::NEED_MORE_INPUT;
     }
 
@@ -92,7 +118,7 @@ unique_ptr<PhysicalOperator> Columnstore::PlanUpdate(ClientContext &context, Log
                                                      unique_ptr<PhysicalOperator> plan) {
     D_ASSERT(op.update_is_del_and_insert);
     auto update = make_uniq<ColumnstoreUpdate>(op.types, op.estimated_cardinality, op.table.Cast<ColumnstoreTable>(),
-                                               std::move(op.columns));
+                                               std::move(op.columns), op.return_chunk);
     update->children.push_back(std::move(plan));
     return std::move(update);
 }

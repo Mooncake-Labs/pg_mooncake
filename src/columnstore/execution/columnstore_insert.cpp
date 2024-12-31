@@ -4,29 +4,38 @@
 
 namespace duckdb {
 
+class ColumnstoreInsertSourceState : public GlobalSourceState {
+public:
+    ColumnDataScanState scan_state;
+};
+
 class ColumnstoreInsertGlobalState : public GlobalSinkState {
 public:
     ColumnstoreInsertGlobalState(ClientContext &context, const vector<LogicalType> &types,
                                  const vector<unique_ptr<Expression>> &bound_defaults)
-        : executor(context, bound_defaults), insert_count(0) {
+        : executor(context, bound_defaults), insert_count(0), return_collection(context, types) {
         chunk.Initialize(Allocator::Get(context), types);
     }
 
     DataChunk chunk;
     ExpressionExecutor executor;
     idx_t insert_count;
+    ColumnDataCollection return_collection;
 };
 
 class ColumnstoreInsert : public PhysicalOperator {
 public:
     ColumnstoreInsert(vector<LogicalType> types, idx_t estimated_cardinality, ColumnstoreTable &table,
-                      physical_index_vector_t<idx_t> column_index_map, vector<unique_ptr<Expression>> bound_defaults)
+                      physical_index_vector_t<idx_t> column_index_map, vector<unique_ptr<Expression>> bound_defaults,
+                      bool return_chunk)
         : PhysicalOperator(PhysicalOperatorType::EXTENSION, std::move(types), estimated_cardinality), table(table),
-          column_index_map(std::move(column_index_map)), bound_defaults(std::move(bound_defaults)) {}
+          column_index_map(std::move(column_index_map)), bound_defaults(std::move(bound_defaults)),
+          return_chunk(return_chunk) {}
 
     ColumnstoreTable &table;
     physical_index_vector_t<idx_t> column_index_map;
     vector<unique_ptr<Expression>> bound_defaults;
+    bool return_chunk;
 
 public:
     string GetName() const override {
@@ -35,11 +44,25 @@ public:
 
 public:
     // Source interface
-    SourceResultType GetData(ExecutionContext &context, DataChunk &chunk, OperatorSourceInput &input) const override {
+    unique_ptr<GlobalSourceState> GetGlobalSourceState(ClientContext &context) const override {
+        auto state = make_uniq<ColumnstoreInsertSourceState>();
         auto &gstate = sink_state->Cast<ColumnstoreInsertGlobalState>();
-        chunk.SetCardinality(1);
-        chunk.SetValue(0, 0, Value::BIGINT(NumericCast<int64_t>(gstate.insert_count)));
-        return SourceResultType::FINISHED;
+        if (return_chunk) {
+            gstate.return_collection.InitializeScan(state->scan_state);
+        }
+        return std::move(state);
+    }
+
+    SourceResultType GetData(ExecutionContext &context, DataChunk &chunk, OperatorSourceInput &input) const override {
+        auto &state = input.global_state.Cast<ColumnstoreInsertSourceState>();
+        auto &gstate = sink_state->Cast<ColumnstoreInsertGlobalState>();
+        if (!return_chunk) {
+            chunk.SetCardinality(1);
+            chunk.SetValue(0, 0, Value::BIGINT(NumericCast<int64_t>(gstate.insert_count)));
+            return SourceResultType::FINISHED;
+        }
+        gstate.return_collection.Scan(state.scan_state, chunk);
+        return chunk.size() == 0 ? SourceResultType::FINISHED : SourceResultType::HAVE_MORE_OUTPUT;
     }
 
     bool IsSource() const override {
@@ -76,6 +99,9 @@ public:
                 gstate.chunk.data[i].Reference(chunk.data[i]);
             }
         }
+        if (return_chunk) {
+            gstate.return_collection.Append(gstate.chunk);
+        }
         gstate.insert_count += gstate.chunk.size();
         table.Insert(context.client, gstate.chunk);
         return SinkResultType::NEED_MORE_INPUT;
@@ -99,7 +125,7 @@ public:
 unique_ptr<PhysicalOperator> Columnstore::PlanInsert(ClientContext &context, LogicalInsert &op,
                                                      unique_ptr<PhysicalOperator> plan) {
     auto insert = make_uniq<ColumnstoreInsert>(op.types, op.estimated_cardinality, op.table.Cast<ColumnstoreTable>(),
-                                               op.column_index_map, std::move(op.bound_defaults));
+                                               op.column_index_map, std::move(op.bound_defaults), op.return_chunk);
     insert->children.push_back(std::move(plan));
     return std::move(insert);
 }

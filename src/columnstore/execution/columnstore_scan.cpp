@@ -30,7 +30,8 @@ struct ColumnstoreScanMultiFileReader : public MultiFileReader {
                                                     TableFilterSet &filters) override {
         const vector<string> file_paths = files.GetPaths();
         vector<string> filtered_file_paths;
-        for (auto &file_path : file_paths) {
+        for (idx_t file_number = 0; file_number < file_paths.size(); file_number++) {
+            auto &file_path = file_paths[file_number];
             auto file_stats = columnstore_stats.Get<DataFileStatistics>(StringUtil::GetFileName(file_path));
             auto skip_file = [&](auto &entry) {
                 auto stats = file_stats->Get(names[column_ids[entry.first]]);
@@ -38,6 +39,7 @@ struct ColumnstoreScanMultiFileReader : public MultiFileReader {
             };
             if (!any_of(filters.filters.begin(), filters.filters.end(), skip_file)) {
                 filtered_file_paths.push_back(file_path);
+                file_numbers.push_back(file_number);
             }
         }
         return filtered_file_paths.size() < file_paths.size() ? make_uniq<SimpleMultiFileList>(filtered_file_paths)
@@ -94,13 +96,16 @@ struct ColumnstoreScanMultiFileReader : public MultiFileReader {
             auto file_row_numbers_data = FlatVector::GetData<int64_t>(file_row_numbers);
             gstate.row_ids->SetVectorType(VectorType::FLAT_VECTOR);
             auto row_ids_data = FlatVector::GetData<row_t>(*gstate.row_ids);
-            const idx_t file_number = NumericCast<int32_t>(reader_data.file_list_idx.GetIndex());
+            const idx_t file_list_idx = NumericCast<int32_t>(reader_data.file_list_idx.GetIndex());
+            const idx_t file_number = file_numbers.empty() ? file_list_idx : file_numbers[file_list_idx];
             for (idx_t i = 0; i < chunk.size(); i++) {
                 row_ids_data[i] = (file_number << 32) + NumericCast<uint32_t>(file_row_numbers_data[i]);
             }
             chunk.data[gstate.row_id_index].Reference(*gstate.row_ids);
         }
     }
+
+    vector<idx_t> file_numbers;
 };
 
 void EmptyColumnstoreScan(ClientContext &context, TableFunctionInput &data, DataChunk &output) {}

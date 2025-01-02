@@ -10,9 +10,15 @@ class ColumnstoreMetadata;
 class ColumnstoreWriter;
 class DataChunk;
 
+struct ColumnstoreTableData {
+    Oid oid;
+    string path;
+    string timeline_id;
+};
+
 class ColumnstoreTable : public TableCatalogEntry {
 public:
-    ColumnstoreTable(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info, Oid oid, Snapshot snapshot);
+    ColumnstoreTable(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info, Snapshot snapshot, Oid oid);
 
     ~ColumnstoreTable() override;
 
@@ -37,9 +43,9 @@ private:
     vector<string> GetFilePaths(const string &path, const vector<string> &file_names);
 
 private:
-    Oid oid;
     unique_ptr<ColumnstoreMetadata> metadata;
     unique_ptr<ColumnstoreWriter> writer;
+    ColumnstoreTableData data;
 };
 
 } // namespace duckdb

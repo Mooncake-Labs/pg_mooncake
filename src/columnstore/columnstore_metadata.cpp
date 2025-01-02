@@ -1,5 +1,6 @@
 #include "columnstore/columnstore_metadata.hpp"
 #include "columnstore/columnstore_statistics.hpp"
+#include "columnstore/columnstore_table.hpp"
 #include "parquet_file_metadata_cache.hpp"
 #include "pgduckdb/pgduckdb_utils.hpp"
 #include "pgmooncake_guc.hpp"
@@ -33,7 +34,7 @@ Datum StringGetTextDatum(const string_t &s) {
     return PointerGetDatum(cstring_to_text_with_len(s.GetData(), s.GetSize()));
 }
 
-constexpr int x_tables_natts = 2;
+constexpr int x_tables_natts = 3;
 constexpr int x_data_files_natts = 3;
 constexpr int x_secrets_natts = 5;
 
@@ -64,8 +65,8 @@ Oid Secrets() {
 void ColumnstoreMetadata::TablesInsert(Oid oid, const string &path) {
     ::Relation table = table_open(Tables(), RowExclusiveLock);
     TupleDesc desc = RelationGetDescr(table);
-    Datum values[x_tables_natts] = {oid, StringGetTextDatum(path)};
-    bool nulls[x_tables_natts] = {false, false};
+    Datum values[x_tables_natts] = {oid, StringGetTextDatum(path), CStringGetTextDatum(mooncake_timeline_id)};
+    bool nulls[x_tables_natts] = {false, false, false};
     HeapTuple tuple = heap_form_tuple(desc, values, nulls);
     PostgresFunctionGuard(CatalogTupleInsert, table, tuple);
     CommandCounterIncrement();
@@ -90,7 +91,7 @@ void ColumnstoreMetadata::TablesDelete(Oid oid) {
     table_close(table, RowExclusiveLock);
 }
 
-string ColumnstoreMetadata::TablesSearch(Oid oid) {
+ColumnstoreTableData ColumnstoreMetadata::TablesSearch(Oid oid) {
     ::Relation table = table_open(Tables(), AccessShareLock);
     ::Relation index = index_open(TablesOid(), AccessShareLock);
     TupleDesc desc = RelationGetDescr(table);
@@ -98,19 +99,19 @@ string ColumnstoreMetadata::TablesSearch(Oid oid) {
     ScanKeyInit(&key[0], 1 /*attributeNumber*/, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(oid));
     SysScanDesc scan = systable_beginscan_ordered(table, index, snapshot, 1 /*nkeys*/, key);
 
-    string path;
+    ColumnstoreTableData data;
     HeapTuple tuple;
     Datum values[x_tables_natts];
     bool isnull[x_tables_natts];
     if (HeapTupleIsValid(tuple = systable_getnext_ordered(scan, ForwardScanDirection))) {
         heap_deform_tuple(tuple, desc, values, isnull);
-        path = TextDatumGetCString(values[1]);
+        data = {oid, TextDatumGetCString(values[1]), TextDatumGetCString(values[2])};
     }
 
     systable_endscan_ordered(scan);
     index_close(index, AccessShareLock);
     table_close(table, AccessShareLock);
-    return path;
+    return data;
 }
 
 string ColumnstoreMetadata::GetTablePath(Oid oid) {
@@ -129,23 +130,20 @@ string ColumnstoreMetadata::GetTablePath(Oid oid) {
     return path;
 }
 
-void ColumnstoreMetadata::GetTableMetadata(Oid oid, string &table_name /*out*/, vector<string> &column_names /*out*/,
-                                           vector<string> &column_types /*out*/) {
-    D_ASSERT(column_names.empty());
-    D_ASSERT(column_types.empty());
-
+std::tuple<string /*table_name*/, vector<string> /*column_names*/, vector<string> /*column_types*/>
+ColumnstoreMetadata::GetTableMetadata(Oid oid) {
     ::Relation table = table_open(oid, AccessShareLock);
     TupleDesc desc = RelationGetDescr(table);
-    table_name = RelationGetRelationName(table);
-
-    column_names.reserve(desc->natts);
-    column_types.reserve(desc->natts);
+    string table_name = RelationGetRelationName(table);
+    vector<string> column_names(desc->natts);
+    vector<string> column_types(desc->natts);
     for (int i = 0; i < desc->natts; i++) {
         Form_pg_attribute attr = &desc->attrs[i];
         column_names.emplace_back(NameStr(attr->attname));
         column_types.emplace_back(format_type_be(attr->atttypid));
     }
     table_close(table, AccessShareLock);
+    return {std::move(table_name), std::move(column_names), std::move(column_types)};
 }
 
 void ColumnstoreMetadata::DataFilesInsert(Oid oid, const string &file_name, const string_t &file_metadata) {

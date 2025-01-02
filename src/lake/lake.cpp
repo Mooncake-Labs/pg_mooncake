@@ -1,4 +1,5 @@
 #include "columnstore/columnstore_metadata.hpp"
+#include "columnstore/columnstore_table.hpp"
 #include "duckdb/common/unordered_set.hpp"
 // #include "rust_extensions/delta.hpp"
 
@@ -26,19 +27,16 @@ public:
 
 public:
     void CreateTable(Oid oid, const string &path) {
-        string table_name;
-        vector<string> column_names;
-        vector<string> column_types;
         ColumnstoreMetadata metadata(NULL /*snapshot*/);
-        metadata.GetTableMetadata(oid, table_name /*out*/, column_names /*out*/, column_types /*out*/);
+        auto [table_name, column_names, column_types] = metadata.GetTableMetadata(oid);
         DeltaCreateTable(table_name, path, metadata.SecretsSearchDeltaOptions(path), column_names, column_types);
     }
 
     void ChangeFile(Oid oid, string file_name, int64_t file_size, bool is_add_file) {
         if (cached_table_infos.count(oid) == 0) {
             ColumnstoreMetadata metadata(NULL /*snapshot*/);
-            string path = metadata.TablesSearch(oid);
-            cached_table_infos[oid] = {path, metadata.SecretsSearchDeltaOptions(path)};
+            auto data =  metadata.TablesSearch(oid);
+            cached_table_infos[oid] = {data.path, metadata.SecretsSearchDeltaOptions(data.path)};
         }
         auto &files = xact_state[oid];
         auto files_iter = files.find(file_name);

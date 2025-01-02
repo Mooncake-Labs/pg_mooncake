@@ -7,6 +7,7 @@ namespace duckdb {
 
 class ClientContext;
 class ColumnList;
+struct ColumnstoreTableData;
 struct string_t;
 
 class ColumnstoreMetadata {
@@ -16,11 +17,11 @@ public:
 public:
     void TablesInsert(Oid oid, const string &path);
     void TablesDelete(Oid oid);
-    string TablesSearch(Oid oid);
+    ColumnstoreTableData TablesSearch(Oid oid);
 
     string GetTablePath(Oid oid);
-    void GetTableMetadata(Oid oid, string &table_name /*out*/, vector<string> &column_names /*out*/,
-                          vector<string> &column_types /*out*/);
+    std::tuple<string /*table_name*/, vector<string> /*column_names*/, vector<string> /*column_types*/>
+    GetTableMetadata(Oid oid);
 
     void DataFilesInsert(Oid oid, const string &file_name, const string_t &file_metadata);
     void DataFilesDelete(const string &file_name);

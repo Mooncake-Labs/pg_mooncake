@@ -58,8 +58,8 @@ SchemaItems::GetTable(const duckdb::string &entry_name) {
 
 	if (IsColumnstoreTable(rel)) {
 		CloseRelation(rel);
-		tables.emplace(entry_name, duckdb::make_uniq<duckdb::ColumnstoreTable>(schema->catalog, *schema, info, rel_oid,
-		                                                                       schema->snapshot));
+		tables.emplace(entry_name, duckdb::make_uniq<duckdb::ColumnstoreTable>(schema->catalog, *schema, info,
+		                                                                       schema->snapshot, rel_oid));
 	} else {
 		auto cardinality = PostgresTable::GetTableCardinality(rel);
 		tables.emplace(entry_name, duckdb::make_uniq<PostgresHeapTable>(schema->catalog, *schema, info, rel,

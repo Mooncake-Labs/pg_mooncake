@@ -81,7 +81,7 @@ public:
         return false;
     }
 
-    pair<idx_t, string_t> Finalize() {
+    std::tuple<idx_t, string_t> Finalize() {
         writer.Flush(collection);
         idx_t offset = writer.GetWriter().offset;
         idx_t total_written = writer.GetWriter().total_written;
@@ -107,9 +107,9 @@ private:
 
 class ColumnstoreWriter {
 public:
-    ColumnstoreWriter(Oid oid, ColumnstoreMetadata &metadata, vector<LogicalType> types, vector<string> names)
-        : oid(oid), metadata(metadata), path(metadata.TablesSearch(oid)), types(std::move(types)),
-          names(std::move(names)) {}
+    ColumnstoreWriter(ColumnstoreMetadata &metadata, ColumnstoreTableData &data, vector<LogicalType> types,
+                      vector<string> names)
+        : metadata(metadata), data(data), types(std::move(types)), names(std::move(names)) {}
 
 public:
     void Write(ClientContext &context, DataChunk &chunk) {
@@ -119,7 +119,7 @@ public:
             for (idx_t i = 0; i < names.size(); i++) {
                 (*field_ids.ids)[names[i]] = FieldID(i);
             }
-            writer = make_uniq<DataFileWriter>(context, path, file_name, types, names, std::move(field_ids));
+            writer = make_uniq<DataFileWriter>(context, data.path, file_name, types, names, std::move(field_ids));
         }
         if (writer->Write(chunk)) {
             FinalizeDataFile();
@@ -135,24 +135,24 @@ public:
 private:
     void FinalizeDataFile() {
         auto [file_size, file_metadata] = writer->Finalize();
-        metadata.DataFilesInsert(oid, file_name, file_metadata);
+        metadata.DataFilesInsert(data.oid, file_name, file_metadata);
         writer.reset();
-        LakeAddFile(oid, file_name, file_size);
+        LakeAddFile(data.oid, file_name, file_size);
     }
 
 private:
-    Oid oid;
     ColumnstoreMetadata &metadata;
-    string path;
+    ColumnstoreTableData &data;
     string file_name;
     vector<LogicalType> types;
     vector<string> names;
     unique_ptr<DataFileWriter> writer;
 };
 
-ColumnstoreTable::ColumnstoreTable(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info, Oid oid,
-                                   Snapshot snapshot)
-    : TableCatalogEntry(catalog, schema, info), oid(oid), metadata(make_uniq<ColumnstoreMetadata>(snapshot)) {}
+ColumnstoreTable::ColumnstoreTable(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info,
+                                   Snapshot snapshot, Oid oid)
+    : TableCatalogEntry(catalog, schema, info), metadata(make_uniq<ColumnstoreMetadata>(snapshot)),
+      data(metadata->TablesSearch(oid)) {}
 
 ColumnstoreTable::~ColumnstoreTable() = default;
 
@@ -169,7 +169,7 @@ TableStorageInfo ColumnstoreTable::GetStorageInfo(ClientContext &context) {
 
 void ColumnstoreTable::Insert(ClientContext &context, DataChunk &chunk) {
     if (!writer) {
-        writer = make_uniq<ColumnstoreWriter>(oid, *metadata, columns.GetColumnTypes(), columns.GetColumnNames());
+        writer = make_uniq<ColumnstoreWriter>(*metadata, data, columns.GetColumnTypes(), columns.GetColumnNames());
     }
     writer->Write(context, chunk);
 }
@@ -185,9 +185,8 @@ void ColumnstoreTable::Delete(ClientContext &context, unordered_set<row_t> &row_
                               ColumnDataCollection *return_collection) {
     vector<row_t> row_ids(row_ids_set.begin(), row_ids_set.end());
     std::sort(row_ids.begin(), row_ids.end());
-    auto path = metadata->TablesSearch(oid);
     auto file_names = metadata->DataFilesSearch(oid);
-    auto file_paths = GetFilePaths(path, file_names);
+    auto file_paths = GetFilePaths(data.path, file_names);
 
     for (idx_t row_ids_index = 0; row_ids_index < row_ids.size();) {
         int32_t file_number = row_ids[row_ids_index] >> 32;

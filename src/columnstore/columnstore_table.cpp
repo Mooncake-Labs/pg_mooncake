@@ -81,7 +81,7 @@ public:
         return false;
     }
 
-    pair<idx_t, string_t> Finalize() {
+    std::tuple<idx_t, string_t> Finalize() {
         writer.Flush(collection);
         idx_t offset = writer.GetWriter().offset;
         idx_t total_written = writer.GetWriter().total_written;
@@ -107,9 +107,9 @@ private:
 
 class ColumnstoreWriter {
 public:
-    ColumnstoreWriter(Oid oid, ColumnstoreMetadata &metadata, vector<LogicalType> types, vector<string> names)
-        : oid(oid), metadata(metadata), path(metadata.TablesSearch(oid)), types(std::move(types)),
-          names(std::move(names)) {}
+    ColumnstoreWriter(Oid oid, ColumnstoreMetadata &metadata, string path, vector<LogicalType> types,
+                      vector<string> names)
+        : oid(oid), metadata(metadata), path(std::move(path)), types(std::move(types)), names(std::move(names)) {}
 
 public:
     void Write(ClientContext &context, DataChunk &chunk) {
@@ -152,7 +152,8 @@ private:
 
 ColumnstoreTable::ColumnstoreTable(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info, Oid oid,
                                    Snapshot snapshot)
-    : TableCatalogEntry(catalog, schema, info), oid(oid), metadata(make_uniq<ColumnstoreMetadata>(snapshot)) {}
+    : TableCatalogEntry(catalog, schema, info), oid(oid), metadata(make_uniq<ColumnstoreMetadata>(snapshot)),
+      path(std::get<0>(metadata->TablesSearch(oid))) {}
 
 ColumnstoreTable::~ColumnstoreTable() = default;
 
@@ -169,7 +170,7 @@ TableStorageInfo ColumnstoreTable::GetStorageInfo(ClientContext &context) {
 
 void ColumnstoreTable::Insert(ClientContext &context, DataChunk &chunk) {
     if (!writer) {
-        writer = make_uniq<ColumnstoreWriter>(oid, *metadata, columns.GetColumnTypes(), columns.GetColumnNames());
+        writer = make_uniq<ColumnstoreWriter>(oid, *metadata, path, columns.GetColumnTypes(), columns.GetColumnNames());
     }
     writer->Write(context, chunk);
 }
@@ -185,7 +186,6 @@ void ColumnstoreTable::Delete(ClientContext &context, unordered_set<row_t> &row_
                               ColumnDataCollection *return_collection) {
     vector<row_t> row_ids(row_ids_set.begin(), row_ids_set.end());
     std::sort(row_ids.begin(), row_ids.end());
-    auto path = metadata->TablesSearch(oid);
     auto file_names = metadata->DataFilesSearch(oid);
     auto file_paths = GetFilePaths(path, file_names);
 

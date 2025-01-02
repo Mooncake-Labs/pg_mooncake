@@ -1,5 +1,6 @@
 #include "columnstore/columnstore_metadata.hpp"
 #include "duckdb/common/unordered_set.hpp"
+#include "pgmooncake_guc.hpp"
 #include "rust_extensions/delta.hpp"
 
 #include <utility>
@@ -16,19 +17,17 @@ public:
 
 public:
     void CreateTable(Oid oid, const string &path) {
-        string table_name;
-        vector<string> column_names;
-        vector<string> column_types;
         ColumnstoreMetadata metadata(NULL /*snapshot*/);
-        metadata.GetTableMetadata(oid, table_name /*out*/, column_names /*out*/, column_types /*out*/);
+        auto [table_name, column_names, column_types] = metadata.GetTableMetadata(oid);
         DeltaCreateTable(table_name, path, metadata.SecretsSearchDeltaOptions(path), column_names, column_types);
     }
 
     void ChangeFile(Oid oid, string file_name, int64_t file_size, bool is_add_file) {
         if (cached_table_infos.count(oid) == 0) {
             ColumnstoreMetadata metadata(NULL /*snapshot*/);
-            string path = metadata.TablesSearch(oid);
-            cached_table_infos[oid] = {path, metadata.SecretsSearchDeltaOptions(path)};
+            auto [path, timeline_id] = metadata.TablesSearch(oid);
+            cached_table_infos[oid] = {std::move(path), std::move(timeline_id),
+                                       metadata.SecretsSearchDeltaOptions(path)};
         }
         auto &files = xact_state[oid];
         auto files_iter = files.find(file_name);
@@ -62,7 +61,9 @@ public:
             }
             if (!file_names.empty()) {
                 auto info = cached_table_infos[oid];
-                DeltaModifyFiles(info.path, info.delta_options, file_names, file_sizes, is_add_files);
+                if (info.timeline_id == mooncake_timeline_id) {
+                    DeltaModifyFiles(info.path, info.delta_options, file_names, file_sizes, is_add_files);
+                }
             }
         }
         xact_state.clear();
@@ -71,6 +72,7 @@ public:
 private:
     struct CachedTableInfoEntry {
         string path;
+        string timeline_id;
         string delta_options;
     };
     unordered_map<Oid, CachedTableInfoEntry> cached_table_infos;

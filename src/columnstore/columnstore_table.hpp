@@ -39,6 +39,7 @@ private:
 private:
     Oid oid;
     unique_ptr<ColumnstoreMetadata> metadata;
+    string path;
     unique_ptr<ColumnstoreWriter> writer;
 };
 

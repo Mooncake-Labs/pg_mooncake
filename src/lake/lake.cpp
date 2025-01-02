@@ -1,6 +1,16 @@
 #include "columnstore/columnstore_metadata.hpp"
 #include "duckdb/common/unordered_set.hpp"
-#include "rust_extensions/delta.hpp"
+// #include "rust_extensions/delta.hpp"
+
+void DeltaInit() noexcept {}
+
+void DeltaCreateTable(::std::string const &table_name, ::std::string const &path, ::std::string const &options,
+                      ::std::vector<::std::string> const &column_names,
+                      ::std::vector<::std::string> const &column_types) {}
+
+void DeltaModifyFiles(::std::string const &path, ::std::string const &options,
+                      ::std::vector<::std::string> const &file_paths, ::std::vector<::std::int64_t> const &file_sizes,
+                      ::std::vector<::std::int8_t> const &is_add_files) {}
 
 #include <utility>
 

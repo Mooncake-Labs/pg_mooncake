@@ -1,7 +1,7 @@
 # pg_mooncake 🥮
-[![License](https://img.shields.io/badge/License-MIT-blue)](https://github.com/Mooncake-Labs/pg_mooncake/blob/main/LICENSE) 
-[![Slack URL](https://img.shields.io/badge/Mooncake%20Slack-purple?logo=slack&link=https%3A%2F%2Fjoin.slack.com%2Ft%2Fmooncakelabs%2Fshared_invite%2Fzt-2sepjh5hv-rb9jUtfYZ9bvbxTCUrsEEA)](https://join.slack.com/t/mooncakelabs/shared_invite/zt-2sepjh5hv-rb9jUtfYZ9bvbxTCUrsEEA) 
-[![X URL](https://img.shields.io/twitter/url?url=https%3A%2F%2Fx.com%2Fmooncakelabs&label=%40mooncakelabs)](https://x.com/mooncakelabs) 
+[![License](https://img.shields.io/badge/License-MIT-blue)](https://github.com/Mooncake-Labs/pg_mooncake/blob/main/LICENSE)
+[![Slack URL](https://img.shields.io/badge/Mooncake%20Slack-purple?logo=slack&link=https%3A%2F%2Fjoin.slack.com%2Ft%2Fmooncakelabs%2Fshared_invite%2Fzt-2sepjh5hv-rb9jUtfYZ9bvbxTCUrsEEA)](https://join.slack.com/t/mooncakelabs/shared_invite/zt-2sepjh5hv-rb9jUtfYZ9bvbxTCUrsEEA)
+[![X URL](https://img.shields.io/twitter/url?url=https%3A%2F%2Fx.com%2Fmooncakelabs&label=%40mooncakelabs)](https://x.com/mooncakelabs)
 [![Documentation](https://img.shields.io/badge/Docs-pgmooncake.com-orange?logo=read-the-docs)]([https://pgmooncake.com/docs])
 
 

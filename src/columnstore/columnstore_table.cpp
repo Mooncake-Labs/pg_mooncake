@@ -1,11 +1,15 @@
 #include "columnstore/columnstore_table.hpp"
 #include "columnstore/columnstore_metadata.hpp"
+#include "duckdb/common/local_file_system.hpp"
 #include "duckdb/common/serializer/memory_stream.hpp"
 #include "duckdb/common/types/uuid.hpp"
+#include "duckdb/common/virtual_file_system.hpp"
 #include "lake/lake.hpp"
 #include "parquet_reader.hpp"
 #include "parquet_writer.hpp"
 #include "pgmooncake_guc.hpp"
+
+#include <thread>
 
 namespace duckdb {
 
@@ -19,11 +23,9 @@ public:
 public:
     unique_ptr<FileHandle> OpenFile(const string &path, FileOpenFlags flags,
                                     optional_ptr<FileOpener> opener = nullptr) override {
-        if (IsRemoteFile(path) && mooncake_enable_local_cache) {
-            auto disk_space = fs.GetAvailableDiskSpace(x_mooncake_local_cache);
-            if (disk_space.IsValid() && disk_space.GetIndex() > x_min_disk_space) {
-                cached_file = fs.OpenFile(cached_file_path, flags, opener);
-            }
+        auto disk_space = fs.GetAvailableDiskSpace(x_mooncake_local_cache);
+        if (disk_space.IsValid() && disk_space.GetIndex() > x_min_disk_space) {
+            cached_file = fs.OpenFile(cached_file_path, flags, opener);
         }
         return fs.OpenFile(path, flags, opener);
     }
@@ -188,6 +190,7 @@ void ColumnstoreTable::Delete(ClientContext &context, unordered_set<row_t> &row_
     auto path = metadata->TablesSearch(oid);
     auto file_names = metadata->DataFilesSearch(oid);
     auto file_paths = GetFilePaths(path, file_names);
+    auto local_fs = FileSystem::CreateLocal();
 
     for (idx_t row_ids_index = 0; row_ids_index < row_ids.size();) {
         int32_t file_number = row_ids[row_ids_index] >> 32;
@@ -240,28 +243,94 @@ void ColumnstoreTable::Delete(ClientContext &context, unordered_set<row_t> &row_
         }
         metadata->DataFilesDelete(file_names[file_number]);
         LakeDeleteFile(oid, file_names[file_number]);
+
+        const string cache_file = x_mooncake_local_cache + file_names[file_number];
+        if (local_fs->FileExists(cache_file)) {
+            local_fs->RemoveFile(cache_file);
+        }
     }
     FinalizeInsert();
 }
 
 vector<string> ColumnstoreTable::GetFilePaths(const string &path, const vector<string> &file_names) {
     vector<string> file_paths;
-    if (mooncake_enable_local_cache && FileSystem::IsRemoteFile(path)) {
-        auto local_fs = FileSystem::CreateLocal();
-        for (auto &file_name : file_names) {
-            string cached_file_path = x_mooncake_local_cache + file_name;
-            if (local_fs->FileExists(cached_file_path)) {
-                file_paths.push_back(cached_file_path);
-            } else {
-                file_paths.push_back(path + file_name);
-            }
-        }
-    } else {
-        for (auto &file_name : file_names) {
+    auto local_fs = FileSystem::CreateLocal();
+    for (auto &file_name : file_names) {
+        string cached_file_path = x_mooncake_local_cache + file_name;
+        if (local_fs->FileExists(cached_file_path)) {
+            file_paths.push_back(cached_file_path);
+        } else {
             file_paths.push_back(path + file_name);
         }
     }
     return file_paths;
+}
+
+// TODO(hjiang):
+// 1. Better error handling.
+// 2. Consider upstream to duckdb for cross-filesystem file move; but here we could do better due to file size and
+// parallelism awareness.
+bool ColumnstoreTable::FetchReadCache(const string &data_file, const string &cache_file) {
+    VirtualFileSystem vfs{};
+    auto src_handle = vfs.OpenFile(data_file, FileOpenFlags::FILE_FLAGS_READ);
+    const idx_t file_size = src_handle->GetFileSize();
+
+    // TODO(hjiang): Should use string and resize without initialization.
+    vector<char> content(file_size, '\0');
+    src_handle->Read(content.data(), file_size);
+
+    // We could have multiple thread caching to the same file, cache to a temporary file, then atomically swap to
+    // destination cache file to achieve "put-if-absent" semantics.
+    const string temp_cache_file = cache_file + ".tmp";
+
+    // TODO(hjiang): Read and write could be parallelized in chunks as well.
+    auto dst_handle =
+        vfs.OpenFile(temp_cache_file, FileOpenFlags::FILE_FLAGS_WRITE | FileOpenFlags::FILE_FLAGS_FILE_CREATE_NEW);
+    dst_handle->Write(content.data(), file_size);
+    dst_handle->Sync();
+    dst_handle->Close();
+
+    LocalFileSystem local_fs{};
+    local_fs.MoveFile(/*source=*/temp_cache_file, /*target=*/cache_file);
+
+    return true;
+}
+
+unordered_set<string> ColumnstoreTable::ParallelFetchReadCache(const unordered_map<string, string> &files_to_cache) {
+    // TODO(hjiang): Consider using a shared threadpool for all prefetch operations.
+    unordered_set<string> successful_cached_files;
+    vector<std::thread> read_cache_threads(files_to_cache.size());
+    for (const auto &read_op : files_to_cache) {
+        const auto &src = read_op.first;
+        const auto &dst = read_op.second;
+        // TODO(hjiang): Should handle errors, for now just assume success.
+        successful_cached_files.emplace(dst);
+        read_cache_threads.emplace_back([this, src = src, dst = dst]() { FetchReadCache(src, dst); });
+    }
+    return successful_cached_files;
+}
+
+vector<string> ColumnstoreTable::GetFilePathsAndWarmCache(const string &path, const vector<string> &file_names) {
+    auto local_fs = FileSystem::CreateLocal();
+    // TODO(hjiang): Check disk left space as well.
+
+    // Maps from data file to destination cache file.
+    unordered_map<string, string> files_to_cache;
+
+    vector<string> cached_files;
+
+    for (auto &file_name : file_names) {
+        string cached_file_path = x_mooncake_local_cache + file_name;
+        if (!local_fs->FileExists(cached_file_path)) {
+            string src_file = path + file_name;
+            files_to_cache.emplace(src_file, cached_file_path);
+        }
+        cached_files.emplace_back(cached_file_path);
+    }
+
+    // TODO(hjiang): Handle cache load failures, we should fallback to actual data file for cache failed ones.
+    ParallelFetchReadCache(files_to_cache);
+    return cached_files;
 }
 
 } // namespace duckdb

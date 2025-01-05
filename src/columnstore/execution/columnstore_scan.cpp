@@ -137,7 +137,7 @@ unique_ptr<GlobalTableFunctionState> ColumnstoreScanInitGlobal(ClientContext &co
 TableFunction ColumnstoreTable::GetScanFunction(ClientContext &context, unique_ptr<FunctionData> &bind_data) {
     auto path = metadata->TablesSearch(oid);
     auto file_names = metadata->DataFilesSearch(oid, &context, &columns);
-    auto file_paths = GetFilePaths(path, file_names);
+    auto file_paths = GetFilePathsAndWarmCache(path, file_names);
     if (file_paths.empty()) {
         return TableFunction("columnstore_scan", {} /*arguments*/, EmptyColumnstoreScan);
     }

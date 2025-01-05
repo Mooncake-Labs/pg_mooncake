@@ -30,6 +30,7 @@ void _PG_init() {
     const char *neon_timeline_id =
         GetConfigOption("neon.timeline_id", true /*missing_ok*/, false /*restrict_privileged*/);
     if (neon_timeline_id) {
+        mooncake_allow_local_tables = false;
         mooncake_timeline_id = neon_timeline_id;
     }
 

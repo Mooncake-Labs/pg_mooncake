@@ -1,3 +1,6 @@
 /build/
 /rust_extensions/*/Cargo.lock
 /rust_extensions/*/target/
+
+# OS X specific files.
+.DS_store

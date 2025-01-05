@@ -7,7 +7,7 @@
 [![License](https://img.shields.io/badge/License-MIT-blue)](https://github.com/Mooncake-Labs/pg_mooncake/blob/main/LICENSE)
 [![Slack](https://img.shields.io/badge/Mooncake%20Slack-purple?logo=slack)](https://join.slack.com/t/mooncakelabs/shared_invite/zt-2sepjh5hv-rb9jUtfYZ9bvbxTCUrsEEA)
 [![Twitter](https://img.shields.io/twitter/url?url=https%3A%2F%2Fx.com%2Fmooncakelabs&label=%40mooncakelabs)](https://x.com/mooncakelabs)
-[![Documentation](https://img.shields.io/badge/Documentation-pgmooncake.com-blue?style=flat&logo=readthedocs&logoColor=white)](https://pgmooncake.com/docs)
+[![Docs](https://img.shields.io/badge/Documentation-pgmooncake.com-blue?style=flat&logo=readthedocs&logoColor=white)](https://pgmooncake.com/docs)
 
 </div>
 
@@ -21,7 +21,7 @@ Columnstore tables are stored as [Iceberg](https://github.com/apache/iceberg) or
   <img src="assets/map.png" alt="Landscape" width="40%" />
 </div>
 
-## [Installation](https://pgmooncake.com/docs/quick-start)
+## [Installation](https://pgmooncake.com/docs/installation)
 
 ### Option 1: Docker
 
@@ -62,7 +62,7 @@ make install
 CREATE EXTENSION pg_mooncake;
 ```
 
-## [Quick Start](https://pgmooncake.com/docs)
+## [Quick Start](https://pgmooncake.com/quick-start)
 
 Create a columnstore table:
 

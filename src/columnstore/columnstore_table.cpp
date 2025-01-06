@@ -95,8 +95,8 @@ public:
 
 private:
     static const idx_t x_row_group_size = duckdb::Storage::ROW_GROUP_SIZE;
-    static const idx_t x_row_group_size_bytes = x_row_group_size * 1024;
-    static const idx_t x_file_size_bytes = 1 << 30;
+    static const idx_t x_row_group_size_bytes = x_row_group_size * 512;
+    static const idx_t x_file_size_bytes = 1 << 28;
 
     SingleFileCachedWriteFileSystem fs;
     ColumnDataCollection collection;

@@ -19,14 +19,16 @@ public:
     void CreateTable(Oid oid, const string &path) {
         ColumnstoreMetadata metadata(NULL /*snapshot*/);
         auto [table_name, column_names, column_types] = metadata.GetTableMetadata(oid);
-        DeltaCreateTable(table_name, path, metadata.SecretsSearchDeltaOptions(path), column_names, column_types);
+        auto [type, options] = metadata.SecretsSearchDeltaOptions(path);
+        DeltaCreateTable(table_name, path, type, options, column_names, column_types);
     }
 
     void ChangeFile(Oid oid, string file_name, int64_t file_size, bool is_add_file) {
         if (cached_table_infos.count(oid) == 0) {
             ColumnstoreMetadata metadata(NULL /*snapshot*/);
             auto [path, timeline_id] = metadata.TablesSearch(oid);
-            cached_table_infos[oid] = {path, std::move(timeline_id), metadata.SecretsSearchDeltaOptions(path)};
+            auto [type, options] = metadata.SecretsSearchDeltaOptions(path);
+            cached_table_infos[oid] = {path, std::move(timeline_id), std::move(type), std::move(options)};
         }
         auto &files = xact_state[oid];
         auto files_iter = files.find(file_name);
@@ -61,7 +63,7 @@ public:
             if (!file_names.empty()) {
                 auto info = cached_table_infos[oid];
                 if (info.timeline_id == mooncake_timeline_id) {
-                    DeltaModifyFiles(info.path, info.delta_options, file_names, file_sizes, is_add_files);
+                    DeltaModifyFiles(info.path, info.type, info.options, file_names, file_sizes, is_add_files);
                 }
             }
         }
@@ -72,7 +74,8 @@ private:
     struct CachedTableInfoEntry {
         string path;
         string timeline_id;
-        string delta_options;
+        string type;
+        string options;
     };
     unordered_map<Oid, CachedTableInfoEntry> cached_table_infos;
 

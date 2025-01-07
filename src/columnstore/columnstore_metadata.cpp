@@ -261,7 +261,8 @@ vector<string> ColumnstoreMetadata::SecretsGetDuckdbQueries() {
     bool isnull[x_secrets_natts];
     while (HeapTupleIsValid(tuple = systable_getnext(scan))) {
         heap_deform_tuple(tuple, desc, values, isnull);
-        if (strcmp(TextDatumGetCString(values[1]), "S3") == 0) {
+        const char *bucket_type = TextDatumGetCString(values[1]);
+        if (strcmp(bucket_type, "S3") == 0 || strcmp(bucket_type, "GCS") == 0) {
             queries.emplace_back(TextDatumGetCString(values[3]));
         }
     }
@@ -271,9 +272,9 @@ vector<string> ColumnstoreMetadata::SecretsGetDuckdbQueries() {
     return queries;
 }
 
-string ColumnstoreMetadata::SecretsSearchDeltaOptions(const string &path) {
+std::tuple<string /*type*/, string /*options*/> ColumnstoreMetadata::SecretsSearchDeltaOptions(const string &path) {
     if (!FileSystem::IsRemoteFile(path)) {
-        return "{}";
+        return {"", "{}"};
     }
 
     ::Relation table = table_open(Secrets(), AccessShareLock);
@@ -281,17 +282,18 @@ string ColumnstoreMetadata::SecretsSearchDeltaOptions(const string &path) {
     SysScanDescData *scan =
         systable_beginscan(table, InvalidOid /*indexId*/, false /*indexOK*/, snapshot, 0 /*nkeys*/, NULL /*key*/);
 
-    string option = "{}";
+    string type = StringUtil::StartsWith(path, "s3") ? "S3" : "GCS";
+    string options = "{}";
     size_t longest_match = 0;
     HeapTuple tuple;
     Datum values[x_secrets_natts];
     bool isnull[x_secrets_natts];
     while (HeapTupleIsValid(tuple = systable_getnext(scan))) {
         heap_deform_tuple(tuple, desc, values, isnull);
-        if (strcmp(TextDatumGetCString(values[1]), "S3") == 0) {
+        if (TextDatumGetCString(values[1]) == type) {
             string scope = TextDatumGetCString(values[2]);
             if ((scope.empty() || StringUtil::StartsWith(path, scope)) && longest_match <= scope.length()) {
-                option = TextDatumGetCString(values[4]);
+                options = TextDatumGetCString(values[4]);
                 longest_match = scope.length();
             }
         }
@@ -299,7 +301,7 @@ string ColumnstoreMetadata::SecretsSearchDeltaOptions(const string &path) {
 
     systable_endscan(scan);
     table_close(table, AccessShareLock);
-    return option;
+    return {type, options};
 }
 
 } // namespace duckdb

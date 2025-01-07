@@ -275,14 +275,18 @@ RETURNS VOID
 LANGUAGE plpgsql
 AS $create_secret$
 DECLARE
-    allowed_keys TEXT[] := ARRAY['ENDPOINT', 'REGION', 'SCOPE', 'USE_SSL'];
+    s3_allowed_keys TEXT[] := ARRAY['ENDPOINT', 'REGION', 'SCOPE', 'USE_SSL'];
+    gcs_allowed_keys TEXT[] := ARRAY['GCS_SECRET', 'PATH', 'SCOPE'];
+    gcs_required_keys TEXT[] := ARRAY['type', 'project_id', 'private_key_id', 'private_key', 'client_email', 'client_id'];
+
     keys TEXT[];
     invalid_keys TEXT[];
     delta_endpoint TEXT;
+    gcs_service_account_json JSONB;
 BEGIN
     IF type = 'S3' THEN
         keys := ARRAY(SELECT jsonb_object_keys(extra_params));
-        invalid_keys := ARRAY(SELECT unnest(keys) EXCEPT SELECT unnest(allowed_keys));
+        invalid_keys := ARRAY(SELECT unnest(keys) EXCEPT SELECT unnest(s3_allowed_keys));
         -- If there are any invalid keys, raise an exception
         IF array_length(invalid_keys, 1) IS NOT NULL THEN
             RAISE EXCEPTION 'Invalid extra parameters: %', array_to_string(invalid_keys, ', ')
@@ -319,9 +323,45 @@ BEGIN
                 ))
         );
         PERFORM nextval('mooncake.secrets_table_seq');
+    ELSIF type = 'GCS' THEN
+        keys := ARRAY(SELECT jsonb_object_keys(extra_params));
+        invalid_keys := ARRAY(SELECT unnest(keys) EXCEPT SELECT unnest(gcs_allowed_keys));
+        IF array_length(invalid_keys, 1) IS NOT NULL THEN
+            RAISE EXCEPTION 'Invalid extra parameters: %', array_to_string(invalid_keys, ', ')
+            USING HINT = 'Allowed parameters are SCOPE, PATH, GCS_SECRET';
+        END IF;
+        IF extra_params->>'GCS_SECRET' IS NOT NULL THEN
+            gcs_service_account_json := (extra_params->>'GCS_SECRET')::JSONB; -- should be a valid JSON string
+        ELSE
+            IF extra_params->>'PATH' IS NOT NULL THEN
+                IF pg_read_file(extra_params->>'PATH', 0, 1) IS NULL THEN
+                    RAISE EXCEPTION 'Service Account file not found or unreadable.'
+                    USING HINT = 'Service Account file should be a valid JSON file.';
+                ELSE
+                    gcs_service_account_json := (pg_read_file(extra_params->>'PATH'))::JSONB;
+                END IF;
+            ELSE
+                RAISE EXCEPTION 'GCP Service Account JSON can not be empty.'
+                USING HINT = 'Provide a valid Service Account JSON using GCS_SECRET or PATH.';
+            END IF;
+        END IF;
+        IF NOT(gcs_service_account_json::JSONB ?& gcs_required_keys) THEN
+            RAISE EXCEPTION 'Missing required fields in Service Account JSON.'
+            USING HINT = 'Required fields in Service accoount JSON: '|| array_to_string(gcs_required_keys, ', ');
+        END IF;
+        INSERT INTO mooncake.secrets VALUES (
+            name,
+            type,
+            coalesce(extra_params->>'SCOPE', ''),
+            format('CREATE SECRET "duckdb_secret_%s" (TYPE %s, KEY_ID %L, SECRET %L', name, type, key_id, secret) ||
+                CASE WHEN extra_params->>'SCOPE' IS NULL THEN '' ELSE format(', SCOPE %L', extra_params->>'SCOPE') END ||
+                ');',
+                jsonb_build_object('service_account_key', (gcs_service_account_json)::VARCHAR)
+        );
+        PERFORM nextval('mooncake.secrets_table_seq');
     ELSE
         RAISE EXCEPTION 'Unsupported secret type: %', type
-        USING HINT = 'Only secrets of type S3 are supported.';
+        USING HINT = 'Only secrets of type S3/GCS are supported.';
     END IF;
 END;
 $create_secret$ SECURITY DEFINER;

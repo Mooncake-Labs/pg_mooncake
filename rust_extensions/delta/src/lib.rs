@@ -1,5 +1,6 @@
 use cxx::{CxxString, CxxVector};
-use deltalake::aws::register_handlers;
+use deltalake::aws::register_handlers as register_aws_handlers;
+use deltalake::gcp::register_handlers as register_gcp_handlers;
 use deltalake::kernel::{Action, Add, ArrayType, DataType, PrimitiveType, Remove, StructField};
 use deltalake::operations::create::CreateBuilder;
 use deltalake::operations::transaction::CommitBuilder;
@@ -15,6 +16,7 @@ mod ffi {
         fn DeltaCreateTable(
             table_name: &CxxString,
             path: &CxxString,
+            storage_type: &CxxString,
             options: &CxxString,
             column_names: &CxxVector<CxxString>,
             column_types: &CxxVector<CxxString>,
@@ -22,6 +24,7 @@ mod ffi {
 
         fn DeltaModifyFiles(
             path: &CxxString,
+            storage_type: &CxxString,
             options: &CxxString,
             file_paths: &CxxVector<CxxString>,
             file_sizes: &CxxVector<i64>,
@@ -32,14 +35,15 @@ mod ffi {
 
 #[allow(non_snake_case)]
 pub fn DeltaInit() {
-    // Register S3 handlers
-    register_handlers(None);
+    register_aws_handlers(None);
+    register_gcp_handlers(None);
 }
 
 #[allow(non_snake_case)]
 pub fn DeltaCreateTable(
     table_name: &CxxString,
     path: &CxxString,
+    storage_type: &CxxString,
     options: &CxxString,
     column_names: &CxxVector<CxxString>,
     column_types: &CxxVector<CxxString>,
@@ -48,8 +52,10 @@ pub fn DeltaCreateTable(
     runtime.block_on(async {
         let mut storage_options: HashMap<String, String> =
             serde_json::from_str(options.to_str()?).expect("invalid options");
-        // Write directly to S3 without locking is safe since Mooncake is the only writer
-        storage_options.insert("AWS_S3_ALLOW_UNSAFE_RENAME".to_string(), "true".to_string());
+        if storage_type.eq("S3") {
+            // Write directly to S3 without locking is safe since Mooncake is the only writer
+            storage_options.insert("AWS_S3_ALLOW_UNSAFE_RENAME".to_string(), "true".to_string());
+        }
         let metadata = vec![(
             "creator".to_string(),
             serde_json::json!("pg_mooncake_extension"),
@@ -71,6 +77,7 @@ pub fn DeltaCreateTable(
 #[allow(non_snake_case)]
 pub fn DeltaModifyFiles(
     path: &CxxString,
+    storage_type: &CxxString,
     options: &CxxString,
     file_paths: &CxxVector<CxxString>,
     file_sizes: &CxxVector<i64>,
@@ -103,8 +110,10 @@ pub fn DeltaModifyFiles(
         }
         let mut storage_options: HashMap<String, String> =
             serde_json::from_str(options.to_str()?).expect("invalid options");
-        // Write directly to S3 without locking is safe since Mooncake is the only writer
-        storage_options.insert("AWS_S3_ALLOW_UNSAFE_RENAME".to_string(), "true".to_string());
+        if storage_type.eq("S3") {
+            // Write directly to S3 without locking is safe since Mooncake is the only writer
+            storage_options.insert("AWS_S3_ALLOW_UNSAFE_RENAME".to_string(), "true".to_string());
+        }
         let mut table: deltalake::DeltaTable =
             open_table_with_storage_options(path.to_string(), storage_options).await?;
         let op = DeltaOperation::Write {

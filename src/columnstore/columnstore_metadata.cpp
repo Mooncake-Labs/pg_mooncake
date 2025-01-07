@@ -1,10 +1,8 @@
 #include "columnstore/columnstore_metadata.hpp"
 #include "columnstore/columnstore_statistics.hpp"
-#include "parquet_file_metadata_cache.hpp"
+#include "parquet_reader.hpp"
 #include "pgduckdb/pgduckdb_utils.hpp"
 #include "pgmooncake_guc.hpp"
-#include "thrift/protocol/TCompactProtocol.h"
-#include "thrift/transport/TBufferTransports.h"
 
 extern "C" {
 #include "postgres.h"
@@ -212,6 +210,7 @@ vector<string> ColumnstoreMetadata::DataFilesSearch(Oid oid, ClientContext *cont
     HeapTuple tuple;
     Datum values[x_data_files_natts];
     bool isnull[x_data_files_natts];
+    unique_ptr<ParquetReader> reader;
     while (HeapTupleIsValid(tuple = systable_getnext_ordered(scan, ForwardScanDirection))) {
         heap_deform_tuple(tuple, desc, values, isnull);
         auto file_name = TextDatumGetCString(values[1]);
@@ -229,7 +228,13 @@ vector<string> ColumnstoreMetadata::DataFilesSearch(Oid oid, ClientContext *cont
             file_metadata->read(protocol.get());
             auto metadata = make_shared_ptr<ParquetFileMetadataCache>(std::move(file_metadata), 0 /*read_time*/,
                                                                       nullptr /*geo_metadata*/);
-            auto file_stats = make_shared_ptr<DataFileStatistics>(*context, *columns, std::move(metadata));
+            if (!reader) {
+                // HACK: use a dummy file_name since reader only reads statistics from metadata
+                reader = make_uniq<ParquetReader>(*context, "/dev/null", ParquetOptions{}, std::move(metadata));
+            } else {
+                reader->metadata = std::move(metadata);
+            }
+            auto file_stats = make_shared_ptr<DataFileStatistics>(*reader, *columns);
             columnstore_stats.Put(file_name, std::move(file_stats));
         }
     }

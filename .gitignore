@@ -1,3 +1,2 @@
 /build/
-/rust_extensions/*/Cargo.lock
 /rust_extensions/*/target/

@@ -77,7 +77,6 @@ clean-duckdb:
 
 clean-delta:
 	cargo clean --manifest-path=$(DELTA_DIR)/Cargo.toml
-	rm -f $(DELTA_DIR)/Cargo.lock
 
 # ========================
 # Install Targets

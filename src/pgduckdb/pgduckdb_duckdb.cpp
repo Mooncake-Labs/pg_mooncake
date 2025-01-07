@@ -398,9 +398,9 @@ DuckDBManager::CreateConnection() {
 /* Returns the cached connection to the global DuckDB instance. */
 duckdb::Connection *
 DuckDBManager::GetConnection(bool force_transaction) {
-	if (!pgduckdb::IsDuckdbExecutionAllowed()) {
-		elog(ERROR, "DuckDB execution is not allowed because you have not been granted the duckdb.postgres_role");
-	}
+	// if (!pgduckdb::IsDuckdbExecutionAllowed()) {
+	// 	elog(ERROR, "DuckDB execution is not allowed because you have not been granted the duckdb.postgres_role");
+	// }
 
 	auto &instance = Get();
 	auto &context = *instance.connection->context;

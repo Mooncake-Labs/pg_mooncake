@@ -7,12 +7,11 @@ namespace duckdb {
 
 class BaseStatistics;
 class ColumnList;
-class ParquetFileMetadataCache;
 class ParquetReader;
 
 class DataFileStatistics : public ObjectCacheEntry {
 public:
-    DataFileStatistics(ParquetReader* reader, const ColumnList &columns);
+    DataFileStatistics(ParquetReader &reader, const ColumnList &columns);
 
 public:
     static string ObjectType() {

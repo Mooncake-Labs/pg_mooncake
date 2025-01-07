@@ -3,10 +3,10 @@
 
 namespace duckdb {
 
-DataFileStatistics::DataFileStatistics(ParquetReader* reader, const ColumnList &columns) {
+DataFileStatistics::DataFileStatistics(ParquetReader &reader, const ColumnList &columns) {
     for (auto &col : columns.Physical()) {
         auto name = col.GetName();
-        column_stats[name] = reader->ReadStatistics(name);
+        column_stats[name] = reader.ReadStatistics(name);
     }
 }
 

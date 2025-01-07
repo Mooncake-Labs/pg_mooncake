@@ -24,6 +24,7 @@ extern "C" {
 #include "commands/event_trigger.h"
 #include "executor/spi.h"
 #include "miscadmin.h"
+#include "utils/ruleutils.h"
 
 #include "pgduckdb/vendor/pg_ruleutils.h"
 #include "pgduckdb/pgduckdb_ruleutils.h"
@@ -57,8 +58,8 @@ DuckdbHandleDDL(Node *parsetree) {
 	if (IsA(parsetree, CreateTableAsStmt)) {
 		auto stmt = castNode(CreateTableAsStmt, parsetree);
 		char *access_method = stmt->into->accessMethod ? stmt->into->accessMethod : default_table_access_method;
-		if (strcmp(access_method, "duckdb") != 0) {
-			/* not a duckdb table, so don't mess with the query */
+		if (strcmp(access_method, "duckdb") != 0 && strcmp(access_method, "columnstore") != 0) {
+			/* not a duckdb or columnstore table, so don't mess with the query */
 			return;
 		}
 
@@ -128,11 +129,6 @@ DuckdbUtilityHook_Cpp(PlannedStmt *pstmt, const char *query_string, bool read_on
 			}
 			return;
 		}
-	} else if (IsA(parsetree, CreateTableAsStmt)) {
-		CreateTableAsStmt *stmt = (CreateTableAsStmt *)pstmt->utilityStmt;
-		if (stmt->into->accessMethod && strcmp(stmt->into->accessMethod, "columnstore") == 0) {
-			elog(ERROR, "CREATE TABLE AS USING columnstore is not supported");
-		}
 	}
 
 	/*
@@ -151,6 +147,32 @@ DuckdbUtilityHook_Cpp(PlannedStmt *pstmt, const char *query_string, bool read_on
 	DuckdbHandleDDL(parsetree);
 	prev_process_utility_hook(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc);
 
+	if (IsA(parsetree, CreateTableAsStmt)) {
+		CreateTableAsStmt *stmt = (CreateTableAsStmt *)pstmt->utilityStmt;
+
+		if (stmt->into->accessMethod && strcmp(stmt->into->accessMethod, "columnstore") == 0) {
+			auto *ctas_query = (Query *)stmt->query;
+			if (!ctas_query) {
+				elog(ERROR, "CREATE TABLE AS requires a valid query.");
+			}
+
+			const std::string query_def = pg_get_querydef(ctas_query, false);
+			const std::string table_name = stmt->into->rel->relname;
+
+			const auto insert_query = "INSERT INTO " + table_name + " " + query_def;
+
+			if (SPI_connect() != SPI_OK_CONNECT) {
+				elog(ERROR, "Failed to connect to SPI for INSERT INTO execution.");
+			}
+
+			int ret = SPI_execute(insert_query.c_str(), false, 0);
+			if (ret != SPI_OK_INSERT) {
+				elog(ERROR, "Failed to execute INSERT INTO query: %s", insert_query.c_str());
+			}
+
+			SPI_finish();
+		}
+	}
 	top_level_ddl = prev_top_level_ddl;
 }
 

@@ -48,56 +48,56 @@ static bool ctas_skip_data = false;
 static bool top_level_ddl = true;
 static ProcessUtility_hook_type prev_process_utility_hook = NULL;
 
-static void
-DuckdbHandleDDL(Node *parsetree) {
-	if (!pgduckdb::IsExtensionRegistered()) {
-		/* We're not installed, so don't mess with the query */
-		return;
-	}
+// static void
+// DuckdbHandleDDL(Node *parsetree) {
+// 	if (!pgduckdb::IsExtensionRegistered()) {
+// 		/* We're not installed, so don't mess with the query */
+// 		return;
+// 	}
 
-	if (IsA(parsetree, CreateTableAsStmt)) {
-		auto stmt = castNode(CreateTableAsStmt, parsetree);
-		char *access_method = stmt->into->accessMethod ? stmt->into->accessMethod : default_table_access_method;
-		if (strcmp(access_method, "duckdb") != 0 && strcmp(access_method, "columnstore") != 0) {
-			/* not a duckdb or columnstore table, so don't mess with the query */
-			return;
-		}
+// 	if (IsA(parsetree, CreateTableAsStmt)) {
+// 		auto stmt = castNode(CreateTableAsStmt, parsetree);
+// 		char *access_method = stmt->into->accessMethod ? stmt->into->accessMethod : default_table_access_method;
+// 		if (strcmp(access_method, "duckdb") != 0 && strcmp(access_method, "columnstore") != 0) {
+// 			/* not a duckdb or columnstore table, so don't mess with the query */
+// 			return;
+// 		}
 
-		/*
-		 * Force skipData to false for duckdb tables, so that Postgres does
-		 * not execute the query, and save the original value in ctas_skip_data
-		 * so we can use it later in duckdb_create_table_trigger to choose
-		 * whether to execute the query in DuckDB or not.
-		 */
-		ctas_skip_data = stmt->into->skipData;
-		stmt->into->skipData = true;
-	} else if (IsA(parsetree, CreateSchemaStmt) && !pgduckdb::doing_motherduck_sync) {
-		auto stmt = castNode(CreateSchemaStmt, parsetree);
-		if (stmt->schemaname) {
-			if (strncmp("ddb$", stmt->schemaname, 4) == 0) {
-				elog(ERROR, "Creating ddb$ schemas is currently not supported");
-			}
-		} else if (stmt->authrole && stmt->authrole->roletype == ROLESPEC_CSTRING) {
-			if (strncmp("ddb$", stmt->authrole->rolename, 4) == 0) {
-				elog(ERROR, "Creating ddb$ schemas is currently not supported");
-			}
-		}
-		return;
-	} else if (IsA(parsetree, RenameStmt)) {
-		auto stmt = castNode(RenameStmt, parsetree);
-		if (stmt->renameType != OBJECT_SCHEMA) {
-			/* We only care about schema renames for now */
-			return;
-		}
-		if (strncmp("ddb$", stmt->subname, 4) == 0) {
-			elog(ERROR, "Changing the name of a ddb$ schema is currently not supported");
-		}
-		if (strncmp("ddb$", stmt->newname, 4) == 0) {
-			elog(ERROR, "Changing a schema to a ddb$ schema is currently not supported");
-		}
-		return;
-	}
-}
+// 		/*
+// 		 * Force skipData to false for duckdb tables, so that Postgres does
+// 		 * not execute the query, and save the original value in ctas_skip_data
+// 		 * so we can use it later in duckdb_create_table_trigger to choose
+// 		 * whether to execute the query in DuckDB or not.
+// 		 */
+// 		ctas_skip_data = stmt->into->skipData;
+// 		stmt->into->skipData = true;
+// 	} else if (IsA(parsetree, CreateSchemaStmt) && !pgduckdb::doing_motherduck_sync) {
+// 		auto stmt = castNode(CreateSchemaStmt, parsetree);
+// 		if (stmt->schemaname) {
+// 			if (strncmp("ddb$", stmt->schemaname, 4) == 0) {
+// 				elog(ERROR, "Creating ddb$ schemas is currently not supported");
+// 			}
+// 		} else if (stmt->authrole && stmt->authrole->roletype == ROLESPEC_CSTRING) {
+// 			if (strncmp("ddb$", stmt->authrole->rolename, 4) == 0) {
+// 				elog(ERROR, "Creating ddb$ schemas is currently not supported");
+// 			}
+// 		}
+// 		return;
+// 	} else if (IsA(parsetree, RenameStmt)) {
+// 		auto stmt = castNode(RenameStmt, parsetree);
+// 		if (stmt->renameType != OBJECT_SCHEMA) {
+// 			/* We only care about schema renames for now */
+// 			return;
+// 		}
+// 		if (strncmp("ddb$", stmt->subname, 4) == 0) {
+// 			elog(ERROR, "Changing the name of a ddb$ schema is currently not supported");
+// 		}
+// 		if (strncmp("ddb$", stmt->newname, 4) == 0) {
+// 			elog(ERROR, "Changing a schema to a ddb$ schema is currently not supported");
+// 		}
+// 		return;
+// 	}
+// }
 
 static void
 DuckdbUtilityHook_Cpp(PlannedStmt *pstmt, const char *query_string, bool read_only_tree, ProcessUtilityContext context,
@@ -165,7 +165,7 @@ DuckdbUtilityHook_Cpp(PlannedStmt *pstmt, const char *query_string, bool read_on
 		ctas_stmt->into->skipData = true;
 	}
 
-	DuckdbHandleDDL(parsetree);
+	// DuckdbHandleDDL(parsetree);
 	prev_process_utility_hook(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc);
 
 	if (auto *ctas_stmt = get_columnstore_ctas_stmt()) {

@@ -46,16 +46,16 @@ duckdb: | .BUILD
 	CMAKE_BUILD_PARALLEL_LEVEL=$(or $(patsubst -j%,%,$(filter -j%,$(MAKEFLAGS))),1) \
 	$(MAKE) -C third_party/duckdb $(BUILD_TYPE)
 ifeq ($(BUILD_TYPE), debug)
-	gdb-add-index third_party/duckdb/build/debug/src/libduckdb.so
+	gdb-add-index third_party/duckdb/build/debug/src/libduckdb.dylib
 endif
 
-duckdb-fast: third_party/duckdb/build/$(BUILD_TYPE)/src/libduckdb.so | .BUILD
-	install -C $< build/$(BUILD_TYPE)/libduckdb.so
+duckdb-fast: third_party/duckdb/build/$(BUILD_TYPE)/src/libduckdb.dylib | .BUILD
+	install -C $< build/$(BUILD_TYPE)/libduckdb.dylib
 
 clean-duckdb:
 	$(MAKE) -C third_party/duckdb clean
 
-third_party/duckdb/build/$(BUILD_TYPE)/src/libduckdb.so: | .BUILD
+third_party/duckdb/build/$(BUILD_TYPE)/src/libduckdb.dylib: | .BUILD
 	@$(MAKE) duckdb
 
 # Delta

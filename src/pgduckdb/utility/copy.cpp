@@ -24,9 +24,9 @@ extern "C" {
 #include "pgduckdb/vendor/pg_list.hpp"
 }
 
-static constexpr char s3_filename_prefix[] = "s3://";
-static constexpr char gcs_filename_prefix[] = "gs://";
-static constexpr char r2_filename_prefix[] = "r2://";
+// static constexpr char s3_filename_prefix[] = "s3://";
+// static constexpr char gcs_filename_prefix[] = "gs://";
+// static constexpr char r2_filename_prefix[] = "r2://";
 
 /*
  * Returns the relation of the copy_stmt as a fully qualified DuckDB table reference. This is done

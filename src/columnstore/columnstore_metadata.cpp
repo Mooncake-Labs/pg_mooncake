@@ -197,7 +197,8 @@ void ColumnstoreMetadata::DataFilesDelete(Oid oid) {
     table_close(table, RowExclusiveLock);
 }
 
-vector<string> ColumnstoreMetadata::DataFilesSearch(Oid oid, ClientContext *context, const ColumnList *columns) {
+vector<string> ColumnstoreMetadata::DataFilesSearch(Oid oid, ClientContext *context, const string *path,
+                                                    const ColumnList *columns) {
     ::Relation table = table_open(DataFiles(), AccessShareLock);
     ::Relation index = index_open(DataFilesOid(), AccessShareLock);
     TupleDesc desc = RelationGetDescr(table);
@@ -225,8 +226,12 @@ vector<string> ColumnstoreMetadata::DataFilesSearch(Oid oid, ClientContext *cont
             auto protocol = make_uniq<TCompactProtocolT<TMemoryBuffer>>(std::move(transport));
             auto file_metadata = make_uniq<FileMetaData>();
             file_metadata->read(protocol.get());
-            auto metadata = make_shared_ptr<ParquetFileMetadataCache>(std::move(file_metadata), 0 /*read_time*/,
-                                                                      nullptr /*geo_metadata*/);
+            auto metadata = make_shared_ptr<ParquetFileMetadataCache>(
+                std::move(file_metadata), std::numeric_limits<time_t>::max() /*read_time*/, nullptr /*geo_metadata*/);
+            if (mooncake_enable_memory_metadata_cache) {
+                ObjectCache::GetObjectCache(*context).Put(*path + file_name, metadata);
+                ObjectCache::GetObjectCache(*context).Put(string(x_mooncake_local_cache) + file_name, metadata);
+            }
             if (!reader) {
                 // HACK: use a dummy file_name since reader only reads statistics from metadata
                 reader = make_uniq<ParquetReader>(*context, "/dev/null", ParquetOptions{}, std::move(metadata));

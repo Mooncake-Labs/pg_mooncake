@@ -9,8 +9,6 @@
 
 namespace duckdb {
 
-const char *x_mooncake_local_cache = "mooncake_local_cache/";
-
 class SingleFileCachedWriteFileSystem : public FileSystem {
 public:
     SingleFileCachedWriteFileSystem(ClientContext &context, const string &file_name)

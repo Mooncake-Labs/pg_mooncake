@@ -4,6 +4,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 #include "pgduckdb/pgduckdb_guc.h"
+#include "pgmooncake_guc.hpp"
 #include "duckdb/main/extension_util.hpp"
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
@@ -178,6 +179,8 @@ DuckDBManager::Initialize() {
 	if (duckdb_maximum_threads > -1) {
 		SET_DUCKDB_OPTION(maximum_threads);
 	}
+
+	config.options.object_cache_enable = mooncake_enable_memory_metadata_cache;
 
 	const char *connection_string = nullptr;
 

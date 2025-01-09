@@ -11,9 +11,12 @@ extern "C" {
 void MooncakeInitGUC();
 void DuckdbInitHooks();
 
+const char *x_mooncake_local_cache = "mooncake_local_cache/";
+
 bool mooncake_allow_local_tables = true;
 char *mooncake_default_bucket = strdup("");
 bool mooncake_enable_local_cache = true;
+bool mooncake_enable_memory_metadata_cache = false;
 const char *mooncake_timeline_id = "main";
 
 extern "C" {

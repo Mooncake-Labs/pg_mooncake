@@ -25,7 +25,8 @@ public:
     void DataFilesInsert(Oid oid, const string &file_name, const string_t &file_metadata);
     void DataFilesDelete(const string &file_name);
     void DataFilesDelete(Oid oid);
-    vector<string> DataFilesSearch(Oid oid, ClientContext *context = nullptr, const ColumnList *columns = nullptr);
+    vector<string> DataFilesSearch(Oid oid, ClientContext *context = nullptr, const string *path = nullptr,
+                                   const ColumnList *columns = nullptr);
 
     vector<string> SecretsGetDuckdbQueries();
     string SecretsSearchDeltaOptions(const string &path);

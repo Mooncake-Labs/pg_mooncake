@@ -48,7 +48,7 @@ SHLIB_LINK := -L. -Wl,-rpath,$(PG_LIB_DIR) -lduckdb -lstdc++
 # ========================
 MODULES := libduckdb
 MODULE_big := $(EXTENSION_NAME)
-DATA := $(SQL_DIR)/pg_mooncake--0.0.1.sql
+DATA := $(SQL_DIR)/pg_mooncake--0.1.0.sql
 EXTENSION := ../../$(EXTENSION_NAME)
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 override with_llvm := no

@@ -13,13 +13,21 @@ class ColumnstoreInsertGlobalState : public GlobalSinkState {
 public:
     ColumnstoreInsertGlobalState(ClientContext &context, const vector<LogicalType> &types,
                                  const vector<unique_ptr<Expression>> &bound_defaults)
-        : executor(context, bound_defaults), insert_count(0), return_collection(context, types) {
-        chunk.Initialize(Allocator::Get(context), types);
-    }
+        : executor(context, bound_defaults), insert_count(0), return_collection(context, types) {}
 
-    DataChunk chunk;
     ExpressionExecutor executor;
     idx_t insert_count;
+    ColumnDataCollection return_collection;
+};
+
+class ColumnstoreInsertLocalState : public LocalSinkState {
+public:
+    ColumnstoreInsertLocalState(ClientContext &context, const vector<LogicalType> &types): local_insert_count(0), return_collection(context, types) {
+        chunk.Initialize(Allocator::Get(context), types);
+        }
+
+    DataChunk chunk;
+    idx_t local_insert_count;
     ColumnDataCollection return_collection;
 };
 
@@ -73,10 +81,11 @@ public:
     // Sink interface
     SinkResultType Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) const override {
         auto &gstate = input.global_state.Cast<ColumnstoreInsertGlobalState>();
+        auto &lstate = input.local_state.Cast<ColumnstoreInsertLocalState>();
         chunk.Flatten();
         gstate.executor.SetChunk(chunk);
-        gstate.chunk.Reset();
-        gstate.chunk.SetCardinality(chunk);
+        lstate.chunk.Reset();
+        lstate.chunk.SetCardinality(chunk);
         if (!column_index_map.empty()) {
             // columns specified by the user, use column_index_map
             for (auto &col : table.GetColumns().Physical()) {
@@ -84,27 +93,39 @@ public:
                 auto mapped_index = column_index_map[col.Physical()];
                 if (mapped_index == DConstants::INVALID_INDEX) {
                     // insert default value
-                    gstate.executor.ExecuteExpression(storage_idx, gstate.chunk.data[storage_idx]);
+                    gstate.executor.ExecuteExpression(storage_idx, lstate.chunk.data[storage_idx]);
                 } else {
                     // get value from child chunk
                     D_ASSERT(mapped_index < chunk.ColumnCount());
-                    D_ASSERT(gstate.chunk.data[storage_idx].GetType() == chunk.data[mapped_index].GetType());
-                    gstate.chunk.data[storage_idx].Reference(chunk.data[mapped_index]);
+                    D_ASSERT(lstate.chunk.data[storage_idx].GetType() == chunk.data[mapped_index].GetType());
+                    lstate.chunk.data[storage_idx].Reference(chunk.data[mapped_index]);
                 }
             }
         } else {
             // no columns specified, just append directly
-            for (idx_t i = 0; i < gstate.chunk.ColumnCount(); i++) {
-                D_ASSERT(gstate.chunk.data[i].GetType() == chunk.data[i].GetType());
-                gstate.chunk.data[i].Reference(chunk.data[i]);
+            for (idx_t i = 0; i < lstate.chunk.ColumnCount(); i++) {
+                D_ASSERT(lstate.chunk.data[i].GetType() == chunk.data[i].GetType());
+                lstate.chunk.data[i].Reference(chunk.data[i]);
             }
         }
         if (return_chunk) {
-            gstate.return_collection.Append(gstate.chunk);
+            lstate.return_collection.Append(lstate.chunk);
         }
-        gstate.insert_count += gstate.chunk.size();
-        table.Insert(context.client, gstate.chunk);
+        lstate.local_insert_count += lstate.chunk.size();
         return SinkResultType::NEED_MORE_INPUT;
+    }
+
+    SinkCombineResultType Combine(ExecutionContext &context, OperatorSinkCombineInput &input) const override {
+        auto &gstate = input.global_state.Cast<ColumnstoreInsertGlobalState>();
+        auto &lstate = input.local_state.Cast<ColumnstoreInsertLocalState>();
+        gstate.insert_count += lstate.local_insert_count;
+        if (return_chunk) {
+            for(auto &chunk : lstate.return_collection.Chunks()) {
+                gstate.return_collection.Append(chunk);
+            }
+        }
+        table.Insert(context.client, lstate.chunk);
+        return SinkCombineResultType::FINISHED;
     }
 
     SinkFinalizeType Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
@@ -117,7 +138,15 @@ public:
         return make_uniq<ColumnstoreInsertGlobalState>(context, table.GetTypes(), bound_defaults);
     }
 
+    unique_ptr<LocalSinkState> GetLocalSinkState(ExecutionContext &context) const override {
+        return make_uniq<ColumnstoreInsertLocalState>(context.client, table.GetTypes());
+    }
+
     bool IsSink() const override {
+        return true;
+    }
+
+    bool ParallelSink() const override {
         return true;
     }
 };

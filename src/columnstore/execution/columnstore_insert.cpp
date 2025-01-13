@@ -22,9 +22,10 @@ public:
 
 class ColumnstoreInsertLocalState : public LocalSinkState {
 public:
-    ColumnstoreInsertLocalState(ClientContext &context, const vector<LogicalType> &types): local_insert_count(0), return_collection(context, types) {
+    ColumnstoreInsertLocalState(ClientContext &context, const vector<LogicalType> &types)
+        : local_insert_count(0), return_collection(context, types) {
         chunk.Initialize(Allocator::Get(context), types);
-        }
+    }
 
     DataChunk chunk;
     idx_t local_insert_count;
@@ -120,7 +121,7 @@ public:
         auto &lstate = input.local_state.Cast<ColumnstoreInsertLocalState>();
         gstate.insert_count += lstate.local_insert_count;
         if (return_chunk) {
-            for(auto &chunk : lstate.return_collection.Chunks()) {
+            for (auto &chunk : lstate.return_collection.Chunks()) {
                 gstate.return_collection.Append(chunk);
             }
         }

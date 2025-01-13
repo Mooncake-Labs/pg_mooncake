@@ -22,7 +22,7 @@ public:
 };
 
 class ColumnstoreDeleteLocalState : public LocalSinkState {
-    public:
+public:
     unordered_set<row_t> local_row_ids;
 };
 
@@ -82,7 +82,7 @@ public:
         return SinkResultType::NEED_MORE_INPUT;
     }
 
-    SinkCombineResultType Combine(ExecutionContext &context, OperatorSinkCombineInput& input) const override {
+    SinkCombineResultType Combine(ExecutionContext &context, OperatorSinkCombineInput &input) const override {
         auto &gstate = input.global_state.Cast<ColumnstoreDeleteGlobalState>();
         auto &lstate_delete = input.local_state.Cast<ColumnstoreDeleteLocalState>();
         gstate.row_ids.insert(lstate_delete.local_row_ids.begin(), lstate_delete.local_row_ids.end());

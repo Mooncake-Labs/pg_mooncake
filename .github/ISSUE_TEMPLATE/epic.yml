@@ -1,0 +1,16 @@
+name: Epic
+description: Create an epic for related issues.
+labels:
+  - epic
+body:
+  - type: textarea
+    attributes:
+      label: Description
+    validations:
+      required: true
+
+  - type: textarea
+    attributes:
+      label: Issues in this epic
+    validations:
+      required: true

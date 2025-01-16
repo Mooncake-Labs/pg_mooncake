@@ -1,12 +1,12 @@
 -- Create a temporary table for testing
-CREATE TEMPORARY TABLE test_table (
-    id SERIAL PRIMARY KEY,
+CREATE TABLE test_table (
+    id INTEGER,
     data TEXT
 );
 
 -- Insert a large number of rows with different strings
-INSERT INTO test_table (data)
-SELECT 'Test data ' || id
+INSERT INTO test_table (id, data)
+SELECT id, 'Test data ' || id
 FROM generate_series(1, 1000000) AS id;
 
 -- Delete a specific number of rows from the table

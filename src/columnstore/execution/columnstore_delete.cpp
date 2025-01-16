@@ -17,13 +17,14 @@ public:
     ColumnstoreDeleteGlobalState(ClientContext &context, const vector<LogicalType> &types)
         : return_collection(context, types) {}
 
+    mutex delete_lock;
     unordered_set<row_t> row_ids;
     ColumnDataCollection return_collection;
 };
 
 class ColumnstoreDeleteLocalState : public LocalSinkState {
 public:
-    unordered_set<row_t> local_row_ids;
+    unordered_set<row_t> row_ids;
 };
 
 class ColumnstoreDelete : public PhysicalOperator {
@@ -77,15 +78,16 @@ public:
         row_ids.Flatten(chunk.size());
         auto row_ids_data = FlatVector::GetData<row_t>(row_ids);
         for (idx_t i = 0; i < chunk.size(); i++) {
-            lstate.local_row_ids.insert(row_ids_data[i]);
+            lstate.row_ids.insert(row_ids_data[i]);
         }
         return SinkResultType::NEED_MORE_INPUT;
     }
 
     SinkCombineResultType Combine(ExecutionContext &context, OperatorSinkCombineInput &input) const override {
         auto &gstate = input.global_state.Cast<ColumnstoreDeleteGlobalState>();
-        auto &lstate_delete = input.local_state.Cast<ColumnstoreDeleteLocalState>();
-        gstate.row_ids.insert(lstate_delete.local_row_ids.begin(), lstate_delete.local_row_ids.end());
+        auto &lstate = input.local_state.Cast<ColumnstoreDeleteLocalState>();
+        lock_guard<mutex> lock(gstate.delete_lock);
+        gstate.row_ids.insert(lstate.row_ids.begin(), lstate.row_ids.end());
         return SinkCombineResultType::FINISHED;
     }
 
@@ -121,4 +123,5 @@ unique_ptr<PhysicalOperator> Columnstore::PlanDelete(ClientContext &context, Log
     del->children.push_back(std::move(plan));
     return std::move(del);
 }
+
 } // namespace duckdb

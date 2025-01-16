@@ -1,6 +1,5 @@
 -- Create a temporary table for testing
 CREATE TEMPORARY TABLE test_table (
-    id SERIAL PRIMARY KEY,
     data TEXT
 );
 -- Insert a large number of rows with different strings

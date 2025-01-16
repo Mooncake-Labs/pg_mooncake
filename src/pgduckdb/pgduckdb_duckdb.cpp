@@ -6,6 +6,7 @@
 #include "pgduckdb/pgduckdb_guc.h"
 #include "pgmooncake_guc.hpp"
 #include "duckdb/main/extension_util.hpp"
+#include "duckdb/main/client_data.hpp"
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 
@@ -29,6 +30,8 @@ extern "C" {
 #include "pgduckdb/pgduckdb_options.hpp"
 #include "pgduckdb/pgduckdb_xact.hpp"
 #include "pgduckdb/pgduckdb_metadata_cache.hpp"
+
+#include "columnstore/columnstore_read_cache_filesystem.hpp"
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -215,7 +218,13 @@ DuckDBManager::Initialize() {
 
 	connection = duckdb::make_uniq<duckdb::Connection>(*database);
 
+	// TODO(hjiang): Wrap the filesystem for once at duckdb initialization; this is not ideal for two reasons:
+	// 1. It introduce unnecessary change to pg_duckdb, which needs to cherry-picked when we upgrade;
+	// 2. In theory only read-only function requires read-cache filesystem.
+	// A better approach might be implement an extension and register.
 	auto &context = *connection->context;
+	context.client_data->client_file_system =
+	    WrapColumnstoreReadCacheFileSystem(std::move(context.client_data->client_file_system));
 
 	auto &db_manager = duckdb::DatabaseManager::Get(context);
 	default_dbname = db_manager.GetDefaultDatabase(context);

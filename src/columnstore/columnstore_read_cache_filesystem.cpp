@@ -17,7 +17,7 @@ namespace {
 string GetLocalCacheFile(const string &remote_file) {
     const hash_t hash_val = Hash(remote_file.data(), remote_file.length());
     const string fname = StringUtil::GetFileName(remote_file);
-    return StringUtil::Format("%s%d.%s", x_mooncake_local_cache, hash_val, fname);
+    return StringUtil::Format("%s%llu.%s", x_mooncake_local_cache, hash_val, fname);
 }
 
 // Columnstore read cache filesystem name.

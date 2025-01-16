@@ -7,6 +7,26 @@ CREATE TABLE test_table (
 INSERT INTO test_table (id, data)
 SELECT id, 'Test data ' || id
 FROM generate_series(1, 1000000) AS id;
+-- Update a specific range of rows
+UPDATE test_table
+SET data = 'Updated data ' || id
+WHERE id BETWEEN 500000 AND 500010;
+select * from test_table where id between 500000 and 500010;
+   id   |        data         
+--------+---------------------
+ 500000 | Updated data 500000
+ 500001 | Updated data 500001
+ 500002 | Updated data 500002
+ 500003 | Updated data 500003
+ 500004 | Updated data 500004
+ 500005 | Updated data 500005
+ 500006 | Updated data 500006
+ 500007 | Updated data 500007
+ 500008 | Updated data 500008
+ 500009 | Updated data 500009
+ 500010 | Updated data 500010
+(11 rows)
+
 -- Delete a specific number of rows from the table
 DELETE FROM test_table
 WHERE id <= 999999;

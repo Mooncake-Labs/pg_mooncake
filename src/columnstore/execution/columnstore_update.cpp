@@ -14,10 +14,19 @@ public:
 class ColumnstoreUpdateGlobalState : public GlobalSinkState {
 public:
     ColumnstoreUpdateGlobalState(ClientContext &context, const vector<LogicalType> &types)
-        : return_collection(context, types) {
-        chunk.Initialize(Allocator::Get(context), types);
-    }
+        : return_collection(context, types) {}
 
+    mutex update_lock;
+    unordered_set<row_t> row_ids;
+    ColumnDataCollection return_collection;
+};
+
+class ColumnstoreUpdateLocalState : public LocalSinkState {
+    public:
+    ColumnstoreUpdateLocalState(ExecutionContext &context, const vector<LogicalType> &types) : return_collection(context.client, types) {
+        chunk.Initialize(Allocator::Get(context.client), types);
+    }
+    
     DataChunk chunk;
     unordered_set<row_t> row_ids;
     ColumnDataCollection return_collection;
@@ -63,13 +72,14 @@ public:
     }
 
     bool IsSource() const override {
-        return true;
+        return true;    
     }
 
 public:
     // Sink interface
     SinkResultType Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) const override {
-        auto &gstate = input.global_state.Cast<ColumnstoreUpdateGlobalState>();
+        auto &lstate = input.local_state.Cast<ColumnstoreUpdateLocalState>();
+
         auto &row_ids = chunk.data[chunk.ColumnCount() - 1];
         row_ids.Flatten(chunk.size());
         auto row_ids_data = FlatVector::GetData<row_t>(row_ids);
@@ -78,8 +88,8 @@ public:
         idx_t count = 0;
         for (idx_t i = 0; i < chunk.size(); i++) {
             row_t row_id = row_ids_data[i];
-            if (gstate.row_ids.find(row_id) == gstate.row_ids.end()) {
-                gstate.row_ids.insert(row_id);
+            if (lstate.row_ids.find(row_id) == lstate.row_ids.end()) {
+                lstate.row_ids.insert(row_id);
                 sel.set_index(count++, i);
             }
         }
@@ -87,15 +97,26 @@ public:
             chunk.Slice(sel, count);
         }
 
-        gstate.chunk.SetCardinality(chunk);
+        lstate.chunk.SetCardinality(chunk);
         for (idx_t i = 0; i < columns.size(); i++) {
-            gstate.chunk.data[columns[i].index].Reference(chunk.data[i]);
+            lstate.chunk.data[columns[i].index].Reference(chunk.data[i]);
         }
-        table.Insert(context.client, gstate.chunk);
         if (return_chunk) {
-            gstate.return_collection.Append(gstate.chunk);
+            lstate.return_collection.Append(lstate.chunk);
         }
         return SinkResultType::NEED_MORE_INPUT;
+    }
+
+    SinkCombineResultType Combine(ExecutionContext &context, OperatorSinkCombineInput &input) const override {
+        auto &gstate = input.global_state.Cast<ColumnstoreUpdateGlobalState>();
+        auto &lstate = input.local_state.Cast<ColumnstoreUpdateLocalState>();
+        lock_guard<mutex> lock(gstate.update_lock);
+        gstate.row_ids.insert(lstate.row_ids.begin(), lstate.row_ids.end());
+        for (auto &chunk : lstate.return_collection.Chunks()) {
+            gstate.return_collection.Append(chunk);
+        }
+        table.Insert(context.client, lstate.chunk);
+        return SinkCombineResultType::FINISHED;
     }
 
     SinkFinalizeType Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
@@ -109,7 +130,15 @@ public:
         return make_uniq<ColumnstoreUpdateGlobalState>(context, table.GetTypes());
     }
 
+    unique_ptr<LocalSinkState> GetLocalSinkState(ExecutionContext &context) const override {
+        return make_uniq<ColumnstoreUpdateLocalState>(context, table.GetTypes());
+    }
+
     bool IsSink() const override {
+        return true;
+    }
+
+    bool ParallelSink() const override {
         return true;
     }
 };

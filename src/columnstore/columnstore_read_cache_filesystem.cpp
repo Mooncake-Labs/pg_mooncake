@@ -1,17 +1,23 @@
 #include "columnstore/columnstore_read_cache_filesystem.hpp"
 #include "duckdb/common/string_util.hpp"
+#include "duckdb/common/types/hash.hpp"
 #include "duckdb/common/types/uuid.hpp"
 #include "duckdb/common/vector.hpp"
 #include "pgmooncake_guc.hpp"
-#include "utils/scope_guard.hpp"
 
 namespace duckdb {
 
 namespace {
 // Get local cache filename for the given [remote_file].
+//
+// Cache filename is formatted as `<cache-directory>/<filename-hash>.<filename>`.
+// So we could get all cache files under one directory, and get all cache files with commands like `ls`.
+//
+// Considering the naming format, it's worth noting it might _NOT_ work for local files, including mounted filesystems.
 string GetLocalCacheFile(const string &remote_file) {
+    const hash_t hash_val = Hash(remote_file.data(), remote_file.length());
     const string fname = StringUtil::GetFileName(remote_file);
-    return x_mooncake_local_cache + fname;
+    return StringUtil::Format("%s%d.%s", x_mooncake_local_cache, hash_val, fname);
 }
 
 // Columnstore read cache filesystem name.
@@ -64,9 +70,6 @@ void ColumnstoreReadCacheFileSystem::CacheRemoteFileIfEnabled(const string &remo
     vector<char> file_content;
     {
         auto file_handle = internal_filesystem->OpenFile(remote_path, flags, opener);
-        SCOPE_EXIT {
-            file_handle->Close();
-        };
         const int64_t file_size = internal_filesystem->GetFileSize(*file_handle);
         // TODO(hjiang): It's better to use string and leverage resize without initialization.
         // Reference for abseil implementation:
@@ -82,9 +85,6 @@ void ColumnstoreReadCacheFileSystem::CacheRemoteFileIfEnabled(const string &remo
     {
         auto file_handle = local_filesystem->OpenFile(
             local_temp_file, FileOpenFlags::FILE_FLAGS_WRITE | FileOpenFlags::FILE_FLAGS_FILE_CREATE_NEW, opener);
-        SCOPE_EXIT {
-            file_handle->Close();
-        };
         local_filesystem->Write(*file_handle, file_content.data(), file_content.size(), /*location=*/0);
         file_handle->Sync();
     }

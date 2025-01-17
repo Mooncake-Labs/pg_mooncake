@@ -1,5 +1,6 @@
 #pragma once
 
+#include "columnstore/deletion_vector_manager.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "pgduckdb/pg/declarations.hpp"
 

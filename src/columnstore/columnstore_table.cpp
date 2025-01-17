@@ -1,4 +1,5 @@
 #include "columnstore/columnstore_table.hpp"
+#include "columnstore/columnstore_deletion_vector.hpp"
 #include "columnstore/columnstore_metadata.hpp"
 #include "duckdb/common/serializer/memory_stream.hpp"
 #include "duckdb/common/types/uuid.hpp"
@@ -6,6 +7,11 @@
 #include "parquet_reader.hpp"
 #include "parquet_writer.hpp"
 #include "pgmooncake_guc.hpp"
+
+extern "C" {
+#include "postgres.h"
+#include "utils/snapmgr.h"
+}
 
 namespace duckdb {
 
@@ -184,62 +190,87 @@ void ColumnstoreTable::Delete(ClientContext &context, unordered_set<row_t> &row_
                               ColumnDataCollection *return_collection) {
     vector<row_t> row_ids(row_ids_set.begin(), row_ids_set.end());
     std::sort(row_ids.begin(), row_ids.end());
-    auto file_names = metadata->DataFilesSearch(oid);
+    auto file_names = metadata->DataFilesSearch(oid, &context, &path, &columns);
     auto file_paths = GetFilePaths(path, file_names);
 
-    for (idx_t row_ids_index = 0; row_ids_index < row_ids.size();) {
-        int32_t file_number = row_ids[row_ids_index] >> 32;
-        uint32_t next_file_row_number = row_ids[row_ids_index] & 0xFFFFFFFF;
-        ParquetReader reader(context, file_paths[file_number], ParquetOptions{});
-        for (idx_t i = 0; i < reader.GetTypes().size(); i++) {
-            reader.reader_data.column_mapping.push_back(i);
-            reader.reader_data.column_ids.push_back(i);
-        }
-        ParquetReaderScanState state;
-        vector<idx_t> groups_to_read(reader.GetFileMetadata()->row_groups.size());
-        std::iota(groups_to_read.begin(), groups_to_read.end(), 0);
-        reader.InitializeScan(context, state, std::move(groups_to_read));
-
-        DataChunk chunk;
-        chunk.Initialize(context, reader.GetTypes());
-        DataChunk delete_chunk;
-        delete_chunk.Initialize(context, reader.GetTypes());
-        SelectionVector remaining_sel(STANDARD_VECTOR_SIZE);
-        SelectionVector delete_sel(STANDARD_VECTOR_SIZE);
-        uint32_t file_row_number = 0;
-        reader.Scan(state, chunk);
-        while (chunk.size()) {
-            idx_t remaining_sel_size = 0;
-            for (idx_t chunk_row_number = 0; chunk_row_number < chunk.size(); chunk_row_number++, file_row_number++) {
-                if (file_row_number == next_file_row_number) {
-                    row_ids_index++;
-                    if (row_ids_index < row_ids.size() && row_ids[row_ids_index] >> 32 == file_number) {
-                        next_file_row_number = row_ids[row_ids_index] & 0xFFFFFFFF;
-                    }
-                } else {
-                    remaining_sel.set_index(remaining_sel_size++, chunk_row_number);
-                }
-            }
-            if (remaining_sel_size < chunk.size()) {
-                if (return_collection) {
-                    idx_t delete_sel_size =
-                        SelectionVector::Inverted(remaining_sel, delete_sel, remaining_sel_size, chunk.size());
-                    delete_chunk.Append(chunk, false /*resize*/, &delete_sel, delete_sel_size);
-                    return_collection->Append(delete_chunk);
-                    delete_chunk.Reset();
-                }
-                chunk.Slice(remaining_sel, remaining_sel_size);
-            }
-            if (chunk.size()) {
-                Insert(context, chunk);
-            }
-            chunk.Reset();
-            reader.Scan(state, chunk);
-        }
-        metadata->DataFilesDelete(file_names[file_number]);
-        LakeDeleteFile(oid, file_names[file_number]);
+    unordered_map<int32_t, vector<uint32_t>> file_to_offsets;
+    for (auto row_id : row_ids) {
+        int32_t file_number = row_id >> 32;
+        uint32_t offset_in_file = (uint32_t)(row_id & 0xFFFFFFFF);
+        file_to_offsets[file_number].push_back(offset_in_file);
     }
-    FinalizeInsert();
+
+    std::map<pair<string, idx_t>, vector<uint64_t>> grouped_offsets;
+    for (auto &entry : file_to_offsets) {
+        int32_t file_number = entry.first;
+        auto &offsets_in_file = entry.second;
+
+        const string &file_name = file_paths[file_number];
+
+        for (auto offset_in_file : offsets_in_file) {
+            idx_t chunk_idx = offset_in_file / STANDARD_VECTOR_SIZE;
+            idx_t offset_in_chunk = offset_in_file % STANDARD_VECTOR_SIZE;
+
+            grouped_offsets[{file_name, chunk_idx}].push_back(offset_in_chunk);
+        }
+    }
+
+    Snapshot snapshot = GetActiveSnapshot();
+    DVManager dv_manager(snapshot);
+
+    for (auto &entry : grouped_offsets) {
+        auto &key = entry.first;
+        auto &offsets_in_chunk = entry.second;
+
+        const string &file_name = key.first;
+        idx_t chunk_idx = key.second;
+
+        DeletionVector dv = dv_manager.FetchDV(file_name, chunk_idx);
+
+        for (auto offset_val : offsets_in_chunk) {
+            dv.MarkDeleted(offset_val);
+        }
+
+        dv_manager.UpsertDV(file_name, chunk_idx, dv);
+
+        if (return_collection) {
+            ParquetReaderScanState state;
+            ParquetReader reader(context, file_name, ParquetOptions{});
+            for (idx_t i = 0; i < reader.GetTypes().size(); i++) {
+                reader.reader_data.column_mapping.push_back(i);
+                reader.reader_data.column_ids.push_back(i);
+            }
+
+            vector<idx_t> groups_to_read(reader.GetFileMetadata()->row_groups.size());
+            std::iota(groups_to_read.begin(), groups_to_read.end(), 0);
+            reader.InitializeScan(context, state, std::move(groups_to_read));
+
+            DataChunk chunk;
+            chunk.Initialize(Allocator::Get(context), columns.GetColumnTypes());
+
+            idx_t current_chunk_idx = 0;
+            while (true) {
+                chunk.Reset();
+                reader.Scan(state, chunk);
+                if (chunk.size() == 0) {
+                    break;
+                }
+                if (current_chunk_idx == chunk_idx) {
+                    idx_t count = offsets_in_chunk.size();
+                    SelectionVector sel_vec(count);
+                    for (idx_t i = 0; i < count; i++) {
+                        sel_vec.set_index(i, offsets_in_chunk[i]);
+                    }
+                    chunk.Slice(sel_vec, count);
+                    return_collection->Append(chunk);
+                    break;
+                }
+                current_chunk_idx++;
+            }
+        }
+    }
+
+    dv_manager.Flush();
 }
 
 vector<string> ColumnstoreTable::GetFilePaths(const string &path, const vector<string> &file_names) {

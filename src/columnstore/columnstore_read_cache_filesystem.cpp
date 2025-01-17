@@ -1,6 +1,6 @@
 #include "columnstore/columnstore_read_cache_filesystem.hpp"
+#include "crypto.hpp"
 #include "duckdb/common/string_util.hpp"
-#include "duckdb/common/types/hash.hpp"
 #include "duckdb/common/types/uuid.hpp"
 #include "duckdb/common/vector.hpp"
 #include "pgmooncake_guc.hpp"
@@ -8,16 +8,34 @@
 namespace duckdb {
 
 namespace {
+
+// Convert SHA256 value to hex string.
+string Sha256ToHexString(const duckdb::hash_bytes &sha256) {
+    static constexpr char kHexChars[] = "0123456789abcdef";
+    std::string result;
+    // SHA256 has 32 byte, we encode 2 chars for each byte of SHA256.
+    result.reserve(64);
+
+    for (unsigned char byte : sha256) {
+        result += kHexChars[byte >> 4];  // Get high 4 bits
+        result += kHexChars[byte & 0xF]; // Get low 4 bits
+    }
+    return result;
+}
+
 // Get local cache filename for the given [remote_file].
 //
-// Cache filename is formatted as `<cache-directory>/<filename-hash>.<filename>`.
+// Cache filename is formatted as `<cache-directory>/<filename-sha256>.<filename>`.
 // So we could get all cache files under one directory, and get all cache files with commands like `ls`.
 //
 // Considering the naming format, it's worth noting it might _NOT_ work for local files, including mounted filesystems.
 string GetLocalCacheFile(const string &remote_file) {
-    const hash_t hash_val = Hash(remote_file.data(), remote_file.length());
+    duckdb::hash_bytes remote_file_sha256_val;
+    duckdb::sha256(remote_file.data(), remote_file.length(), remote_file_sha256_val);
+    const string remote_file_sha256_str = Sha256ToHexString(remote_file_sha256_val);
+
     const string fname = StringUtil::GetFileName(remote_file);
-    return StringUtil::Format("%s%llu.%s", x_mooncake_local_cache, hash_val, fname);
+    return StringUtil::Format("%s%s.%s", x_mooncake_local_cache, remote_file_sha256_str, fname);
 }
 
 // Columnstore read cache filesystem name.

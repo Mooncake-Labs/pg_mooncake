@@ -33,6 +33,7 @@ REGRESS_OPTS = --inputdir=$(TEST_DIR) --load-extension=$(EXTENSION_NAME)
 # Compilation Flags
 # ========================
 PG_CPPFLAGS := -I$(SRC_DIR) \
+			   -I$(DUCKDB_DIR)/extension/httpfs/include \
                -I$(DUCKDB_DIR)/extension/parquet/include \
                -I$(DUCKDB_DIR)/src/include \
                -I$(DUCKDB_DIR)/third_party/parquet \

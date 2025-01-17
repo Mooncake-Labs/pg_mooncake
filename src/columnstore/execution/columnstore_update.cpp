@@ -102,6 +102,7 @@ public:
                               OperatorSinkFinalizeInput &input) const override {
         auto &gstate = input.global_state.Cast<ColumnstoreUpdateGlobalState>();
         table.Delete(context, gstate.row_ids);
+        table.FinalizeInsert();
         return SinkFinalizeType::READY;
     }
 

@@ -40,9 +40,7 @@ Oid DeletionVectorsFileGroupChunk() {
 
 } // namespace
 
-void DVManager::UpsertDV(const std::string &file_name,
-                         uint64_t chunk_idx,
-                         const DeletionVector &deletion_vector) {
+void DVManager::UpsertDV(const std::string &file_name, uint64_t chunk_idx, const DeletionVector &deletion_vector) {
     UpsertDVOperation op;
     op.file_name = file_name;
     op.chunk_idx = chunk_idx;
@@ -78,8 +76,7 @@ DeletionVector DVManager::FetchDV(const string &file_name, const uint64_t chunk_
     return DeletionVector::Deserialize(deletion_vector);
 }
 
-void DVManager::FlushUpsertDV()
-{
+void DVManager::FlushUpsertDV() {
     ::Relation table = table_open(DeletionVectors(), RowExclusiveLock);
     ::Relation index = index_open(DeletionVectorsFileGroupChunk(), RowExclusiveLock);
 
@@ -92,22 +89,10 @@ void DVManager::FlushUpsertDV()
     table_close(table, RowExclusiveLock);
 }
 
-void DVManager::DeleteDV(const UpsertDVOperation &op,
-                                 ::Relation table,
-                                 ::Relation index,
-                                 Snapshot snapshot)
-{
+void DVManager::DeleteDV(const UpsertDVOperation &op, ::Relation table, ::Relation index, Snapshot snapshot) {
     ScanKeyData key[2];
-    ScanKeyInit(&key[0],
-                1 /* attributeNumber */,
-                BTEqualStrategyNumber,
-                F_TEXTEQ,
-                StringGetTextDatum(op.file_name));
-    ScanKeyInit(&key[1],
-                2 /* attributeNumber */,
-                BTEqualStrategyNumber,
-                F_INT8EQ,
-                Int64GetDatum(op.chunk_idx));
+    ScanKeyInit(&key[0], 1 /* attributeNumber */, BTEqualStrategyNumber, F_TEXTEQ, StringGetTextDatum(op.file_name));
+    ScanKeyInit(&key[1], 2 /* attributeNumber */, BTEqualStrategyNumber, F_INT8EQ, Int64GetDatum(op.chunk_idx));
 
     SysScanDesc scan = systable_beginscan_ordered(table, index, snapshot, 2, key);
     HeapTuple tuple = systable_getnext_ordered(scan, ForwardScanDirection);
@@ -118,8 +103,7 @@ void DVManager::DeleteDV(const UpsertDVOperation &op,
     systable_endscan_ordered(scan);
 }
 
-void DVManager::InsertDV(const UpsertDVOperation &op, ::Relation table)
-{
+void DVManager::InsertDV(const UpsertDVOperation &op, ::Relation table) {
     bool nulls[x_deletion_vectors_natts] = {false, false, false};
     Datum values[x_deletion_vectors_natts];
 
@@ -131,6 +115,5 @@ void DVManager::InsertDV(const UpsertDVOperation &op, ::Relation table)
     PostgresFunctionGuard(CatalogTupleInsert, table, new_tuple);
     CommandCounterIncrement();
 }
-
 
 } // namespace duckdb

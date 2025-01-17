@@ -6,6 +6,11 @@
 #include "duckdb/main/extension_util.hpp"
 #include "duckdb/parser/tableref/table_function_ref.hpp"
 
+extern "C" {
+#include "postgres.h"
+#include "utils/snapmgr.h"
+}
+
 namespace duckdb {
 
 struct ColumnstoreScanMultiFileReaderGlobalState : public MultiFileReaderGlobalState {
@@ -51,17 +56,27 @@ struct ColumnstoreScanMultiFileReader : public MultiFileReader {
                           const MultiFileReaderBindData &bind_data, const MultiFileList &file_list,
                           const vector<LogicalType> &global_types, const vector<string> &global_names,
                           const vector<column_t> &global_column_ids) override {
-        auto it = std::find_if(global_column_ids.begin(), global_column_ids.end(),
-                               [](column_t global_column_id) { return IsRowIdColumnId(global_column_id); });
+
+        bool include_file_row_number = false;
+        auto it = find(global_names.begin(), global_names.end(), "file_row_number");
+        if (it != global_names.end()) {
+            include_file_row_number = true;
+        }
+
         vector<LogicalType> extra_columns;
-        if (it != global_column_ids.end()) {
+        if (include_file_row_number) {
             extra_columns.push_back(LogicalType::BIGINT);
         }
+
         auto global_state = make_uniq<ColumnstoreScanMultiFileReaderGlobalState>(std::move(extra_columns), file_list);
-        if (it != global_column_ids.end()) {
-            global_state->row_id_index = NumericCast<idx_t>(std::distance(global_column_ids.begin(), it));
+
+        if (include_file_row_number) {
+            auto it = std::find_if(global_column_ids.begin(), global_column_ids.end(), IsRowIdColumnId);
+            if (it != global_column_ids.end()) {
+                global_state->row_id_index = NumericCast<idx_t>(std::distance(global_column_ids.begin(), it));
+                global_state->row_ids = make_uniq<Vector>(LogicalType::BIGINT);
+            }
             global_state->file_row_number_index = global_column_ids.size();
-            global_state->row_ids = make_uniq<Vector>(LogicalType::BIGINT);
         }
         return std::move(global_state);
     }
@@ -75,14 +90,61 @@ struct ColumnstoreScanMultiFileReader : public MultiFileReader {
         MultiFileReader::CreateMapping(file_name, local_types, local_names, global_types, global_names,
                                        global_column_ids, filters, reader_data, initial_file, options, global_state);
         auto &gstate = global_state->Cast<ColumnstoreScanMultiFileReaderGlobalState>();
-        if (gstate.row_id_index != DConstants::INVALID_INDEX) {
+        if (gstate.file_row_number_index != DConstants::INVALID_INDEX) {
             auto it = std::find_if(local_names.begin(), local_names.end(), [](const string &local_name) {
                 return StringUtil::CIEquals(local_name, "file_row_number");
             });
-            D_ASSERT(it != local_names.end());
-            reader_data.column_mapping.push_back(gstate.file_row_number_index);
-            reader_data.column_ids.push_back(NumericCast<idx_t>(std::distance(local_names.begin(), it)));
+            if (it != local_names.end()) {
+                reader_data.column_mapping.push_back(gstate.file_row_number_index);
+                reader_data.column_ids.push_back(NumericCast<idx_t>(std::distance(local_names.begin(), it)));
+            }
         }
+    }
+
+    void ApplyDeletions(const MultiFileReaderData &reader_data, ColumnstoreScanMultiFileReaderGlobalState &gstate,
+                        DataChunk &chunk) {
+        auto &file_row_numbers = chunk.data[gstate.file_row_number_index];
+        file_row_numbers.Flatten(chunk.size());
+        auto file_row_numbers_data = FlatVector::GetData<int64_t>(file_row_numbers);
+
+        SelectionVector sel(STANDARD_VECTOR_SIZE);
+        idx_t sel_size = 0;
+
+        const idx_t file_list_idx = reader_data.file_list_idx.GetIndex();
+        const auto &file_paths = gstate.file_list->GetPaths();
+        D_ASSERT(file_list_idx < file_paths.size());
+        const auto &file_name = file_paths[file_list_idx];
+
+        unordered_map<idx_t, vector<idx_t>> chunk_to_rows;
+        for (idx_t i = 0; i < chunk.size(); i++) {
+            uint64_t offset_64 = file_row_numbers_data[i];
+            uint32_t offset_in_file = NumericCast<uint32_t>(offset_64);
+
+            idx_t chunk_idx = offset_in_file / STANDARD_VECTOR_SIZE;
+            chunk_to_rows[chunk_idx].push_back(i);
+        }
+
+        Snapshot snapshot = GetActiveSnapshot();
+        DVManager dv_manager(snapshot);
+
+        for (auto &kv : chunk_to_rows) {
+            idx_t chunk_idx = kv.first;
+            auto &row_indices = kv.second;
+
+            DeletionVector dv = dv_manager.FetchDV(file_name, chunk_idx);
+
+            for (auto row_i : row_indices) {
+                uint64_t offset_64 = file_row_numbers_data[row_i];
+                uint32_t offset_in_file = NumericCast<uint32_t>(offset_64);
+
+                idx_t offset_in_chunk = offset_in_file % STANDARD_VECTOR_SIZE;
+                if (!dv.IsDeleted(offset_in_chunk)) {
+                    sel.set_index(sel_size++, row_i);
+                }
+            }
+        }
+
+        chunk.Slice(sel, sel_size);
     }
 
     void FinalizeChunk(ClientContext &context, const MultiFileReaderBindData &bind_data,
@@ -90,6 +152,13 @@ struct ColumnstoreScanMultiFileReader : public MultiFileReader {
                        optional_ptr<MultiFileReaderGlobalState> global_state) override {
         MultiFileReader::FinalizeChunk(context, bind_data, reader_data, chunk, global_state);
         auto &gstate = global_state->Cast<ColumnstoreScanMultiFileReaderGlobalState>();
+        const bool has_file_row_number = (gstate.file_row_number_index != DConstants::INVALID_INDEX &&
+                                          gstate.file_row_number_index < chunk.data.size());
+
+        if (has_file_row_number) {
+            ApplyDeletions(reader_data, gstate, chunk);
+        }
+
         if (gstate.row_id_index != DConstants::INVALID_INDEX) {
             auto &file_row_numbers = chunk.data[gstate.file_row_number_index];
             file_row_numbers.Flatten(chunk.size());

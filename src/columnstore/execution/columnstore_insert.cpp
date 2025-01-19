@@ -127,23 +127,24 @@ public:
             if (return_chunk) {
                 lstate.return_collection.Append(lstate.insert_chunk);
             }
-
             lstate.insert_count += lstate.insert_chunk.size();
         }
-        return SinkResultType::NEED_MORE_INPUT;
     }
 
     SinkCombineResultType Combine(ExecutionContext &context, OperatorSinkCombineInput &input) const override {
+        if (!parallel) {
+            return SinkCombineResultType::FINISHED;
+        }
         auto &gstate = input.global_state.Cast<ColumnstoreInsertGlobalState>();
         auto &lstate = input.local_state.Cast<ColumnstoreInsertLocalState>();
         lock_guard<mutex> lock(gstate.insert_lock);
+        table.Insert(context.client, lstate.insert_chunk);
         gstate.insert_count += lstate.insert_count;
         if (return_chunk) {
             for (auto &chunk : lstate.return_collection.Chunks()) {
                 gstate.return_collection.Append(chunk);
             }
         }
-        table.Insert(context.client, lstate.insert_chunk);
         return SinkCombineResultType::FINISHED;
     }
 
@@ -166,7 +167,7 @@ public:
     }
 
     bool ParallelSink() const override {
-        return true;
+        return parallel;
     }
 };
 
@@ -177,7 +178,7 @@ unique_ptr<PhysicalOperator> Columnstore::PlanInsert(ClientContext &context, Log
 
     auto insert =
         make_uniq<ColumnstoreInsert>(op.types, op.estimated_cardinality, op.table.Cast<ColumnstoreTable>(),
-                                     op.column_index_map, std::move(op.bound_defaults), op.return_chunk, true);
+                                     op.column_index_map, std::move(op.bound_defaults), op.return_chunk, parallel_streaming_insert && num_threads > 1);
     std::cout << "For parallelism number of threads: " << num_threads << "and streaming insert state"
               << parallel_streaming_insert << std::endl;
     insert->children.push_back(std::move(plan));

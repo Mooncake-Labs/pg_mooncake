@@ -111,11 +111,13 @@ public:
         auto &gstate = input.global_state.Cast<ColumnstoreUpdateGlobalState>();
         auto &lstate = input.local_state.Cast<ColumnstoreUpdateLocalState>();
         lock_guard<mutex> lock(gstate.update_lock);
-        gstate.row_ids.insert(lstate.row_ids.begin(), lstate.row_ids.end());
-        for (auto &chunk : lstate.return_collection.Chunks()) {
-            gstate.return_collection.Append(chunk);
-        }
         table.Insert(context.client, lstate.chunk);
+        gstate.row_ids.insert(lstate.row_ids.begin(), lstate.row_ids.end());
+        if (return_chunk) {
+            for (auto &chunk : lstate.return_collection.Chunks()) {
+                gstate.return_collection.Append(chunk);
+            }
+        }
         return SinkCombineResultType::FINISHED;
     }
 

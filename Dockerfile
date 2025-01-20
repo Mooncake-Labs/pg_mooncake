@@ -4,6 +4,7 @@ RUN apt update \
  && apt install -y \
     curl \
     g++ \
+    git \
     liblz4-dev \
     cmake \
     postgresql-server-dev-17 \

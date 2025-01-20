@@ -21,3 +21,10 @@ INSERT INTO t (b) VALUES (1), (2);
 INSERT INTO t (b) SELECT 3;
 SELECT * FROM t;
 DROP TABLE t;
+
+CREATE TABLE t (a int) USING columnstore;
+INSERT INTO t VALUES (1), (2);
+CREATE TABLE r (b int DEFAULT 1 + 2);
+INSERT INTO r VALUES (1), (2);
+SELECT * FROM t JOIN r ON a = b;
+DROP TABLE t, r;

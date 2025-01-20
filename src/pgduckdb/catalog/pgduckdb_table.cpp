@@ -38,7 +38,7 @@ PostgresTable::OpenRelation(Oid relid) {
 }
 
 void
-PostgresTable::SetTableInfo(duckdb::CreateTableInfo &info, Relation rel) {
+PostgresTable::SetTableInfo(duckdb::CreateTableInfo &info, Relation rel, bool setDefaultValue) {
 	using namespace duckdb;
 
 	auto tupleDesc = RelationGetDescr(rel);
@@ -50,33 +50,35 @@ PostgresTable::SetTableInfo(duckdb::CreateTableInfo &info, Relation rel) {
 		auto col_name = duckdb::string(GetAttName(attr));
 		auto duck_type = ConvertPostgresToDuckColumnType(attr);
 		ColumnDefinition column(col_name, duck_type);
-		if (attr->atthasdef) {
-			Assert(tupleDesc->constr);
-			Assert(tupleDesc->constr->defval);
-			Assert(defval_index < tupleDesc->constr->num_defval);
-			AttrDefault &defval = tupleDesc->constr->defval[defval_index++];
-			Assert(defval.adnum == i + 1);
-			Node *node = static_cast<Node *>(stringToNode(defval.adbin));
-			if (!IsA(node, Const)) {
-				throw duckdb::NotImplementedException("column \"%s\" has unsupported default value ",
-				                                      NameStr(attr->attname));
-			}
-			Const *val = castNode(Const, node);
-			if (val->constisnull) {
-				column.SetDefaultValue(make_uniq<ConstantExpression>(duckdb::Value(duck_type)));
-			} else {
-				column.SetDefaultValue(make_uniq<ConstantExpression>(
-				    pgduckdb::ConvertPostgresParameterToDuckValue(val->constvalue, val->consttype)));
-			}
-		} else if (attr->attidentity) {
+		if (setDefaultValue) {
+			if (attr->atthasdef) {
+				Assert(tupleDesc->constr);
+				Assert(tupleDesc->constr->defval);
+				Assert(defval_index < tupleDesc->constr->num_defval);
+				AttrDefault &defval = tupleDesc->constr->defval[defval_index++];
+				Assert(defval.adnum == i + 1);
+				Node *node = static_cast<Node *>(stringToNode(defval.adbin));
+				if (!IsA(node, Const)) {
+					throw duckdb::NotImplementedException("column \"%s\" has unsupported default value ",
+					                                      NameStr(attr->attname));
+				}
+				Const *val = castNode(Const, node);
+				if (val->constisnull) {
+					column.SetDefaultValue(make_uniq<ConstantExpression>(duckdb::Value(duck_type)));
+				} else {
+					column.SetDefaultValue(make_uniq<ConstantExpression>(
+					    pgduckdb::ConvertPostgresParameterToDuckValue(val->constvalue, val->consttype)));
+				}
+			} else if (attr->attidentity) {
 #if PG_VERSION_NUM >= 170000
-			Oid seqid = getIdentitySequence(rel, i + 1, false /*missing_ok*/);
+				Oid seqid = getIdentitySequence(rel, i + 1, false /*missing_ok*/);
 #else
-			Oid seqid = getIdentitySequence(RelationGetRelid(rel), i + 1, false /*missing_ok*/);
+				Oid seqid = getIdentitySequence(RelationGetRelid(rel), i + 1, false /*missing_ok*/);
 #endif
-			vector<unique_ptr<ParsedExpression>> children;
-			children.push_back(make_uniq<ConstantExpression>(duckdb::Value::UINTEGER(seqid)));
-			column.SetDefaultValue(make_uniq<FunctionExpression>("pg_nextval", std::move(children)));
+				vector<unique_ptr<ParsedExpression>> children;
+				children.push_back(make_uniq<ConstantExpression>(duckdb::Value::UINTEGER(seqid)));
+				column.SetDefaultValue(make_uniq<FunctionExpression>("pg_nextval", std::move(children)));
+			}
 		}
 		info.columns.AddColumn(std::move(column));
 		/* Log column name and type */

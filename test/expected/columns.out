@@ -44,3 +44,15 @@ SELECT * FROM t;
 (3 rows)
 
 DROP TABLE t;
+CREATE TABLE t (a int) USING columnstore;
+INSERT INTO t VALUES (1), (2);
+CREATE TABLE r (b int DEFAULT 1 + 2);
+INSERT INTO r VALUES (1), (2);
+SELECT * FROM t JOIN r ON a = b;
+ a | b 
+---+---
+ 1 | 1
+ 2 | 2
+(2 rows)
+
+DROP TABLE t, r;

@@ -22,11 +22,6 @@ public:
     ColumnDataCollection return_collection;
 };
 
-class ColumnstoreDeleteLocalState : public LocalSinkState {
-public:
-    unordered_set<row_t> row_ids;
-};
-
 class ColumnstoreDelete : public PhysicalOperator {
 public:
     ColumnstoreDelete(vector<LogicalType> types, idx_t estimated_cardinality, ColumnstoreTable &table,
@@ -73,22 +68,15 @@ public:
 public:
     // Sink interface
     SinkResultType Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) const override {
-        auto &lstate = input.local_state.Cast<ColumnstoreDeleteLocalState>();
+        auto &gstate = input.global_state.Cast<ColumnstoreDeleteGlobalState>();
         auto &row_ids = chunk.data[row_id_index];
         row_ids.Flatten(chunk.size());
         auto row_ids_data = FlatVector::GetData<row_t>(row_ids);
+        lock_guard<mutex> lock(gstate.delete_lock);
         for (idx_t i = 0; i < chunk.size(); i++) {
-            lstate.row_ids.insert(row_ids_data[i]);
+            gstate.row_ids.insert(row_ids_data[i]);
         }
         return SinkResultType::NEED_MORE_INPUT;
-    }
-
-    SinkCombineResultType Combine(ExecutionContext &context, OperatorSinkCombineInput &input) const override {
-        auto &gstate = input.global_state.Cast<ColumnstoreDeleteGlobalState>();
-        auto &lstate = input.local_state.Cast<ColumnstoreDeleteLocalState>();
-        lock_guard<mutex> lock(gstate.delete_lock);
-        gstate.row_ids.insert(lstate.row_ids.begin(), lstate.row_ids.end());
-        return SinkCombineResultType::FINISHED;
     }
 
     SinkFinalizeType Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
@@ -100,10 +88,6 @@ public:
 
     unique_ptr<GlobalSinkState> GetGlobalSinkState(ClientContext &context) const override {
         return make_uniq<ColumnstoreDeleteGlobalState>(context, table.GetTypes());
-    }
-
-    unique_ptr<LocalSinkState> GetLocalSinkState(ExecutionContext &context) const override {
-        return make_uniq<ColumnstoreDeleteLocalState>();
     }
 
     bool IsSink() const override {

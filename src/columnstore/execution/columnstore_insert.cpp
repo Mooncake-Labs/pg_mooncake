@@ -129,6 +129,7 @@ public:
             }
             lstate.insert_count += lstate.insert_chunk.size();
         }
+        return SinkResultType::NEED_MORE_INPUT;
     }
 
     SinkCombineResultType Combine(ExecutionContext &context, OperatorSinkCombineInput &input) const override {
@@ -176,9 +177,9 @@ unique_ptr<PhysicalOperator> Columnstore::PlanInsert(ClientContext &context, Log
     bool parallel_streaming_insert = !PhysicalPlanGenerator::PreserveInsertionOrder(context, *plan);
     auto num_threads = TaskScheduler::GetScheduler(context).NumberOfThreads();
 
-    auto insert =
-        make_uniq<ColumnstoreInsert>(op.types, op.estimated_cardinality, op.table.Cast<ColumnstoreTable>(),
-                                     op.column_index_map, std::move(op.bound_defaults), op.return_chunk, parallel_streaming_insert && num_threads > 1);
+    auto insert = make_uniq<ColumnstoreInsert>(op.types, op.estimated_cardinality, op.table.Cast<ColumnstoreTable>(),
+                                               op.column_index_map, std::move(op.bound_defaults), op.return_chunk,
+                                               parallel_streaming_insert && num_threads > 1);
     std::cout << "For parallelism number of threads: " << num_threads << "and streaming insert state"
               << parallel_streaming_insert << std::endl;
     insert->children.push_back(std::move(plan));

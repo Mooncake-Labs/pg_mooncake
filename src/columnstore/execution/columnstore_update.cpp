@@ -14,22 +14,21 @@ public:
 class ColumnstoreUpdateGlobalState : public GlobalSinkState {
 public:
     ColumnstoreUpdateGlobalState(ClientContext &context, const vector<LogicalType> &types)
-        : return_collection(context, types) {}
+        : updated_count(0), return_collection(context, types) {}
 
-    mutex update_lock;
+    mutex lock;
+    idx_t updated_count;
     unordered_set<row_t> row_ids;
     ColumnDataCollection return_collection;
 };
 
 class ColumnstoreUpdateLocalState : public LocalSinkState {
-    public:
-    ColumnstoreUpdateLocalState(ExecutionContext &context, const vector<LogicalType> &types) : return_collection(context.client, types) {
-        chunk.Initialize(Allocator::Get(context.client), types);
+public:
+    ColumnstoreUpdateLocalState(ClientContext &context, const vector<LogicalType> &types) {
+        update_chunk.Initialize(Allocator::Get(context), types);
     }
-    
-    DataChunk chunk;
-    unordered_set<row_t> row_ids;
-    ColumnDataCollection return_collection;
+
+    DataChunk update_chunk;
 };
 
 class ColumnstoreUpdate : public PhysicalOperator {
@@ -64,7 +63,7 @@ public:
         auto &gstate = sink_state->Cast<ColumnstoreUpdateGlobalState>();
         if (!return_chunk) {
             chunk.SetCardinality(1);
-            chunk.SetValue(0, 0, Value::BIGINT(NumericCast<int64_t>(gstate.row_ids.size())));
+            chunk.SetValue(0, 0, Value::BIGINT(NumericCast<int64_t>(gstate.updated_count)));
             return SourceResultType::FINISHED;
         }
         gstate.return_collection.Scan(state.scan_state, chunk);
@@ -72,53 +71,43 @@ public:
     }
 
     bool IsSource() const override {
-        return true;    
+        return true;
     }
 
 public:
     // Sink interface
     SinkResultType Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) const override {
+        auto &gstate = input.global_state.Cast<ColumnstoreUpdateGlobalState>();
         auto &lstate = input.local_state.Cast<ColumnstoreUpdateLocalState>();
+
+        DataChunk &update_chunk = lstate.update_chunk;
 
         auto &row_ids = chunk.data[chunk.ColumnCount() - 1];
         row_ids.Flatten(chunk.size());
         auto row_ids_data = FlatVector::GetData<row_t>(row_ids);
-
         SelectionVector sel(STANDARD_VECTOR_SIZE);
         idx_t count = 0;
+        lock_guard<mutex> lock(gstate.lock);
         for (idx_t i = 0; i < chunk.size(); i++) {
             row_t row_id = row_ids_data[i];
-            if (lstate.row_ids.find(row_id) == lstate.row_ids.end()) {
-                lstate.row_ids.insert(row_id);
+            if (gstate.row_ids.find(row_id) == gstate.row_ids.end()) {
+                gstate.row_ids.insert(row_id);
                 sel.set_index(count++, i);
             }
         }
         if (count != chunk.size()) {
             chunk.Slice(sel, count);
         }
-
-        lstate.chunk.SetCardinality(chunk);
+        update_chunk.SetCardinality(chunk);
         for (idx_t i = 0; i < columns.size(); i++) {
-            lstate.chunk.data[columns[i].index].Reference(chunk.data[i]);
+            update_chunk.data[columns[i].index].Reference(chunk.data[i]);
         }
+        table.Insert(context.client, update_chunk);
         if (return_chunk) {
-            lstate.return_collection.Append(lstate.chunk);
+            gstate.return_collection.Append(update_chunk);
         }
+        gstate.updated_count += chunk.size();
         return SinkResultType::NEED_MORE_INPUT;
-    }
-
-    SinkCombineResultType Combine(ExecutionContext &context, OperatorSinkCombineInput &input) const override {
-        auto &gstate = input.global_state.Cast<ColumnstoreUpdateGlobalState>();
-        auto &lstate = input.local_state.Cast<ColumnstoreUpdateLocalState>();
-        lock_guard<mutex> lock(gstate.update_lock);
-        table.Insert(context.client, lstate.chunk);
-        gstate.row_ids.insert(lstate.row_ids.begin(), lstate.row_ids.end());
-        if (return_chunk) {
-            for (auto &chunk : lstate.return_collection.Chunks()) {
-                gstate.return_collection.Append(chunk);
-            }
-        }
-        return SinkCombineResultType::FINISHED;
     }
 
     SinkFinalizeType Finalize(Pipeline &pipeline, Event &event, ClientContext &context,
@@ -133,7 +122,7 @@ public:
     }
 
     unique_ptr<LocalSinkState> GetLocalSinkState(ExecutionContext &context) const override {
-        return make_uniq<ColumnstoreUpdateLocalState>(context, table.GetTypes());
+        return make_uniq<ColumnstoreUpdateLocalState>(context.client, table.GetTypes());
     }
 
     bool IsSink() const override {

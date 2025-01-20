@@ -16,13 +16,13 @@ select * from test_table limit 10;
 -- Update a specific range of rows
 UPDATE test_table
 SET data = 'Updated data ' || id
-WHERE id <= 50 and id >= 60;
+WHERE id >= 50 and id <= 60;
 
-select * from test_table where id < 100;
+select * from test_table where id >= 50 and id <= 70;
 
 -- Delete a specific number of rows from the table
 DELETE FROM test_table
-WHERE id <= 999999;
+WHERE id <= 99999;
 
 select * from test_table;
 -- Drop the temporary table

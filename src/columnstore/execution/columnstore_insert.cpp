@@ -13,7 +13,7 @@ class ColumnstoreInsertGlobalState : public GlobalSinkState {
 public:
     ColumnstoreInsertGlobalState(ClientContext &context, const vector<LogicalType> &types,
                                  const vector<unique_ptr<Expression>> &bound_defaults)
-        : return_collection(context, types) {}
+        : insert_count(0), return_collection(context, types) {}
 
     mutex insert_lock;
     idx_t insert_count;
@@ -24,14 +24,12 @@ class ColumnstoreInsertLocalState : public LocalSinkState {
 public:
     ColumnstoreInsertLocalState(ClientContext &context, const vector<LogicalType> &types,
                                 const vector<unique_ptr<Expression>> &bound_defaults)
-        : executor(context, bound_defaults), insert_count(0), return_collection(context, types) {
+        : executor(context, bound_defaults) {
         insert_chunk.Initialize(Allocator::Get(context), types);
     }
 
     DataChunk insert_chunk;
     ExpressionExecutor executor;
-    idx_t insert_count;
-    ColumnDataCollection return_collection;
 };
 
 class ColumnstoreInsert : public PhysicalOperator {
@@ -124,29 +122,12 @@ public:
             gstate.insert_count += lstate.insert_chunk.size();
             table.Insert(context.client, lstate.insert_chunk);
         } else {
-            if (return_chunk) {
-                lstate.return_collection.Append(lstate.insert_chunk);
-            }
-            lstate.insert_count += lstate.insert_chunk.size();
+            D_ASSERT(!return_chunk);
+            lock_guard<mutex> lock(gstate.insert_lock);
+            table.Insert(context.client, lstate.insert_chunk);
+            gstate.insert_count += lstate.insert_chunk.size();
         }
         return SinkResultType::NEED_MORE_INPUT;
-    }
-
-    SinkCombineResultType Combine(ExecutionContext &context, OperatorSinkCombineInput &input) const override {
-        if (!parallel) {
-            return SinkCombineResultType::FINISHED;
-        }
-        auto &gstate = input.global_state.Cast<ColumnstoreInsertGlobalState>();
-        auto &lstate = input.local_state.Cast<ColumnstoreInsertLocalState>();
-        lock_guard<mutex> lock(gstate.insert_lock);
-        table.Insert(context.client, lstate.insert_chunk);
-        gstate.insert_count += lstate.insert_count;
-        if (return_chunk) {
-            for (auto &chunk : lstate.return_collection.Chunks()) {
-                gstate.return_collection.Append(chunk);
-            }
-        }
-        return SinkCombineResultType::FINISHED;
     }
 
     SinkFinalizeType Finalize(Pipeline &pipeline, Event &event, ClientContext &context,

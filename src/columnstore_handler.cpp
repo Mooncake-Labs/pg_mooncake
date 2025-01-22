@@ -9,17 +9,29 @@ extern "C" {
 #include "utils/syscache.h"
 }
 
+struct ColumnstoreScanDescData {
+    TableScanDescData rs_base;
+};
+using ColumnstoreScanDesc = ColumnstoreScanDescData *;
+
 const TupleTableSlotOps *columnstore_slot_callbacks(Relation rel) {
-    elog(ERROR, "columnstore_slot_callbacks not implemented");
+    return &TTSOpsMinimalTuple;
 }
 
 TableScanDesc columnstore_scan_begin(Relation rel, Snapshot snapshot, int nkeys, struct ScanKeyData *key,
                                      ParallelTableScanDesc pscan, uint32 flags) {
-    elog(ERROR, "columnstore_scan_begin not implemented");
+    ColumnstoreScanDesc scan = static_cast<ColumnstoreScanDesc>(palloc(sizeof(ColumnstoreScanDescData)));
+    scan->rs_base.rs_rd = rel;
+    scan->rs_base.rs_snapshot = snapshot;
+    scan->rs_base.rs_nkeys = nkeys;
+    scan->rs_base.rs_flags = flags;
+    scan->rs_base.rs_parallel = pscan;
+    return reinterpret_cast<TableScanDesc>(scan);
 }
 
 void columnstore_scan_end(TableScanDesc scan) {
-    elog(ERROR, "columnstore_scan_end not implemented");
+    ColumnstoreScanDesc cscan = reinterpret_cast<ColumnstoreScanDesc>(scan);
+    pfree(cscan);
 }
 
 void columnstore_scan_rescan(TableScanDesc scan, struct ScanKeyData *key, bool set_params, bool allow_strat,
@@ -177,7 +189,7 @@ bool columnstore_scan_analyze_next_block(TableScanDesc scan, ReadStream *stream)
 #else
 bool columnstore_scan_analyze_next_block(TableScanDesc scan, BlockNumber blockno, BufferAccessStrategy bstrategy) {
 #endif
-    elog(ERROR, "columnstore_scan_analyze_next_block not implemented");
+    return false;
 }
 
 bool columnstore_scan_analyze_next_tuple(TableScanDesc scan, TransactionId OldestXmin, double *liverows,
@@ -198,7 +210,7 @@ void columnstore_index_validate_scan(Relation table_rel, Relation index_rel, str
 }
 
 uint64 columnstore_relation_size(Relation rel, ForkNumber forkNumber) {
-    elog(ERROR, "columnstore_relation_size not implemented");
+    return 0;
 }
 
 bool columnstore_relation_needs_toast_table(Relation rel) {

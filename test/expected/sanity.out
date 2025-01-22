@@ -17,7 +17,8 @@ SELECT * FROM t;
 (7 rows)
 
 DROP TABLE t;
-CREATE TABLE t (a int);
+CREATE TABLE t (a int) USING columnstore;
+ANALYZE t;
 BEGIN;
 INSERT INTO t VALUES (123);
 SELECT * FROM t;

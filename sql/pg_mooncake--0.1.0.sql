@@ -387,3 +387,6 @@ GRANT USAGE ON SCHEMA mooncake TO PUBLIC;
 GRANT SELECT ON mooncake.secrets_table_seq TO PUBLIC;
 GRANT SELECT ON mooncake.columnstore_tables TO PUBLIC;
 GRANT SELECT ON mooncake.cloud_secrets TO PUBLIC;
+
+-- Enable read-cache for HTTP filesystem by default.
+SET httpfs.force_download=true;

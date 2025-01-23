@@ -21,11 +21,11 @@ CREATE INDEX data_files_oid ON mooncake.data_files (oid);
 CREATE UNIQUE INDEX data_files_file_name ON mooncake.data_files (file_name);
 
 CREATE TABLE mooncake.deletion_vectors (
-    file_name TEXT NOT NULL,
+    file_uuid UUID NOT NULL,
     chunk_idx BIGINT NOT NULL,
     deletion_vector BYTEA NOT NULL
 );
-CREATE UNIQUE INDEX deletion_vectors_file_chunk ON mooncake.deletion_vectors (file_name, chunk_idx);
+CREATE UNIQUE INDEX deletion_vectors_uuid_chunk ON mooncake.deletion_vectors (file_uuid, chunk_idx);
 
 
 CREATE FUNCTION mooncake.read_parquet(path text, binary_as_string BOOLEAN DEFAULT FALSE,

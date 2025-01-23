@@ -89,6 +89,7 @@ struct ColumnstoreScanMultiFileReader : public MultiFileReader {
                        optional_ptr<MultiFileReaderGlobalState> global_state) override {
         MultiFileReader::CreateMapping(file_name, local_types, local_names, global_types, global_names,
                                        global_column_ids, filters, reader_data, initial_file, options, global_state);
+
         auto &gstate = global_state->Cast<ColumnstoreScanMultiFileReaderGlobalState>();
         if (gstate.file_row_number_index != DConstants::INVALID_INDEX) {
             auto it = std::find_if(local_names.begin(), local_names.end(), [](const string &local_name) {
@@ -113,7 +114,7 @@ struct ColumnstoreScanMultiFileReader : public MultiFileReader {
         const idx_t file_list_idx = reader_data.file_list_idx.GetIndex();
         const auto &file_paths = gstate.file_list->GetPaths();
         D_ASSERT(file_list_idx < file_paths.size());
-        const auto &file_name = file_paths[file_list_idx];
+        const auto &file_path = file_paths[file_list_idx];
 
         unordered_map<idx_t, vector<idx_t>> chunk_to_rows;
         for (idx_t i = 0; i < chunk.size(); i++) {
@@ -124,14 +125,14 @@ struct ColumnstoreScanMultiFileReader : public MultiFileReader {
             chunk_to_rows[chunk_idx].push_back(i);
         }
 
-        Snapshot snapshot = GetActiveSnapshot();
+        Snapshot snapshot = ColumnstoreMetadata::GetActiveSnapshot();
         DVManager dv_manager(snapshot);
 
         for (auto &kv : chunk_to_rows) {
             idx_t chunk_idx = kv.first;
             auto &row_indices = kv.second;
 
-            DeletionVector dv = dv_manager.FetchDV(file_name, chunk_idx);
+            DeletionVector dv = dv_manager.FetchDV(file_path, chunk_idx);
 
             for (auto row_i : row_indices) {
                 uint64_t offset_64 = file_row_numbers_data[row_i];

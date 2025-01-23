@@ -1,25 +1,35 @@
 #pragma once
 
+#include "duckdb/common/serializer/memory_stream.hpp"
+#include "duckdb/common/types/data_chunk.hpp"
+#include "duckdb/common/types/selection_vector.hpp"
 #include "duckdb/common/types/uuid.hpp"
+#include "duckdb/common/types/validity_mask.hpp"
 #include "duckdb/common/vector_size.hpp"
 
 namespace duckdb {
 class DeletionVector {
 public:
-    DeletionVector() : bitmap(STANDARD_VECTOR_SIZE, false) {}
+    DeletionVector();
 
-    void MarkDeleted(const idx_t offset);
-    bool IsDeleted(size_t row_id) const;
+    void MarkDeleted(idx_t offset);
+    bool IsDeleted(idx_t row_id) const;
+    void ApplyToChunk(DataChunk &chunk) const;
 
-    size_t size() const {
-        return bitmap.size();
+    void Combine(const DeletionVector &other, idx_t count) {
+        validity_mask.Combine(other.validity_mask, count);
     }
 
-    static std::string Serialize(const DeletionVector &deletion_vector);
-    static DeletionVector Deserialize(const std::string &serialized);
+    size_t Size() const {
+        return count;
+    }
+
+    static void Serialize(MemoryStream &write_stream, DeletionVector &deletion_vector);
+    static DeletionVector Deserialize(const string_t &data);
 
 private:
-    std::vector<bool> bitmap;
+    idx_t count;
+    ValidityMask validity_mask;
 };
 
 } // namespace duckdb

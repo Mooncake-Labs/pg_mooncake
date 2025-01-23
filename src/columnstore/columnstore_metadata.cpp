@@ -18,6 +18,7 @@ extern "C" {
 #include "utils/fmgroids.h"
 #include "utils/lsyscache.h"
 #include "utils/rel.h"
+#include "utils/snapmgr.h"
 }
 
 namespace duckdb {
@@ -58,6 +59,10 @@ Oid Secrets() {
 }
 
 } // namespace
+
+Snapshot ColumnstoreMetadata::GetActiveSnapshot() {
+    return ::GetActiveSnapshot();
+}
 
 void ColumnstoreMetadata::TablesInsert(Oid oid, const string &path) {
     ::Relation table = table_open(Tables(), RowExclusiveLock);

@@ -189,84 +189,28 @@ void ColumnstoreTable::FinalizeInsert() {
 void ColumnstoreTable::Delete(ClientContext &context, unordered_set<row_t> &row_ids_set,
                               ColumnDataCollection *return_collection) {
     vector<row_t> row_ids(row_ids_set.begin(), row_ids_set.end());
-    std::sort(row_ids.begin(), row_ids.end());
+    sort(row_ids.begin(), row_ids.end());
+
     auto file_names = metadata->DataFilesSearch(oid, &context, &path, &columns);
     auto file_paths = GetFilePaths(path, file_names);
+    auto file_chunk_dv_map = DVManager::BuildFileChunkDVs(row_ids);
 
-    unordered_map<int32_t, vector<uint32_t>> file_to_offsets;
-    for (auto row_id : row_ids) {
-        int32_t file_number = row_id >> 32;
-        uint32_t offset_in_file = (uint32_t)(row_id & 0xFFFFFFFF);
-        file_to_offsets[file_number].push_back(offset_in_file);
-    }
-
-    std::map<pair<string, idx_t>, vector<uint64_t>> grouped_offsets;
-    for (auto &entry : file_to_offsets) {
-        int32_t file_number = entry.first;
-        auto &offsets_in_file = entry.second;
-
-        const string &file_name = file_paths[file_number];
-
-        for (auto offset_in_file : offsets_in_file) {
-            idx_t chunk_idx = offset_in_file / STANDARD_VECTOR_SIZE;
-            idx_t offset_in_chunk = offset_in_file % STANDARD_VECTOR_SIZE;
-
-            grouped_offsets[{file_name, chunk_idx}].push_back(offset_in_chunk);
-        }
-    }
-
-    Snapshot snapshot = GetActiveSnapshot();
+    Snapshot snapshot = ColumnstoreMetadata::GetActiveSnapshot();
     DVManager dv_manager(snapshot);
+    dv_manager.ApplyDeletionVectors(file_chunk_dv_map, file_paths);
 
-    for (auto &entry : grouped_offsets) {
-        auto &key = entry.first;
-        auto &offsets_in_chunk = entry.second;
+    if (return_collection) {
+        for (auto &[file_number, chunk_map] : file_chunk_dv_map) {
+            auto &file_path = file_paths[file_number];
+            ParquetReader reader(context, file_path, ParquetOptions{});
 
-        const string &file_name = key.first;
-        idx_t chunk_idx = key.second;
-
-        DeletionVector dv = dv_manager.FetchDV(file_name, chunk_idx);
-
-        for (auto offset_val : offsets_in_chunk) {
-            dv.MarkDeleted(offset_val);
-        }
-
-        dv_manager.UpsertDV(file_name, chunk_idx, dv);
-
-        if (return_collection) {
-            ParquetReaderScanState state;
-            ParquetReader reader(context, file_name, ParquetOptions{});
-            for (idx_t i = 0; i < reader.GetTypes().size(); i++) {
-                reader.reader_data.column_mapping.push_back(i);
-                reader.reader_data.column_ids.push_back(i);
+            auto col_count = reader.GetTypes().size();
+            for (idx_t column_idx = 0; column_idx < col_count; column_idx++) {
+                reader.reader_data.column_mapping.push_back(column_idx);
+                reader.reader_data.column_ids.push_back(column_idx);
             }
 
-            vector<idx_t> groups_to_read(reader.GetFileMetadata()->row_groups.size());
-            std::iota(groups_to_read.begin(), groups_to_read.end(), 0);
-            reader.InitializeScan(context, state, std::move(groups_to_read));
-
-            DataChunk chunk;
-            chunk.Initialize(Allocator::Get(context), columns.GetColumnTypes());
-
-            idx_t current_chunk_idx = 0;
-            while (true) {
-                chunk.Reset();
-                reader.Scan(state, chunk);
-                if (chunk.size() == 0) {
-                    break;
-                }
-                if (current_chunk_idx == chunk_idx) {
-                    idx_t count = offsets_in_chunk.size();
-                    SelectionVector sel_vec(count);
-                    for (idx_t i = 0; i < count; i++) {
-                        sel_vec.set_index(i, offsets_in_chunk[i]);
-                    }
-                    chunk.Slice(sel_vec, count);
-                    return_collection->Append(chunk);
-                    break;
-                }
-                current_chunk_idx++;
-            }
+            DVManager::ReadAndAppendDeletedRows(context, reader, chunk_map, columns, return_collection);
         }
     }
 

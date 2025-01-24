@@ -6,11 +6,6 @@
 #include "duckdb/main/extension_util.hpp"
 #include "duckdb/parser/tableref/table_function_ref.hpp"
 
-extern "C" {
-#include "postgres.h"
-#include "utils/snapmgr.h"
-}
-
 namespace duckdb {
 
 struct ColumnstoreScanMultiFileReaderGlobalState : public MultiFileReaderGlobalState {

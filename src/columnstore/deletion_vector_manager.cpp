@@ -1,4 +1,5 @@
 #include "deletion_vector_manager.hpp"
+#include "duckdb/common/constants.hpp"
 #include "filesystem"
 #include "pgduckdb/pgduckdb_utils.hpp"
 #include "pgmooncake_guc.hpp"
@@ -152,6 +153,29 @@ void DVManager::ApplyDeletionVectors(const FileChunkDVMap &file_chunk_map, const
             UpsertDV(file_path, chunk_idx, combined_dv);
         }
     }
+}
+
+void DVManager::FilterChunk(const string &file_path, int64_t *file_row_numbers_data, DataChunk &chunk) {
+    idx_t sel_size = 0;
+    SelectionVector sel(STANDARD_VECTOR_SIZE);
+    idx_t last_chunk_idx = DConstants::INVALID_INDEX;
+    DeletionVector dv;
+
+    for (idx_t i = 0; i < chunk.size(); i++) {
+        auto offset_in_file = NumericCast<uint32_t>(file_row_numbers_data[i]);
+        auto chunk_idx = offset_in_file / STANDARD_VECTOR_SIZE;
+        auto offset_in_chunk = offset_in_file % STANDARD_VECTOR_SIZE;
+
+        if (last_chunk_idx != chunk_idx) {
+            dv = FetchDV(file_path, chunk_idx);
+            last_chunk_idx = chunk_idx;
+        }
+        if (!dv.IsDeleted(offset_in_chunk)) {
+            sel.set_index(sel_size++, i);
+        }
+    }
+
+    chunk.Slice(sel, sel_size);
 }
 
 FileChunkDVMap DVManager::BuildFileChunkDVs(const vector<row_t> &row_ids) {

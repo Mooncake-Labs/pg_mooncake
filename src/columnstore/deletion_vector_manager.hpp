@@ -29,6 +29,8 @@ public:
 
     void ApplyDeletionVectors(const FileChunkDVMap &file_chunk_map, const vector<string> &file_paths);
 
+    void FilterChunk(const string &file_path, int64_t *file_row_numbers_data, DataChunk &chunk);
+
     static FileChunkDVMap BuildFileChunkDVs(const vector<row_t> &row_ids);
 
     static void ReadAndAppendDeletedRows(ClientContext &context, ParquetReader &reader, const ChunkDVMap &chunk_dv_map,

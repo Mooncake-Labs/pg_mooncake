@@ -1,6 +1,7 @@
 #include "columnstore/columnstore_metadata.hpp"
 #include "columnstore/columnstore_statistics.hpp"
 #include "columnstore/columnstore_table.hpp"
+#include "columnstore/deletion_vector_manager.hpp"
 #include "duckdb/catalog/catalog_entry/table_function_catalog_entry.hpp"
 #include "duckdb/common/multi_file_reader.hpp"
 #include "duckdb/main/extension_util.hpp"
@@ -97,71 +98,35 @@ struct ColumnstoreScanMultiFileReader : public MultiFileReader {
         }
     }
 
-    void ApplyDeletions(const MultiFileReaderData &reader_data, ColumnstoreScanMultiFileReaderGlobalState &gstate,
-                        DataChunk &chunk) {
-        auto &file_row_numbers = chunk.data[gstate.file_row_number_index];
-        file_row_numbers.Flatten(chunk.size());
-        auto file_row_numbers_data = FlatVector::GetData<int64_t>(file_row_numbers);
-
-        SelectionVector sel(STANDARD_VECTOR_SIZE);
-        idx_t sel_size = 0;
-
-        const idx_t file_list_idx = reader_data.file_list_idx.GetIndex();
-        const auto &file_paths = gstate.file_list->GetPaths();
-        D_ASSERT(file_list_idx < file_paths.size());
-        const auto &file_path = file_paths[file_list_idx];
-
-        unordered_map<idx_t, vector<idx_t>> chunk_to_rows;
-        for (idx_t i = 0; i < chunk.size(); i++) {
-            uint64_t offset_64 = file_row_numbers_data[i];
-            uint32_t offset_in_file = NumericCast<uint32_t>(offset_64);
-
-            idx_t chunk_idx = offset_in_file / STANDARD_VECTOR_SIZE;
-            chunk_to_rows[chunk_idx].push_back(i);
-        }
-
-        Snapshot snapshot = ColumnstoreMetadata::GetActiveSnapshot();
-        DVManager dv_manager(snapshot);
-
-        for (auto &kv : chunk_to_rows) {
-            idx_t chunk_idx = kv.first;
-            auto &row_indices = kv.second;
-
-            DeletionVector dv = dv_manager.FetchDV(file_path, chunk_idx);
-
-            for (auto row_i : row_indices) {
-                uint64_t offset_64 = file_row_numbers_data[row_i];
-                uint32_t offset_in_file = NumericCast<uint32_t>(offset_64);
-
-                idx_t offset_in_chunk = offset_in_file % STANDARD_VECTOR_SIZE;
-                if (!dv.IsDeleted(offset_in_chunk)) {
-                    sel.set_index(sel_size++, row_i);
-                }
-            }
-        }
-
-        chunk.Slice(sel, sel_size);
-    }
-
     void FinalizeChunk(ClientContext &context, const MultiFileReaderBindData &bind_data,
                        const MultiFileReaderData &reader_data, DataChunk &chunk,
                        optional_ptr<MultiFileReaderGlobalState> global_state) override {
         MultiFileReader::FinalizeChunk(context, bind_data, reader_data, chunk, global_state);
+
         auto &gstate = global_state->Cast<ColumnstoreScanMultiFileReaderGlobalState>();
         const bool has_file_row_number = (gstate.file_row_number_index != DConstants::INVALID_INDEX &&
                                           gstate.file_row_number_index < chunk.data.size());
+        const bool has_row_ids = (gstate.row_id_index != DConstants::INVALID_INDEX);
+
+        if (!(has_file_row_number || has_row_ids)) {
+            return;
+        }
+
+        const idx_t file_list_idx = reader_data.file_list_idx.GetIndex();
+        auto &file_row_numbers = chunk.data[gstate.file_row_number_index];
+        file_row_numbers.Flatten(chunk.size());
+        auto file_row_numbers_data = FlatVector::GetData<int64_t>(file_row_numbers);
 
         if (has_file_row_number) {
-            ApplyDeletions(reader_data, gstate, chunk);
+            Snapshot snapshot = ColumnstoreMetadata::GetActiveSnapshot();
+            DVManager dv_manager(snapshot);
+            const string file_path = gstate.file_list->GetPaths()[file_list_idx];
+            dv_manager.FilterChunk(file_path, file_row_numbers_data, chunk);
         }
 
         if (gstate.row_id_index != DConstants::INVALID_INDEX) {
-            auto &file_row_numbers = chunk.data[gstate.file_row_number_index];
-            file_row_numbers.Flatten(chunk.size());
-            auto file_row_numbers_data = FlatVector::GetData<int64_t>(file_row_numbers);
             gstate.row_ids->SetVectorType(VectorType::FLAT_VECTOR);
             auto row_ids_data = FlatVector::GetData<row_t>(*gstate.row_ids);
-            const idx_t file_list_idx = NumericCast<int32_t>(reader_data.file_list_idx.GetIndex());
             const idx_t file_number = file_numbers.empty() ? file_list_idx : file_numbers[file_list_idx];
             for (idx_t i = 0; i < chunk.size(); i++) {
                 row_ids_data[i] = (file_number << 32) + NumericCast<uint32_t>(file_row_numbers_data[i]);

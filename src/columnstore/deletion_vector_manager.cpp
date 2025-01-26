@@ -68,31 +68,54 @@ void DVManager::UpsertDV(const std::string &file_path, uint64_t chunk_idx, const
 }
 
 DeletionVector DVManager::FetchDV(const string &file_path, const uint64_t chunk_idx) {
+    auto file_it = dv_prefetch_cache.find(file_path);
+    if (file_it == dv_prefetch_cache.end()) {
+        return DeletionVector();
+    }
+    auto &chunk_map = file_it->second;
+    auto chunk_it = chunk_map.find(chunk_idx);
+    if (chunk_it == chunk_map.end()) {
+        return DeletionVector();
+    }
+    return DeletionVector::Deserialize(chunk_it->second);
+}
+
+void DVManager::PreFetchDVs(const vector<string> &file_paths) {
     ::Relation table = table_open(DeletionVectors(), AccessShareLock);
     ::Relation index = index_open(DeletionVectorsFileGroupChunk(), AccessShareLock);
 
-    ScanKeyData key[2];
-    ScanKeyInit(&key[0], 1, BTEqualStrategyNumber, F_UUID_EQ, StringGetUUIDDatum(file_path));
-    ScanKeyInit(&key[1], 2, BTEqualStrategyNumber, F_INT8EQ, Int64GetDatum(chunk_idx));
-
-    SysScanDesc scan = systable_beginscan_ordered(table, index, snapshot, 2, key);
-    DeletionVector result;
-    HeapTuple tuple;
-    Datum values[x_deletion_vectors_natts];
-    bool isnull[x_deletion_vectors_natts];
-
-    if (HeapTupleIsValid(tuple = systable_getnext_ordered(scan, ForwardScanDirection))) {
-        heap_deform_tuple(tuple, RelationGetDescr(table), values, isnull);
-        if (!isnull[2]) {
-            string_t serialized_mask = TextDatumGetStringT(values[2]);
-            result = DeletionVector::Deserialize(serialized_mask);
+    for (auto &file_path : file_paths) {
+        if (dv_prefetch_cache.find(file_path) != dv_prefetch_cache.end()) {
+            continue;
         }
+
+        dv_prefetch_cache[file_path] = {};
+
+        ScanKeyData key[1];
+        ScanKeyInit(&key[0], 1, BTEqualStrategyNumber, F_UUID_EQ, StringGetUUIDDatum(file_path));
+
+        SysScanDesc scan = systable_beginscan_ordered(table, index, snapshot, 1, key);
+        HeapTuple tuple;
+
+        Datum values[x_deletion_vectors_natts];
+        bool isnull[x_deletion_vectors_natts];
+
+        while (HeapTupleIsValid(tuple = systable_getnext_ordered(scan, ForwardScanDirection))) {
+            heap_deform_tuple(tuple, RelationGetDescr(table), values, isnull);
+
+            if (!isnull[1]) {
+                auto chunk_idx = DatumGetInt64(values[1]);
+                if (!isnull[2]) {
+                    auto serialized_mask = TextDatumGetStringT(values[2]);
+                    dv_prefetch_cache[file_path][chunk_idx] = serialized_mask;
+                }
+            }
+        }
+        systable_endscan_ordered(scan);
     }
 
-    systable_endscan_ordered(scan);
     index_close(index, AccessShareLock);
     table_close(table, AccessShareLock);
-    return result;
 }
 
 void DVManager::FlushUpsertDV() {
@@ -150,7 +173,7 @@ void DVManager::ApplyDeletionVectors(const FileChunkDVMap &file_chunk_map, const
             DeletionVector old_dv = FetchDV(file_path, chunk_idx);
             DeletionVector combined_dv = new_dv;
             combined_dv.Combine(old_dv, old_dv.Size());
-            UpsertDV(file_path, chunk_idx, combined_dv);
+            UpsertDV(file_path, chunk_idx, std::move(combined_dv));
         }
     }
 }

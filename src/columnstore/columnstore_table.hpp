@@ -40,6 +40,7 @@ private:
 private:
     Oid oid;
     unique_ptr<ColumnstoreMetadata> metadata;
+    unique_ptr<DVManager> dv_manager;
     string path;
     unique_ptr<ColumnstoreWriter> writer;
 };

@@ -17,6 +17,7 @@ struct ColumnstoreScanMultiFileReaderGlobalState : public MultiFileReaderGlobalS
     idx_t row_id_index = DConstants::INVALID_INDEX;
     idx_t file_row_number_index = DConstants::INVALID_INDEX;
     unique_ptr<Vector> row_ids;
+    unique_ptr<DVManager> dv_manager;
 };
 
 struct ColumnstoreScanMultiFileReader : public MultiFileReader {
@@ -74,6 +75,11 @@ struct ColumnstoreScanMultiFileReader : public MultiFileReader {
             }
             global_state->file_row_number_index = global_column_ids.size();
         }
+
+        DVManager dv_manager(snapshot);
+        dv_manager.PreFetchDVs(file_list.GetPaths());
+        global_state->dv_manager = make_uniq<DVManager>(std::move(dv_manager));
+
         return std::move(global_state);
     }
 
@@ -118,10 +124,8 @@ struct ColumnstoreScanMultiFileReader : public MultiFileReader {
         auto file_row_numbers_data = FlatVector::GetData<int64_t>(file_row_numbers);
 
         if (has_file_row_number) {
-            Snapshot snapshot = ColumnstoreMetadata::GetActiveSnapshot();
-            DVManager dv_manager(snapshot);
             const string file_path = gstate.file_list->GetPaths()[file_list_idx];
-            dv_manager.FilterChunk(file_path, file_row_numbers_data, chunk);
+            gstate.dv_manager->FilterChunk(file_path, file_row_numbers_data, chunk);
         }
 
         if (gstate.row_id_index != DConstants::INVALID_INDEX) {
@@ -135,6 +139,7 @@ struct ColumnstoreScanMultiFileReader : public MultiFileReader {
         }
     }
 
+    Snapshot snapshot = ColumnstoreMetadata::GetActiveSnapshot();
     vector<idx_t> file_numbers;
 };
 
@@ -146,6 +151,7 @@ TableFunction GetParquetScan(ClientContext &context) {
 }
 
 unique_ptr<GlobalTableFunctionState> ColumnstoreScanInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
+
     // UPDATE can generate duplicate global_column_ids which ParquetReader doesn't expect
     unordered_map<column_t, idx_t> column_ids_map;
     vector<column_t> column_ids;

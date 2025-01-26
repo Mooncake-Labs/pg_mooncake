@@ -157,7 +157,7 @@ private:
 ColumnstoreTable::ColumnstoreTable(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info, Oid oid,
                                    Snapshot snapshot)
     : TableCatalogEntry(catalog, schema, info), oid(oid), metadata(make_uniq<ColumnstoreMetadata>(snapshot)),
-      path(std::get<0>(metadata->TablesSearch(oid))) {}
+      dv_manager(make_uniq<DVManager>(snapshot)), path(std::get<0>(metadata->TablesSearch(oid))) {}
 
 ColumnstoreTable::~ColumnstoreTable() = default;
 
@@ -195,9 +195,8 @@ void ColumnstoreTable::Delete(ClientContext &context, unordered_set<row_t> &row_
     auto file_paths = GetFilePaths(path, file_names);
     auto file_chunk_dv_map = DVManager::BuildFileChunkDVs(row_ids);
 
-    Snapshot snapshot = ColumnstoreMetadata::GetActiveSnapshot();
-    DVManager dv_manager(snapshot);
-    dv_manager.ApplyDeletionVectors(file_chunk_dv_map, file_paths);
+    dv_manager->PreFetchDVs(file_paths);
+    dv_manager->ApplyDeletionVectors(file_chunk_dv_map, file_paths);
 
     if (return_collection) {
         for (auto &[file_number, chunk_map] : file_chunk_dv_map) {
@@ -214,7 +213,7 @@ void ColumnstoreTable::Delete(ClientContext &context, unordered_set<row_t> &row_
         }
     }
 
-    dv_manager.Flush();
+    dv_manager->Flush();
 }
 
 vector<string> ColumnstoreTable::GetFilePaths(const string &path, const vector<string> &file_names) {

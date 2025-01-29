@@ -196,4 +196,10 @@ MooncakeInitGUC() {
 
 	DefineCustomVariable("mooncake.enable_memory_metadata_cache", "Enable memory cache for Parquet metadata",
 	                     &mooncake_enable_memory_metadata_cache);
+
+	DefineCustomVariable("mooncake.maximum_memory", "The maximum memory DuckDB can use (e.g., 1GB)",
+	                     &duckdb_maximum_memory, PGC_SUSET);
+
+	DefineCustomVariable("mooncake.maximum_threads", "Maximum number of DuckDB threads per Postgres backend",
+	                     &duckdb_maximum_threads, -1, 1024, PGC_SUSET);
 }

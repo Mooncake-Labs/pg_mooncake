@@ -79,7 +79,7 @@ SELECT * from user_activity;
 Columnstore tables behave just like regular Postgres heap tables, supporting transactions, updates, deletes, joins, and more.
 
 ## [Cloud Storage](https://pgmooncake.com/docs/cloud-storage)
-Columnstore tables are stored in the local file system by default. You can configure `mooncake.default_bucket` to store data in S3/R2/GCS buckets instead.
+Columnstore tables are stored in the local file system by default. You can configure `mooncake.default_bucket` to store data in S3 or R2 buckets instead.
 
 > **Note**: On Neon, only cloud storage is supported. Neon users must bring their own S3 or R2 buckets or get a free S3 bucket by signing up at [s3.pgmooncake.com](https://s3.pgmooncake.com/). For cloud storage configuration instructions, see [Cloud Storage](https://pgmooncake.com/docs/cloud-storage). We are working to improve this experience.
 

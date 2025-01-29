@@ -29,7 +29,7 @@ public:
                                    const ColumnList *columns = nullptr);
 
     vector<string> SecretsGetDuckdbQueries();
-    std::tuple<string /*type*/, string /*options*/> SecretsSearchDeltaOptions(const string &path);
+    string SecretsSearchDeltaOptions(const string &path);
 
 private:
     Snapshot snapshot;

@@ -111,3 +111,5 @@ The directory contains a Delta Lake (and soon Iceberg) table that can be queried
 - [ ] **Partitioned tables ^**
 
 > [^](https://github.com/Mooncake-Labs/pg_mooncake/issues/17) File statistics and skipping should cover most use cases of partitioned tables in Postgres, including time series.
+
+[v0.2.0 Roadmap](https://github.com/Mooncake-Labs/pg_mooncake/discussions/91)

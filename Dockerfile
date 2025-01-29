@@ -27,4 +27,6 @@ RUN apt update \
  && apt install -y ca-certificates \
  && rm -rf /var/lib/apt/lists/*
 
+RUN echo "shared_preload_libraries = 'pg_mooncake'" >> /usr/share/postgresql/postgresql.conf.sample
+
 COPY --from=builder /out /

@@ -106,8 +106,11 @@ duckdb-fast: $(DUCKDB_LIB)
 	install -C $< $(BUILD_DIR)/libduckdb.so
 
 duckdb: | .BUILD
-	BUILD_EXTENSIONS="httpfs;icu;json" CMAKE_VARS_BUILD="-DBUILD_SHELL=0 -DBUILD_UNITTESTS=0" DISABLE_SANITIZER=1 \
+	BUILD_EXTENSIONS="httpfs;icu;json" \
 	CMAKE_BUILD_PARALLEL_LEVEL=$(or $(patsubst -j%,%,$(filter -j%,$(MAKEFLAGS))),1) \
+	CMAKE_VARS_BUILD="-DBUILD_SHELL=0 -DBUILD_UNITTESTS=0" \
+	DISABLE_SANITIZER=1 \
+	OVERRIDE_GIT_DESCRIBE=v1.1.3 \
 	$(MAKE) -C $(DUCKDB_DIR) $(BUILD_TYPE)
 ifeq ($(BUILD_TYPE), debug)
 	gdb-add-index $(DUCKDB_LIB)

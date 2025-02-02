@@ -30,6 +30,8 @@ public:
 
     vector<string> SecretsGetDuckdbQueries();
     string SecretsSearchDeltaOptions(const string &path);
+    void SecretsInsert(const string &name, const string &type, const string &scope, const string &query,
+                       const string &options);
 
 private:
     Snapshot snapshot;

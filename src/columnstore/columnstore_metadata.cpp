@@ -302,4 +302,17 @@ string ColumnstoreMetadata::SecretsSearchDeltaOptions(const string &path) {
     return option;
 }
 
+void ColumnstoreMetadata::SecretsInsert(const string &name, const string &type, const string &scope,
+                                        const string &query, const string &options) {
+    ::Relation table = table_open(Secrets(), RowExclusiveLock);
+    TupleDesc desc = RelationGetDescr(table);
+    Datum values[x_secrets_natts] = {StringGetTextDatum(name), StringGetTextDatum(type), StringGetTextDatum(scope),
+                                     StringGetTextDatum(query), StringGetTextDatum(options)};
+    bool isnull[x_secrets_natts] = {false, false, false, false, false};
+    HeapTuple tuple = heap_form_tuple(desc, values, isnull);
+    PostgresFunctionGuard(CatalogTupleInsert, table, tuple);
+    CommandCounterIncrement();
+    table_close(table, RowExclusiveLock);
+}
+
 } // namespace duckdb

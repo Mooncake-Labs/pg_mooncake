@@ -1,3 +1,5 @@
+DROP FUNCTION IF EXISTS mooncake.create_secret;
+
 CREATE OR REPLACE FUNCTION mooncake.create_secret(
     name TEXT,
     type TEXT,
@@ -6,5 +8,6 @@ CREATE OR REPLACE FUNCTION mooncake.create_secret(
     extra_params JSONB DEFAULT '{}'::JSONB
 )
 RETURNS VOID
-AS 'MODULE_PATHNAME'
-LANGUAGE C STRICT;
+AS 'MODULE_PATHNAME', 'mooncake_create_secret'
+LANGUAGE C STRICT
+SECURITY DEFINER;

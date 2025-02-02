@@ -2,13 +2,19 @@
 #include "columnstore/columnstore.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
+#include "columnstore/columnstore_read_cache_filesystem.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 #include "pgduckdb/pgduckdb_guc.h"
 #include "pgmooncake_guc.hpp"
 #include "duckdb/main/extension_util.hpp"
+#include "duckdb/common/helper.hpp"
 #include "duckdb/main/client_data.hpp"
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
+#include "s3fs.hpp"
+#include "hffs.hpp"
+#include "crypto.hpp"
+#include "duckdb/storage/buffer_manager.hpp"
 
 #include "pgduckdb/catalog/pgduckdb_storage.hpp"
 #include "pgduckdb/scan/postgres_scan.hpp"
@@ -31,7 +37,8 @@ extern "C" {
 #include "pgduckdb/pgduckdb_xact.hpp"
 #include "pgduckdb/pgduckdb_metadata_cache.hpp"
 
-#include "columnstore/columnstore_read_cache_filesystem.hpp"
+#include <array>
+#include <string>
 
 #include <sys/stat.h>
 #include <unistd.h>
@@ -218,13 +225,34 @@ DuckDBManager::Initialize() {
 
 	connection = duckdb::make_uniq<duckdb::Connection>(*database);
 
-	// TODO(hjiang): Wrap the filesystem for once at duckdb initialization; this is not ideal for two reasons:
-	// 1. It introduce unnecessary change to pg_duckdb, which needs to cherry-picked when we upgrade;
-	// 2. In theory only read-only function requires read-cache filesystem.
-	// A better approach might be implement an extension and register.
+	// Register cached http filesystem for known remote filesystem instances; this is not ideal for two reasons:
+	// 1. It introduce changes to pg_duckdb, which needs to cherry-picked when we upgrade;
+	// 2. In theory only read-only function requires read-cache filesystem. A better approach might be implement an
+	// extension and register.
 	auto &context = *connection->context;
-	context.client_data->client_file_system =
-	    WrapColumnstoreReadCacheFileSystem(std::move(context.client_data->client_file_system));
+	auto &client_fs = context.client_data->client_file_system;
+	client_fs->RegisterSubSystem(
+	    duckdb::make_uniq<duckdb::ColumnstoreReadCacheFileSystem>(duckdb::make_uniq<duckdb::HTTPFileSystem>()));
+	client_fs->RegisterSubSystem(
+	    duckdb::make_uniq<duckdb::ColumnstoreReadCacheFileSystem>(duckdb::make_uniq<duckdb::HuggingFaceFileSystem>()));
+	client_fs->RegisterSubSystem(duckdb::make_uniq<duckdb::ColumnstoreReadCacheFileSystem>(
+	    duckdb::make_uniq<duckdb::S3FileSystem>(duckdb::BufferManager::GetBufferManager(*database->instance))));
+
+	// Unregister uncached version, cached httpfs cannot co-exist with non-cached version, because duckdb virtual
+	// filesystem doesn't provide a native fs wrapper nor priority system, so co-existence doesn't guarantee cached
+	// version is actually used.
+	//
+	// Here's how we handled (a hacky way):
+	// 1. When we register cached filesystem, if uncached version already registered, we unregister them.
+	// 2. If uncached filesystem is registered later somehow, cached version is set mutual set so it has higher priority
+	// than uncached version.
+	const std::array<std::string, 3> httpfs_names {"HTTPFileSystem", "S3FileSystem", "HuggingFaceFileSystem"};
+	for (const auto &cur_http_fs : httpfs_names) {
+		try {
+			client_fs->UnregisterSubSystem(cur_http_fs);
+		} catch (...) {
+		}
+	}
 
 	auto &db_manager = duckdb::DatabaseManager::Get(context);
 	default_dbname = db_manager.GetDefaultDatabase(context);

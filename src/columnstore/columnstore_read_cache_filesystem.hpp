@@ -10,45 +10,72 @@
 
 namespace duckdb {
 
+// Forward declaration.
+class ColumnstoreReadCacheFileSystem;
+
+struct OnDiskCacheConfig {
+    // Cache block size, which serves as the IO request granularity.
+    // TODO(hjiang): Make block size tunable, along with cache directory.
+    idx_t block_size = 256ULL * 1024;
+};
+
+class DiskCacheFileHandle : public FileHandle {
+public:
+    DiskCacheFileHandle(unique_ptr<FileHandle> internal_file_handle_p, ColumnstoreReadCacheFileSystem &fs);
+    ~DiskCacheFileHandle() override = default;
+    void Close() override {}
+
+    unique_ptr<FileHandle> internal_file_handle;
+};
+
 class ColumnstoreReadCacheFileSystem : public FileSystem {
 public:
-    ColumnstoreReadCacheFileSystem(unique_ptr<FileSystem> internal_filesystem_p);
+    explicit ColumnstoreReadCacheFileSystem(unique_ptr<FileSystem> internal_filesystem_p)
+        : ColumnstoreReadCacheFileSystem(std::move(internal_filesystem_p), OnDiskCacheConfig{}) {}
+    ColumnstoreReadCacheFileSystem(unique_ptr<FileSystem> internal_filesystem_p, OnDiskCacheConfig cache_config_p);
     std::string GetName() const override;
 
-    // Open and read with read cache enabled if specified.
-    unique_ptr<FileHandle> OpenFile(const string &path, FileOpenFlags flags,
-                                    optional_ptr<FileOpener> opener = nullptr) override;
+    void Read(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) override;
+    int64_t Read(FileHandle &handle, void *buffer, int64_t nr_bytes) override;
 
     // For other API calls, delegate to [internal_filesystem] to handle.
+    unique_ptr<FileHandle> OpenFile(const string &path, FileOpenFlags flags,
+                                    optional_ptr<FileOpener> opener = nullptr) override {
+        auto file_handle =
+            internal_filesystem->OpenFile(path, flags | FileOpenFlags::FILE_FLAGS_PARALLEL_ACCESS, opener);
+        return make_uniq<DiskCacheFileHandle>(std::move(file_handle), *this);
+    }
     unique_ptr<FileHandle> OpenCompressedFile(unique_ptr<FileHandle> handle, bool write) override {
-        return internal_filesystem->OpenCompressedFile(std::move(handle), write);
-    }
-    void Read(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) override {
-        internal_filesystem->Read(handle, buffer, nr_bytes, location);
-    }
-    int64_t Read(FileHandle &handle, void *buffer, int64_t nr_bytes) override {
-        return internal_filesystem->Read(handle, buffer, nr_bytes);
+        auto file_handle = internal_filesystem->OpenCompressedFile(std::move(handle), write);
+        return make_uniq<DiskCacheFileHandle>(std::move(file_handle), *this);
     }
     void Write(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) override {
-        internal_filesystem->Write(handle, buffer, nr_bytes, location);
+        auto &disk_cache_handle = handle.Cast<DiskCacheFileHandle>();
+        internal_filesystem->Write(*disk_cache_handle.internal_file_handle, buffer, nr_bytes, location);
     }
     int64_t Write(FileHandle &handle, void *buffer, int64_t nr_bytes) override {
-        return internal_filesystem->Write(handle, buffer, nr_bytes);
+        auto &disk_cache_handle = handle.Cast<DiskCacheFileHandle>();
+        return internal_filesystem->Write(*disk_cache_handle.internal_file_handle, buffer, nr_bytes);
     }
     bool Trim(FileHandle &handle, idx_t offset_bytes, idx_t length_bytes) override {
-        return internal_filesystem->Trim(handle, offset_bytes, length_bytes);
+        auto &disk_cache_handle = handle.Cast<DiskCacheFileHandle>();
+        return internal_filesystem->Trim(*disk_cache_handle.internal_file_handle, offset_bytes, length_bytes);
     }
     int64_t GetFileSize(FileHandle &handle) {
-        return internal_filesystem->GetFileSize(handle);
+        auto &disk_cache_handle = handle.Cast<DiskCacheFileHandle>();
+        return internal_filesystem->GetFileSize(*disk_cache_handle.internal_file_handle);
     }
     time_t GetLastModifiedTime(FileHandle &handle) override {
-        return internal_filesystem->GetLastModifiedTime(handle);
+        auto &disk_cache_handle = handle.Cast<DiskCacheFileHandle>();
+        return internal_filesystem->GetLastModifiedTime(*disk_cache_handle.internal_file_handle);
     }
     FileType GetFileType(FileHandle &handle) override {
-        return internal_filesystem->GetFileType(handle);
+        auto &disk_cache_handle = handle.Cast<DiskCacheFileHandle>();
+        return internal_filesystem->GetFileType(*disk_cache_handle.internal_file_handle);
     }
     void Truncate(FileHandle &handle, int64_t new_size) override {
-        return internal_filesystem->Truncate(handle, new_size);
+        auto &disk_cache_handle = handle.Cast<DiskCacheFileHandle>();
+        return internal_filesystem->Truncate(*disk_cache_handle.internal_file_handle, new_size);
     }
     bool DirectoryExists(const string &directory, optional_ptr<FileOpener> opener = nullptr) override {
         return internal_filesystem->DirectoryExists(directory, opener);
@@ -76,7 +103,8 @@ public:
         internal_filesystem->RemoveFile(filename, opener);
     }
     void FileSync(FileHandle &handle) override {
-        internal_filesystem->FileSync(handle);
+        auto &disk_cache_handle = handle.Cast<DiskCacheFileHandle>();
+        internal_filesystem->FileSync(*disk_cache_handle.internal_file_handle);
     }
     string GetHomeDirectory() override {
         return internal_filesystem->GetHomeDirectory();
@@ -106,44 +134,50 @@ public:
         return internal_filesystem->CanHandleFile(fpath);
     }
     void Seek(FileHandle &handle, idx_t location) override {
-        internal_filesystem->Seek(handle, location);
+        auto &disk_cache_handle = handle.Cast<DiskCacheFileHandle>();
+        internal_filesystem->Seek(*disk_cache_handle.internal_file_handle, location);
     }
     void Reset(FileHandle &handle) override {
-        internal_filesystem->Reset(handle);
+        auto &disk_cache_handle = handle.Cast<DiskCacheFileHandle>();
+        internal_filesystem->Reset(*disk_cache_handle.internal_file_handle);
     }
     idx_t SeekPosition(FileHandle &handle) override {
-        return internal_filesystem->SeekPosition(handle);
+        auto &disk_cache_handle = handle.Cast<DiskCacheFileHandle>();
+        return internal_filesystem->SeekPosition(*disk_cache_handle.internal_file_handle);
     }
+    // Mutual set acts partially as priority system, which means if multiple filesystem instance could handle a certain
+    // path, if mutual set true, first-fit fs instance will be selected. Set cached filesystem always mutually set, so
+    // it has higher priority than non-cached version.
     bool IsManuallySet() override {
-        return internal_filesystem->IsManuallySet();
+        return true;
     }
     bool CanSeek() override {
         return internal_filesystem->CanSeek();
     }
     bool OnDiskFile(FileHandle &handle) override {
-        return internal_filesystem->OnDiskFile(handle);
+        auto &disk_cache_handle = handle.Cast<DiskCacheFileHandle>();
+        return internal_filesystem->OnDiskFile(*disk_cache_handle.internal_file_handle);
     }
     void SetDisabledFileSystems(const vector<string> &names) override {
         internal_filesystem->SetDisabledFileSystems(names);
     }
 
 private:
-    // Return whether local filesystem has enough disk space to enable local read cache.
-    bool HasEnoughSpaceForReadCache();
-    // Cache the whole file specified by the given [path], which is a remote file.
-    // If read and write fails, nothing happens.
-    void CacheRemoteFileIfEnabled(const string &path, const FileOpenFlags &flags, optional_ptr<FileOpener> opener);
+    // Read from [handle] for an block-size aligned chunk into [start_addr]; cache
+    // to local filesystem and return to user.
+    void ReadAndCache(FileHandle &handle, char *buffer, uint64_t requested_start_offset,
+                      uint64_t requested_bytes_to_read, uint64_t file_size);
 
-private:
-    // Min requirement for disk space to enable read cache.
-    constexpr static idx_t kMinDiskSpaceForCache = 1024 * 1024 * 1024;
+    // Read from [location] on [nr_bytes] for the given [handle] into [buffer].
+    // Return the actual number of bytes to read.
+    int64_t ReadImpl(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location, uint64_t block_size);
+
+    // Cache configuration.
+    OnDiskCacheConfig cache_config;
     // Used to access local cache files.
     unique_ptr<FileSystem> local_filesystem;
     // Used to access remote files.
     unique_ptr<FileSystem> internal_filesystem;
 };
-
-// Wrap the given [internal_filesystem] with column store read cache filesystem if possible.
-unique_ptr<FileSystem> WrapColumnstoreReadCacheFileSystem(unique_ptr<FileSystem> internal_filesystem);
 
 } // namespace duckdb

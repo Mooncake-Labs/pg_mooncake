@@ -36,6 +36,7 @@ PG_CPPFLAGS := -I$(SRC_DIR) \
                -I$(DUCKDB_DIR)/extension/httpfs/include \
                -I$(DUCKDB_DIR)/extension/parquet/include \
                -I$(DUCKDB_DIR)/src/include \
+               -I$(DUCKDB_DIR)/third_party/httplib \
                -I$(DUCKDB_DIR)/third_party/parquet \
                -I$(DUCKDB_DIR)/third_party/thrift \
                -I../src \

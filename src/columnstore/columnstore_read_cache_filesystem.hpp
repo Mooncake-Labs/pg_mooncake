@@ -165,12 +165,12 @@ public:
 private:
     // Read from [handle] for an block-size aligned chunk into [start_addr]; cache
     // to local filesystem and return to user.
-    void ReadAndCache(FileHandle &handle, char *buffer, uint64_t requested_start_offset,
-                      uint64_t requested_bytes_to_read, uint64_t file_size);
+    void ReadAndCache(FileHandle &handle, char *buffer, idx_t requested_start_offset,
+                      idx_t requested_bytes_to_read, idx_t file_size);
 
     // Read from [location] on [nr_bytes] for the given [handle] into [buffer].
     // Return the actual number of bytes to read.
-    int64_t ReadImpl(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location, uint64_t block_size);
+    int64_t ReadImpl(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location, idx_t block_size);
 
     // Cache configuration.
     OnDiskCacheConfig cache_config;

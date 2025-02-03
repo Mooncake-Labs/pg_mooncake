@@ -37,6 +37,9 @@ void _PG_init() {
     if (neon_timeline_id) {
         mooncake_allow_local_tables = false;
         mooncake_timeline_id = neon_timeline_id;
+        // Enable read cache for serverless deployment; both read cache and write cache are enabled, with write cache
+        // checked first, then fallback to read cache when write cache cleaned up.
+        mooncake_enable_local_read_cache = true;
     }
 
     auto local_fs = duckdb::FileSystem::CreateLocal();

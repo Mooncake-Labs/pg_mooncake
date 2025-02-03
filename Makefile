@@ -50,8 +50,7 @@ debug:
 release:
 	@$(MAKE) BUILD_TYPE=release all
 
-all: duckdb-fast delta | .BUILD
-	install -C Makefile.build $(BUILD_DIR)/Makefile
+all: duckdb-fast delta | .BUILD $(BUILD_DIR)/.makefile_build.stamp
 	@$(MAKE) -C $(BUILD_DIR)
 
 .BUILD: | $(BUILD_DIR)
@@ -102,8 +101,11 @@ format-delta:
 # ========================
 # DuckDB Targets
 # ========================
-duckdb-fast: $(DUCKDB_LIB)
-	install -C $< $(BUILD_DIR)/libduckdb.so
+duckdb-fast: | $(BUILD_DIR)/.duckdb.stamp
+
+$(BUILD_DIR)/.duckdb.stamp: $(DUCKDB_LIB)
+	install -C $(DUCKDB_LIB) $(BUILD_DIR)/libduckdb.so
+	touch $(BUILD_DIR)/.duckdb.stamp
 
 duckdb: | .BUILD
 	BUILD_EXTENSIONS="httpfs;icu;json" CMAKE_VARS_BUILD="-DBUILD_SHELL=0 -DBUILD_UNITTESTS=0" DISABLE_SANITIZER=1 \
@@ -119,10 +121,17 @@ $(DUCKDB_LIB): | .BUILD
 # ========================
 # Delta Targets
 # ========================
-delta: | .BUILD $(BUILD_RUST_DIR)
+delta: | .BUILD $(BUILD_RUST_DIR) $(BUILD_DIR)/.delta.stamp
+
+$(BUILD_DIR)/.delta.stamp: $(DELTA_DIR)/Cargo.toml $(DELTA_DIR)/Cargo.lock $(shell find $(DELTA_DIR)/src -type f)
 	cargo build --manifest-path=$(DELTA_DIR)/Cargo.toml $(CARGO_FLAGS)
 	install -C $$(readlink -f $(DELTA_HEADER)) $(BUILD_RUST_DIR)/delta.hpp
 	install -C $(DELTA_LIB) $(BUILD_DIR)/libdelta.a
+	touch $(BUILD_DIR)/.delta.stamp
 
 $(BUILD_RUST_DIR):
 	@mkdir -p $@
+
+$(BUILD_DIR)/.makefile_build.stamp: Makefile.build
+	install -C Makefile.build $(BUILD_DIR)/Makefile
+	touch $(BUILD_DIR)/.makefile_build.stamp

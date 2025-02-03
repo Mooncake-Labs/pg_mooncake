@@ -32,6 +32,8 @@ REGRESS_OPTS = --inputdir=$(TEST_DIR) --load-extension=$(EXTENSION_NAME)
 # ========================
 # Compilation Flags
 # ========================
+override CC := sccache $(or $(CC),gcc)
+override CXX := sccache $(or $(CXX),g++)
 PG_CPPFLAGS := -I$(SRC_DIR) \
                -I$(DUCKDB_DIR)/extension/parquet/include \
                -I$(DUCKDB_DIR)/src/include \

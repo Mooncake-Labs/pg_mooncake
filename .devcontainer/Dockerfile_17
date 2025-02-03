@@ -32,6 +32,8 @@ WORKDIR /home/postgres
 RUN echo 'source /workspaces/pg_mooncake/.devcontainer/.bashrc' >> .bashrc
 
 RUN curl https://sh.rustup.rs | sh -s -- -y
+ENV PATH="/home/postgres/.cargo/bin:${PATH}"
+RUN cargo install sccache
 
 ENV PATH="/usr/local/pgsql/bin:${PATH}"
 RUN curl https://ftp.postgresql.org/pub/source/v17.2/postgresql-17.2.tar.bz2 | bzip2 -d | tar x \

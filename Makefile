@@ -123,7 +123,7 @@ $(DUCKDB_LIB): | .BUILD
 # Delta Targets
 # ========================
 delta: | .BUILD $(BUILD_RUST_DIR)
-	cargo build --manifest-path=$(DELTA_DIR)/Cargo.toml $(CARGO_FLAGS)
+	RUSTC_WRAPPER=sccache cargo build --manifest-path=$(DELTA_DIR)/Cargo.toml $(CARGO_FLAGS)
 	install -C $$(readlink -f $(DELTA_HEADER)) $(BUILD_RUST_DIR)/delta.hpp
 	install -C $(DELTA_LIB) $(BUILD_DIR)/libdelta.a
 

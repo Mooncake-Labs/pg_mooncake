@@ -9,15 +9,20 @@
 
 namespace duckdb {
 
-// Filesystem instance with stream recording.
-class SingleFileStreamRecordFileSystem : public FileSystem {
+class SingleFileCachedWriteFileSystem : public FileSystem {
 public:
-    SingleFileStreamRecordFileSystem(ClientContext &context, const string &file_name)
-        : fs(GetFileSystem(context)), stream(nullptr) {}
+    SingleFileCachedWriteFileSystem(ClientContext &context, const string &file_name)
+        : fs(GetFileSystem(context)), cached_file_path(x_mooncake_local_cache + file_name), stream(nullptr) {}
 
 public:
     unique_ptr<FileHandle> OpenFile(const string &path, FileOpenFlags flags,
                                     optional_ptr<FileOpener> opener = nullptr) override {
+        if (IsRemoteFile(path) && mooncake_enable_local_write_cache) {
+            auto disk_space = fs.GetAvailableDiskSpace(x_mooncake_local_cache);
+            if (disk_space.IsValid() && disk_space.GetIndex() > x_min_disk_space) {
+                cached_file = fs.OpenFile(cached_file_path, flags, opener);
+            }
+        }
         return fs.OpenFile(path, flags, opener);
     }
 
@@ -25,11 +30,15 @@ public:
         if (stream) {
             stream->WriteData(data_ptr_cast(buffer), nr_bytes);
         }
+        if (cached_file) {
+            int64_t bytes_written = fs.Write(*cached_file, buffer, nr_bytes);
+            D_ASSERT(bytes_written == nr_bytes);
+        }
         return fs.Write(handle, buffer, nr_bytes);
     }
 
     string GetName() const override {
-        return "SingleFileStreamRecordFileSystem";
+        return "SingleFileCachedWriteFileSystem";
     }
 
     void StartRecording(MemoryStream &stream) {
@@ -37,7 +46,11 @@ public:
     }
 
 private:
+    static const idx_t x_min_disk_space = 1024 * 1024 * 1024;
+
     FileSystem &fs;
+    string cached_file_path;
+    unique_ptr<FileHandle> cached_file;
     MemoryStream *stream;
 };
 
@@ -83,7 +96,7 @@ private:
     static const idx_t x_row_group_size_bytes = x_row_group_size * 1024;
     static const idx_t x_file_size_bytes = 1 << 30;
 
-    SingleFileStreamRecordFileSystem fs;
+    SingleFileCachedWriteFileSystem fs;
     ColumnDataCollection collection;
     ColumnDataAppendState append_state;
     ParquetWriter writer;
@@ -233,7 +246,7 @@ vector<string> ColumnstoreTable::GetFilePaths(const string &path, const vector<s
     vector<string> file_paths;
     file_paths.reserve(file_names.size());
 
-    if (mooncake_enable_local_cache && FileSystem::IsRemoteFile(path)) {
+    if (mooncake_enable_local_write_cache && FileSystem::IsRemoteFile(path)) {
         auto local_fs = FileSystem::CreateLocal();
         for (auto &file_name : file_names) {
             string cached_file_path = x_mooncake_local_cache + file_name;

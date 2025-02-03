@@ -121,9 +121,18 @@ std::string ColumnstoreReadCacheFileSystem::GetName() const {
 }
 
 void ColumnstoreReadCacheFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) {
+    if (!mooncake_enable_local_read_cache) {
+        auto &disk_cache_handle = handle.Cast<DiskCacheFileHandle>();
+        internal_filesystem->Read(*disk_cache_handle.internal_file_handle, buffer, nr_bytes, location);
+        return;
+    }
     ReadImpl(handle, buffer, nr_bytes, location, cache_config.block_size);
 }
 int64_t ColumnstoreReadCacheFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes) {
+    if (!mooncake_enable_local_read_cache) {
+        auto &disk_cache_handle = handle.Cast<DiskCacheFileHandle>();
+        return internal_filesystem->Read(*disk_cache_handle.internal_file_handle, buffer, nr_bytes);
+    }
     const int64_t bytes_read = ReadImpl(handle, buffer, nr_bytes, handle.SeekPosition(), cache_config.block_size);
     handle.Seek(handle.SeekPosition() + bytes_read);
     return bytes_read;

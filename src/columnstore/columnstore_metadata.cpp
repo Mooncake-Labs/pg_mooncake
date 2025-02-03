@@ -56,6 +56,9 @@ Oid DataFilesFileName() {
 Oid Secrets() {
     return get_relname_relid("secrets", Mooncake());
 }
+Oid SecretsSeq() {
+    return get_relname_relid("secrets_table_seq", Mooncake());
+}
 
 } // namespace
 
@@ -311,6 +314,7 @@ void ColumnstoreMetadata::SecretsInsert(const string &name, const string &type, 
     bool isnull[x_secrets_natts] = {false, false, false, false, false};
     HeapTuple tuple = heap_form_tuple(desc, values, isnull);
     PostgresFunctionGuard(CatalogTupleInsert, table, tuple);
+    PostgresFunctionGuard(DirectFunctionCall1Coll, nextval_oid, InvalidOid, SecretsSeq());
     CommandCounterIncrement();
     table_close(table, RowExclusiveLock);
 }

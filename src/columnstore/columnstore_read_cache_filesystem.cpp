@@ -26,6 +26,8 @@ struct CacheReadChunk {
     idx_t requested_start_offset = 0;
     // Block size aligned [requested_start_offset].
     idx_t aligned_start_offset = 0;
+    // Number of bytes needed to copy from [content] to requested memory address.
+    idx_t bytes_to_copy = 0;
 
     // Number of bytes for the chunk for IO operations, apart from the last chunk it's always cache block size.
     idx_t chunk_size = 0;
@@ -38,8 +40,6 @@ struct CacheReadChunk {
     // operation directly read into [requested_start_addr] then write to local cache file; but for code simplicity we
     // also allocate here.
     string content;
-    // Number of bytes needed to copy from [content] to requested memory address.
-    idx_t bytes_to_copy = 0;
 
     // Copy from [content] to application-provided buffer.
     void CopyBufferToRequestedMemory() {
@@ -111,10 +111,8 @@ DiskCacheFileHandle::DiskCacheFileHandle(unique_ptr<FileHandle> internal_file_ha
                                          ColumnstoreReadCacheFileSystem &fs)
     : FileHandle(fs, internal_file_handle_p->GetPath()), internal_file_handle(std::move(internal_file_handle_p)) {}
 
-ColumnstoreReadCacheFileSystem::ColumnstoreReadCacheFileSystem(unique_ptr<FileSystem> internal_filesystem_p,
-                                                               OnDiskCacheConfig cache_config_p)
-    : cache_config(std::move(cache_config_p)), local_filesystem(LocalFileSystem::CreateLocal()),
-      internal_filesystem(std::move(internal_filesystem_p)) {}
+ColumnstoreReadCacheFileSystem::ColumnstoreReadCacheFileSystem(unique_ptr<FileSystem> internal_filesystem_p)
+    : local_filesystem(LocalFileSystem::CreateLocal()), internal_filesystem(std::move(internal_filesystem_p)) {}
 
 std::string ColumnstoreReadCacheFileSystem::GetName() const {
     return COLUMNSTORE_CACHE_FS_NAME;
@@ -126,21 +124,22 @@ void ColumnstoreReadCacheFileSystem::Read(FileHandle &handle, void *buffer, int6
         internal_filesystem->Read(*disk_cache_handle.internal_file_handle, buffer, nr_bytes, location);
         return;
     }
-    ReadImpl(handle, buffer, nr_bytes, location, cache_config.block_size);
+    ReadImpl(handle, buffer, nr_bytes, location, mooncake_local_read_cache_block_size);
 }
 int64_t ColumnstoreReadCacheFileSystem::Read(FileHandle &handle, void *buffer, int64_t nr_bytes) {
     if (!mooncake_enable_local_read_cache) {
         auto &disk_cache_handle = handle.Cast<DiskCacheFileHandle>();
         return internal_filesystem->Read(*disk_cache_handle.internal_file_handle, buffer, nr_bytes);
     }
-    const int64_t bytes_read = ReadImpl(handle, buffer, nr_bytes, handle.SeekPosition(), cache_config.block_size);
+    const int64_t bytes_read =
+        ReadImpl(handle, buffer, nr_bytes, handle.SeekPosition(), mooncake_local_read_cache_block_size);
     handle.Seek(handle.SeekPosition() + bytes_read);
     return bytes_read;
 }
 
 void ColumnstoreReadCacheFileSystem::ReadAndCache(FileHandle &handle, char *buffer, idx_t requested_start_offset,
                                                   idx_t requested_bytes_to_read, idx_t file_size) {
-    const idx_t block_size = cache_config.block_size;
+    const idx_t block_size = mooncake_local_read_cache_block_size;
     // Aligned start offset for the first chunk to read.
     const idx_t aligned_start_offset = requested_start_offset / block_size * block_size;
     // Aligned start offset for the last chunk to read.
@@ -188,7 +187,7 @@ void ColumnstoreReadCacheFileSystem::ReadAndCache(FileHandle &handle, char *buff
         }
         // Case-3: Last chunk.
         else if (io_start_offset == aligned_last_chunk_offset) {
-            cache_read_chunk.chunk_size = std::min<idx_t>(block_size, file_size - io_start_offset);
+            cache_read_chunk.chunk_size = MinValue<idx_t>(block_size, file_size - io_start_offset);
             cache_read_chunk.content = CreateResizeUninitializedString(cache_read_chunk.chunk_size);
             cache_read_chunk.bytes_to_copy = requested_bytes_to_read - already_read_bytes;
         }
@@ -235,6 +234,8 @@ void ColumnstoreReadCacheFileSystem::ReadAndCache(FileHandle &handle, char *buff
             cache_read_chunk.CopyBufferToRequestedMemory();
 
             // Attempt to cache file locally.
+            // Performance concern: compared with remote read access, local filesystem write is already async (due to
+            // page cache), no need to make it async.
             CacheLocal(cache_read_chunk, *local_filesystem, handle, local_cache_file);
         });
     }
@@ -249,7 +250,7 @@ int64_t ColumnstoreReadCacheFileSystem::ReadImpl(FileHandle &handle, void *buffe
     const auto file_size = handle.GetFileSize();
 
     // No more bytes to read.
-    if (location == file_size) {
+    if (location >= file_size) {
         return 0;
     }
 

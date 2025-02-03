@@ -1,4 +1,8 @@
-// Columnstore read cache filesystem implements read cache to optimize query performance.
+// Columnstore read cache filesystem implements read cache to optimize query performance for repeated access.
+//
+// All cache files are stored under `x_mooncake_local_cache`, with filename in the form of
+// `<filename-sha256>.<filename>`. There're also temporary files (which are used for atomic write), named as
+// `<filename>.<uuid>.httpfs_local_cache.tmp`
 
 #pragma once
 
@@ -13,12 +17,6 @@ namespace duckdb {
 // Forward declaration.
 class ColumnstoreReadCacheFileSystem;
 
-struct OnDiskCacheConfig {
-    // Cache block size, which serves as the IO request granularity.
-    // TODO(hjiang): Make block size tunable, along with cache directory.
-    idx_t block_size = 256ULL * 1024;
-};
-
 class DiskCacheFileHandle : public FileHandle {
 public:
     DiskCacheFileHandle(unique_ptr<FileHandle> internal_file_handle_p, ColumnstoreReadCacheFileSystem &fs);
@@ -30,9 +28,7 @@ public:
 
 class ColumnstoreReadCacheFileSystem : public FileSystem {
 public:
-    explicit ColumnstoreReadCacheFileSystem(unique_ptr<FileSystem> internal_filesystem_p)
-        : ColumnstoreReadCacheFileSystem(std::move(internal_filesystem_p), OnDiskCacheConfig{}) {}
-    ColumnstoreReadCacheFileSystem(unique_ptr<FileSystem> internal_filesystem_p, OnDiskCacheConfig cache_config_p);
+    explicit ColumnstoreReadCacheFileSystem(unique_ptr<FileSystem> internal_filesystem_p);
     std::string GetName() const override;
 
     void Read(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location) override;
@@ -163,17 +159,14 @@ public:
     }
 
 private:
-    // Read from [handle] for an block-size aligned chunk into [start_addr]; cache
-    // to local filesystem and return to user.
-    void ReadAndCache(FileHandle &handle, char *buffer, idx_t requested_start_offset,
-                      idx_t requested_bytes_to_read, idx_t file_size);
+    // Read from [handle] for an block-size aligned chunk into [start_addr]; cache to local filesystem and return.
+    void ReadAndCache(FileHandle &handle, char *buffer, idx_t requested_start_offset, idx_t requested_bytes_to_read,
+                      idx_t file_size);
 
     // Read from [location] on [nr_bytes] for the given [handle] into [buffer].
     // Return the actual number of bytes to read.
     int64_t ReadImpl(FileHandle &handle, void *buffer, int64_t nr_bytes, idx_t location, idx_t block_size);
 
-    // Cache configuration.
-    OnDiskCacheConfig cache_config;
     // Used to access local cache files.
     unique_ptr<FileSystem> local_filesystem;
     // Used to access remote files.

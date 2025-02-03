@@ -195,6 +195,11 @@ MooncakeInitGUC() {
 	                     &mooncake_enable_local_write_cache);
 	DefineCustomVariable("mooncake.enable_local_read_cache", "Enable local read cache for columnstore tables",
 	                     &mooncake_enable_local_read_cache);
+	DefineCustomVariable("mooncake.local_read_cache_block_size",
+	                     "Block size in bytes for local read cache. Only meaningful when local read cache enabled.",
+	                     &mooncake_local_read_cache_block_size,
+	                     /*min=*/static_cast<int>(0ULL),
+	                     /*max=*/static_cast<int>(1ULL << 30) /*1GiB*/);
 	DefineCustomVariable("mooncake.enable_memory_metadata_cache", "Enable memory cache for Parquet metadata",
 	                     &mooncake_enable_memory_metadata_cache);
 

@@ -144,8 +144,11 @@ DuckdbUtilityHook_Cpp(PlannedStmt *pstmt, const char *query_string, bool read_on
 		ListCell *lcmd;
 		foreach (lcmd, stmt->cmds) {
 			AlterTableCmd *cmd = lfirst_node(AlterTableCmd, lcmd);
-			if (cmd->subtype == AT_SetAccessMethod && strcmp(cmd->name, "columnstore") == 0) {
-				elog(ERROR, "ALTER TABLE changing ACCESS METHOD to columnstore is not supported");
+			if (cmd->subtype == AT_SetAccessMethod) {
+				char *access_method = cmd->name ? cmd->name : default_table_access_method;
+				if (strcmp(access_method, "columnstore") == 0) {
+					elog(ERROR, "ALTER TABLE changing ACCESS METHOD to columnstore is not supported");
+				}
 			}
 		}
 #endif

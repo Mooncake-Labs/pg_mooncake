@@ -1,0 +1,72 @@
+-- Create a temporary table for testing
+CREATE TABLE test_table (
+    id INTEGER,
+    data TEXT
+) using columnstore;
+-- Insert a large number of rows with different strings
+INSERT INTO test_table (id, data)
+SELECT id, 'Test data ' || id
+FROM generate_series(1, 100000) AS id;
+-- Simple select
+select count(*) from test_table;
+ count  
+--------
+ 100000
+(1 row)
+
+select * from test_table limit 10;
+ id |     data     
+----+--------------
+  1 | Test data 1
+  2 | Test data 2
+  3 | Test data 3
+  4 | Test data 4
+  5 | Test data 5
+  6 | Test data 6
+  7 | Test data 7
+  8 | Test data 8
+  9 | Test data 9
+ 10 | Test data 10
+(10 rows)
+
+-- Update a specific range of rows
+UPDATE test_table
+SET data = 'Updated data ' || id
+WHERE id >= 50 and id <= 60;
+select * from test_table where id >= 50 and id <= 70;
+ id |      data       
+----+-----------------
+ 50 | Updated data 50
+ 51 | Updated data 51
+ 52 | Updated data 52
+ 53 | Updated data 53
+ 54 | Updated data 54
+ 55 | Updated data 55
+ 56 | Updated data 56
+ 57 | Updated data 57
+ 58 | Updated data 58
+ 59 | Updated data 59
+ 60 | Updated data 60
+ 61 | Test data 61
+ 62 | Test data 62
+ 63 | Test data 63
+ 64 | Test data 64
+ 65 | Test data 65
+ 66 | Test data 66
+ 67 | Test data 67
+ 68 | Test data 68
+ 69 | Test data 69
+ 70 | Test data 70
+(21 rows)
+
+-- Delete a specific number of rows from the table
+DELETE FROM test_table
+WHERE id <= 99999;
+select * from test_table;
+   id   |       data       
+--------+------------------
+ 100000 | Test data 100000
+(1 row)
+
+-- Drop the temporary table
+DROP TABLE test_table;

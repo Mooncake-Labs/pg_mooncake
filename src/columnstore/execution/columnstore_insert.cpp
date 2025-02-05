@@ -13,29 +13,39 @@ class ColumnstoreInsertGlobalState : public GlobalSinkState {
 public:
     ColumnstoreInsertGlobalState(ClientContext &context, const vector<LogicalType> &types,
                                  const vector<unique_ptr<Expression>> &bound_defaults)
-        : executor(context, bound_defaults), insert_count(0), return_collection(context, types) {
-        chunk.Initialize(Allocator::Get(context), types);
-    }
+        : insert_count(0), return_collection(context, types) {}
 
-    DataChunk chunk;
-    ExpressionExecutor executor;
+    mutex insert_lock;
     idx_t insert_count;
     ColumnDataCollection return_collection;
+};
+
+class ColumnstoreInsertLocalState : public LocalSinkState {
+public:
+    ColumnstoreInsertLocalState(ClientContext &context, const vector<LogicalType> &types,
+                                const vector<unique_ptr<Expression>> &bound_defaults)
+        : executor(context, bound_defaults) {
+        insert_chunk.Initialize(Allocator::Get(context), types);
+    }
+
+    DataChunk insert_chunk;
+    ExpressionExecutor executor;
 };
 
 class ColumnstoreInsert : public PhysicalOperator {
 public:
     ColumnstoreInsert(vector<LogicalType> types, idx_t estimated_cardinality, ColumnstoreTable &table,
                       physical_index_vector_t<idx_t> column_index_map, vector<unique_ptr<Expression>> bound_defaults,
-                      bool return_chunk)
+                      bool return_chunk, bool parallel)
         : PhysicalOperator(PhysicalOperatorType::EXTENSION, std::move(types), estimated_cardinality), table(table),
           column_index_map(std::move(column_index_map)), bound_defaults(std::move(bound_defaults)),
-          return_chunk(return_chunk) {}
+          return_chunk(return_chunk), parallel(parallel) {}
 
     ColumnstoreTable &table;
     physical_index_vector_t<idx_t> column_index_map;
     vector<unique_ptr<Expression>> bound_defaults;
     bool return_chunk;
+    bool parallel;
 
 public:
     string GetName() const override {
@@ -71,12 +81,11 @@ public:
 
 public:
     // Sink interface
-    SinkResultType Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) const override {
-        auto &gstate = input.global_state.Cast<ColumnstoreInsertGlobalState>();
+    void ResolveDefaults(DataChunk &chunk, ExpressionExecutor &default_executor, DataChunk &result) const {
         chunk.Flatten();
-        gstate.executor.SetChunk(chunk);
-        gstate.chunk.Reset();
-        gstate.chunk.SetCardinality(chunk);
+        default_executor.SetChunk(chunk);
+        result.Reset();
+        result.SetCardinality(chunk);
         if (!column_index_map.empty()) {
             // columns specified by the user, use column_index_map
             for (auto &col : table.GetColumns().Physical()) {
@@ -84,26 +93,40 @@ public:
                 auto mapped_index = column_index_map[col.Physical()];
                 if (mapped_index == DConstants::INVALID_INDEX) {
                     // insert default value
-                    gstate.executor.ExecuteExpression(storage_idx, gstate.chunk.data[storage_idx]);
+                    default_executor.ExecuteExpression(storage_idx, result.data[storage_idx]);
                 } else {
                     // get value from child chunk
-                    D_ASSERT(mapped_index < chunk.ColumnCount());
-                    D_ASSERT(gstate.chunk.data[storage_idx].GetType() == chunk.data[mapped_index].GetType());
-                    gstate.chunk.data[storage_idx].Reference(chunk.data[mapped_index]);
+                    D_ASSERT((idx_t)mapped_index < chunk.ColumnCount());
+                    D_ASSERT(result.data[storage_idx].GetType() == chunk.data[mapped_index].GetType());
+                    result.data[storage_idx].Reference(chunk.data[mapped_index]);
                 }
             }
         } else {
             // no columns specified, just append directly
-            for (idx_t i = 0; i < gstate.chunk.ColumnCount(); i++) {
-                D_ASSERT(gstate.chunk.data[i].GetType() == chunk.data[i].GetType());
-                gstate.chunk.data[i].Reference(chunk.data[i]);
+            for (idx_t i = 0; i < result.ColumnCount(); i++) {
+                D_ASSERT(result.data[i].GetType() == chunk.data[i].GetType());
+                result.data[i].Reference(chunk.data[i]);
             }
         }
-        if (return_chunk) {
-            gstate.return_collection.Append(gstate.chunk);
+    }
+
+    SinkResultType Sink(ExecutionContext &context, DataChunk &chunk, OperatorSinkInput &input) const override {
+        auto &gstate = input.global_state.Cast<ColumnstoreInsertGlobalState>();
+        auto &lstate = input.local_state.Cast<ColumnstoreInsertLocalState>();
+        ResolveDefaults(chunk, lstate.executor, lstate.insert_chunk);
+        if (!parallel) {
+            if (return_chunk) {
+                gstate.return_collection.Append(lstate.insert_chunk);
+            }
+
+            gstate.insert_count += lstate.insert_chunk.size();
+            table.Insert(context.client, lstate.insert_chunk);
+        } else {
+            D_ASSERT(!return_chunk);
+            lock_guard<mutex> lock(gstate.insert_lock);
+            table.Insert(context.client, lstate.insert_chunk);
+            gstate.insert_count += lstate.insert_chunk.size();
         }
-        gstate.insert_count += gstate.chunk.size();
-        table.Insert(context.client, gstate.chunk);
         return SinkResultType::NEED_MORE_INPUT;
     }
 
@@ -117,15 +140,29 @@ public:
         return make_uniq<ColumnstoreInsertGlobalState>(context, table.GetTypes(), bound_defaults);
     }
 
+    unique_ptr<LocalSinkState> GetLocalSinkState(ExecutionContext &context) const override {
+        return make_uniq<ColumnstoreInsertLocalState>(context.client, table.GetTypes(), bound_defaults);
+    }
+
     bool IsSink() const override {
         return true;
+    }
+
+    bool ParallelSink() const override {
+        return parallel;
     }
 };
 
 unique_ptr<PhysicalOperator> Columnstore::PlanInsert(ClientContext &context, LogicalInsert &op,
                                                      unique_ptr<PhysicalOperator> plan) {
+    bool parallel_streaming_insert = !PhysicalPlanGenerator::PreserveInsertionOrder(context, *plan);
+    auto num_threads = TaskScheduler::GetScheduler(context).NumberOfThreads();
+
     auto insert = make_uniq<ColumnstoreInsert>(op.types, op.estimated_cardinality, op.table.Cast<ColumnstoreTable>(),
-                                               op.column_index_map, std::move(op.bound_defaults), op.return_chunk);
+                                               op.column_index_map, std::move(op.bound_defaults), op.return_chunk,
+                                               parallel_streaming_insert && num_threads > 1);
+    std::cout << "For parallelism number of threads: " << num_threads << "and streaming insert state"
+              << parallel_streaming_insert << std::endl;
     insert->children.push_back(std::move(plan));
     return std::move(insert);
 }

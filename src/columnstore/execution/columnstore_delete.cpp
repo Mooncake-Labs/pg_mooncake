@@ -17,6 +17,7 @@ public:
     ColumnstoreDeleteGlobalState(ClientContext &context, const vector<LogicalType> &types)
         : return_collection(context, types) {}
 
+    mutex delete_lock;
     unordered_set<row_t> row_ids;
     ColumnDataCollection return_collection;
 };
@@ -71,6 +72,7 @@ public:
         auto &row_ids = chunk.data[row_id_index];
         row_ids.Flatten(chunk.size());
         auto row_ids_data = FlatVector::GetData<row_t>(row_ids);
+        lock_guard<mutex> lock(gstate.delete_lock);
         for (idx_t i = 0; i < chunk.size(); i++) {
             gstate.row_ids.insert(row_ids_data[i]);
         }
@@ -89,6 +91,10 @@ public:
     }
 
     bool IsSink() const override {
+        return true;
+    }
+
+    bool ParallelSink() const override {
         return true;
     }
 };

@@ -10,6 +10,7 @@
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
+#include "duckdb/parser/constraints/not_null_constraint.hpp"
 
 extern "C" {
 #include "postgres.h"
@@ -81,6 +82,10 @@ PostgresTable::SetTableInfo(duckdb::CreateTableInfo &info, Relation rel, bool se
 			}
 		}
 		info.columns.AddColumn(std::move(column));
+		if (attr->attnotnull){
+			NotNullConstraint constr(LogicalIndex(static_cast<idx_t>(i)));
+			info.constraints.push_back(constr.Copy());
+		}
 		/* Log column name and type */
 		pd_log(DEBUG2, "(DuckDB/SetTableInfo) Column name: %s, Type: %s --", col_name.c_str(),
 		       duck_type.ToString().c_str());

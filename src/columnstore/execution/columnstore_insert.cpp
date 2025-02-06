@@ -1,7 +1,9 @@
 #include "columnstore/columnstore.hpp"
 #include "columnstore/columnstore_table.hpp"
+#include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "duckdb/planner/operator/logical_insert.hpp"
-
+#include "duckdb/planner/constraints/bound_not_null_constraint.hpp"
+#include "duckdb/parser/constraints/not_null_constraint.hpp"
 namespace duckdb {
 
 class ColumnstoreInsertSourceState : public GlobalSourceState {
@@ -27,14 +29,15 @@ class ColumnstoreInsert : public PhysicalOperator {
 public:
     ColumnstoreInsert(vector<LogicalType> types, idx_t estimated_cardinality, ColumnstoreTable &table,
                       physical_index_vector_t<idx_t> column_index_map, vector<unique_ptr<Expression>> bound_defaults,
-                      bool return_chunk)
+                      vector<unique_ptr<BoundConstraint>> bound_constraints, bool return_chunk)
         : PhysicalOperator(PhysicalOperatorType::EXTENSION, std::move(types), estimated_cardinality), table(table),
           column_index_map(std::move(column_index_map)), bound_defaults(std::move(bound_defaults)),
-          return_chunk(return_chunk) {}
+          bound_constraints(std::move(bound_constraints)), return_chunk(return_chunk) {}
 
     ColumnstoreTable &table;
     physical_index_vector_t<idx_t> column_index_map;
     vector<unique_ptr<Expression>> bound_defaults;
+    vector<unique_ptr<BoundConstraint>> bound_constraints;
     bool return_chunk;
 
 public:
@@ -77,6 +80,21 @@ public:
         gstate.executor.SetChunk(chunk);
         gstate.chunk.Reset();
         gstate.chunk.SetCardinality(chunk);
+
+        auto &constraints = table.GetConstraints();
+        for (idx_t i = 0; i < bound_constraints.size(); i++){
+            auto &base_constraint = constraints[i];
+            auto &constraint = bound_constraints[i];
+            if (base_constraint->type == ConstraintType::NOT_NULL) {
+                auto &bound_not_null = constraint->Cast<BoundNotNullConstraint>();
+                auto &not_null = base_constraint->Cast<NotNullConstraint>();
+                auto &col = table.GetColumns().GetColumn(LogicalIndex(not_null.index));
+                if (VectorOperations::HasNull(chunk.data[bound_not_null.index.index], chunk.size())){
+                    throw ConstraintException("NOT NULL constraint failed: %s.%s", table.name, col.Name());
+                }
+            }
+        }
+
         if (!column_index_map.empty()) {
             // columns specified by the user, use column_index_map
             for (auto &col : table.GetColumns().Physical()) {
@@ -125,7 +143,7 @@ public:
 unique_ptr<PhysicalOperator> Columnstore::PlanInsert(ClientContext &context, LogicalInsert &op,
                                                      unique_ptr<PhysicalOperator> plan) {
     auto insert = make_uniq<ColumnstoreInsert>(op.types, op.estimated_cardinality, op.table.Cast<ColumnstoreTable>(),
-                                               op.column_index_map, std::move(op.bound_defaults), op.return_chunk);
+                                               op.column_index_map, std::move(op.bound_defaults), std::move(op.bound_constraints), op.return_chunk);
     insert->children.push_back(std::move(plan));
     return std::move(insert);
 }

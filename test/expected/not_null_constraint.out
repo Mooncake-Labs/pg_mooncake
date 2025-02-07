@@ -1,0 +1,22 @@
+CREATE TABLE t (c1 INT NOT NULL, c2 INT) using columnstore;
+INSERT INTO t VALUES (1, 1);
+INSERT INTO t (c1) VALUES (2);
+SELECT * FROM t;
+ c1 | c2 
+----+----
+  1 |  1
+  2 |   
+(2 rows)
+
+INSERT INTO t VALUES (NULL, 3);
+ERROR:  (PGDuckDB/Duckdb_ExecCustomScan) Constraint Error: NOT NULL constraint failed: t.c1
+INSERT INTO t (c1) VALUES (NULL);
+ERROR:  (PGDuckDB/Duckdb_ExecCustomScan) Constraint Error: NOT NULL constraint failed: t.c1
+SELECT * FROM t;
+ c1 | c2 
+----+----
+  1 |  1
+  2 |   
+(2 rows)
+
+DROP TABLE t;

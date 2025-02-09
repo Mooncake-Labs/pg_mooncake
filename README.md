@@ -11,11 +11,10 @@ Postgres extension for 1000x faster analytics
 </div>
 
 ## Overview
-**pg_mooncake** is a Postgres extension that adds columnar storage and vectorized execution (DuckDB) for fast analytics within Postgres.
-
+**pg_mooncake** is a Postgres extension that adds columnar storage and vectorized execution (DuckDB) for fast analytics within Postgres. 
 Columnstore tables are stored as [Iceberg](https://github.com/apache/iceberg) or [Delta Lake](https://github.com/delta-io/delta) tables in local file system or cloud storage.
 
-The extension is maintained by [Mooncake Labs](https://mooncake.dev/) and is available on [Neon Postgres](https://neon.tech/home).
+The extension is maintained by [Mooncake Labs](https://mooncake.dev/) and is available on [Neon Postgres](https://neon.tech/home). Postgres + pg_mooncake 🥮 ranks among the top 10 in [ClickBench](https://www.mooncake.dev/blog/clickbench-v0.1). 
 
 <div align="center">
   <a href="https://www.mooncake.dev/blog/how-we-built-pgmooncake">

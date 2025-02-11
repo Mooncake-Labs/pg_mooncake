@@ -82,9 +82,8 @@ PostgresTable::SetTableInfo(duckdb::CreateTableInfo &info, Relation rel, bool se
 			}
 		}
 		info.columns.AddColumn(std::move(column));
-		if (attr->attnotnull){
-			NotNullConstraint constr(LogicalIndex(static_cast<idx_t>(i)));
-			info.constraints.push_back(constr.Copy());
+		if (attr->attnotnull) {
+			info.constraints.push_back(make_uniq<NotNullConstraint>(LogicalIndex(i)));
 		}
 		/* Log column name and type */
 		pd_log(DEBUG2, "(DuckDB/SetTableInfo) Column name: %s, Type: %s --", col_name.c_str(),

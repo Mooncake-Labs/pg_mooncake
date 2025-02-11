@@ -1,22 +1,29 @@
-CREATE TABLE t (c1 INT NOT NULL, c2 INT) using columnstore;
-INSERT INTO t VALUES (1, 1);
-INSERT INTO t (c1) VALUES (2);
+CREATE TABLE t (c1 INT, c2 INT NOT NULL, c3 INT, c4 INT NOT NULL) using columnstore;
+INSERT INTO t VALUES (1, 2, 3, 4);
+INSERT INTO t (c1, c2) VALUES (11, 22);
+ERROR:  (PGDuckDB/Duckdb_ExecCustomScan) Constraint Error: NOT NULL constraint failed: t.c4
 SELECT * FROM t;
- c1 | c2 
-----+----
-  1 |  1
-  2 |   
-(2 rows)
+ c1 | c2 | c3 | c4 
+----+----+----+----
+  1 |  2 |  3 |  4
+(1 row)
 
-INSERT INTO t VALUES (NULL, 3);
-ERROR:  (PGDuckDB/Duckdb_ExecCustomScan) Constraint Error: NOT NULL constraint failed: t.c1
-INSERT INTO t (c1) VALUES (NULL);
-ERROR:  (PGDuckDB/Duckdb_ExecCustomScan) Constraint Error: NOT NULL constraint failed: t.c1
+INSERT INTO t VALUES (1, NULL, 3, NULL);
+ERROR:  (PGDuckDB/Duckdb_ExecCustomScan) Constraint Error: NOT NULL constraint failed: t.c2
+INSERT INTO t VALUES (1, NULL, 3, 4);
+ERROR:  (PGDuckDB/Duckdb_ExecCustomScan) Constraint Error: NOT NULL constraint failed: t.c2
+INSERT INTO t VALUES (1, 2, 3, NULL);
+ERROR:  (PGDuckDB/Duckdb_ExecCustomScan) Constraint Error: NOT NULL constraint failed: t.c4
+INSERT INTO t (c2, c4) VALUES (2, NULL);
+ERROR:  (PGDuckDB/Duckdb_ExecCustomScan) Constraint Error: NOT NULL constraint failed: t.c4
+INSERT INTO t (c4, c2) VALUES (NULL, NULL);
+ERROR:  (PGDuckDB/Duckdb_ExecCustomScan) Constraint Error: NOT NULL constraint failed: t.c2
+INSERT INTO t (c4, c2) VALUES (44, 22);
 SELECT * FROM t;
- c1 | c2 
-----+----
-  1 |  1
-  2 |   
+ c1 | c2 | c3 | c4 
+----+----+----+----
+  1 |  2 |  3 |  4
+    | 22 |    | 44
 (2 rows)
 
 DROP TABLE t;

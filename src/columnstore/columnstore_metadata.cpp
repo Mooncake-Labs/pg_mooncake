@@ -210,7 +210,6 @@ vector<string> ColumnstoreMetadata::DataFilesSearch(Oid oid, ClientContext *cont
     HeapTuple tuple;
     Datum values[x_data_files_natts];
     bool isnull[x_data_files_natts];
-    unique_ptr<ParquetReader> reader;
     while (HeapTupleIsValid(tuple = systable_getnext_ordered(scan, ForwardScanDirection))) {
         heap_deform_tuple(tuple, desc, values, isnull);
         auto file_name = TextDatumGetCString(values[1]);
@@ -232,13 +231,9 @@ vector<string> ColumnstoreMetadata::DataFilesSearch(Oid oid, ClientContext *cont
                 ObjectCache::GetObjectCache(*context).Put(*path + file_name, metadata);
                 ObjectCache::GetObjectCache(*context).Put(string(x_mooncake_local_cache) + file_name, metadata);
             }
-            if (!reader) {
-                // HACK: use a dummy file_name since reader only reads statistics from metadata
-                reader = make_uniq<ParquetReader>(*context, "/dev/null", ParquetOptions{}, std::move(metadata));
-            } else {
-                reader->metadata = std::move(metadata);
-            }
-            auto file_stats = make_shared_ptr<DataFileStatistics>(*reader, *columns);
+            // HACK: use a dummy file_name since reader only reads statistics from metadata
+            ParquetReader reader(*context, "/dev/null", ParquetOptions{}, std::move(metadata));
+            auto file_stats = make_shared_ptr<DataFileStatistics>(reader, *columns);
             columnstore_stats.Put(file_name, std::move(file_stats));
         }
     }

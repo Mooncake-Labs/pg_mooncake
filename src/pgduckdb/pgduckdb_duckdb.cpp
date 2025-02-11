@@ -237,6 +237,9 @@ DuckDBManager::Initialize() {
 	duckdb::LoadPgNextval(context);
 	LoadFunctions(context);
 	// LoadExtensions(context);
+	if (!context.Query("INSTALL iceberg", false /*allow_stream_result*/)->HasError()) {
+		DuckDBQueryOrThrow(context, "LOAD iceberg");
+	}
 }
 
 void

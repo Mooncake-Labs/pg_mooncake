@@ -31,7 +31,7 @@ void Columnstore::Abort() {
 }
 
 void Columnstore::Commit() {
-    InvokeCPPFunc(LakeCommit);
+    LakeCommit();
 }
 
 void Columnstore::LoadSecrets(ClientContext &context) {

@@ -1,3 +1,12 @@
+## 0.1.2 (2025-02-11)
+### Added
+- Support NOT NULL constraint (#116)
+### Fixed
+- Manully load iceberg extension since it's not autoloadable in DuckDB v1.1.3
+- Fix use-after-free bug when reading statistics
+- Allow non-superusers to set maximum_memory and maximum_threads
+- Fix ALTER TABLE ... SET ACCESS METHOD DEFAULT (#115)
+
 ## 0.1.1 (2025-01-29)
 ### Added
 - Preload pg_mooncake in Docker image

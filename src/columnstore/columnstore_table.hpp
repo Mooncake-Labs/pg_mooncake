@@ -26,6 +26,8 @@ public:
     TableStorageInfo GetStorageInfo(ClientContext &context) override;
 
 public:
+    void VerifyConstraints(DataChunk &chunk, const vector<unique_ptr<BoundConstraint>> &bound_constraints) const;
+
     void Insert(ClientContext &context, DataChunk &chunk);
 
     void FinalizeInsert();

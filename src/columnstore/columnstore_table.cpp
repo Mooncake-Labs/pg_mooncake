@@ -2,6 +2,8 @@
 #include "columnstore/columnstore_metadata.hpp"
 #include "duckdb/common/serializer/memory_stream.hpp"
 #include "duckdb/common/types/uuid.hpp"
+#include "duckdb/parser/constraints/not_null_constraint.hpp"
+#include "duckdb/planner/constraints/bound_not_null_constraint.hpp"
 #include "lake/lake.hpp"
 #include "parquet_reader.hpp"
 #include "parquet_writer.hpp"
@@ -164,6 +166,22 @@ TableStorageInfo ColumnstoreTable::GetStorageInfo(ClientContext &context) {
     TableStorageInfo result;
     result.index_info.push_back(std::move(index_info));
     return result;
+}
+
+void ColumnstoreTable::VerifyConstraints(DataChunk &chunk,
+                                         const vector<unique_ptr<BoundConstraint>> &bound_constraints) const {
+    for (idx_t i = 0; i < bound_constraints.size(); i++) {
+        auto &constraint = constraints[i];
+        auto &bound_constraint = bound_constraints[i];
+        if (constraint->type == ConstraintType::NOT_NULL) {
+            auto &not_null = constraint->Cast<NotNullConstraint>();
+            auto &bound_not_null = bound_constraint->Cast<BoundNotNullConstraint>();
+            auto &column = columns.GetColumn(LogicalIndex(not_null.index));
+            if (VectorOperations::HasNull(chunk.data[bound_not_null.index.index], chunk.size())) {
+                throw ConstraintException("NOT NULL constraint failed: %s.%s", name, column.Name());
+            }
+        }
+    }
 }
 
 void ColumnstoreTable::Insert(ClientContext &context, DataChunk &chunk) {

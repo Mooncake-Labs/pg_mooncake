@@ -7,6 +7,7 @@
 #include "pgduckdb/pgduckdb_types.hpp" // ConvertPostgresToDuckColumnType
 #include "pgduckdb/scan/postgres_seq_scan.hpp"
 
+#include "duckdb/parser/constraints/not_null_constraint.hpp"
 #include "duckdb/parser/expression/constant_expression.hpp"
 #include "duckdb/parser/expression/function_expression.hpp"
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
@@ -81,6 +82,9 @@ PostgresTable::SetTableInfo(duckdb::CreateTableInfo &info, Relation rel, bool se
 			}
 		}
 		info.columns.AddColumn(std::move(column));
+		if (attr->attnotnull) {
+			info.constraints.push_back(make_uniq<NotNullConstraint>(LogicalIndex(i)));
+		}
 		/* Log column name and type */
 		pd_log(DEBUG2, "(DuckDB/SetTableInfo) Column name: %s, Type: %s --", col_name.c_str(),
 		       duck_type.ToString().c_str());

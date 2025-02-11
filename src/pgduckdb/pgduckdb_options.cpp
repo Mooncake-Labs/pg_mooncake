@@ -29,6 +29,9 @@ extern "C" {
 #include "pgduckdb/pgduckdb_xact.hpp"
 #include "pgduckdb/utility/cpp_wrapper.hpp"
 
+#include "columnstore/columnstore_metadata.hpp"
+#include "lake/lake.hpp"
+
 namespace pgduckdb {
 
 static Oid
@@ -362,6 +365,12 @@ DECLARE_PG_FUNCTION(mooncake_reset_duckdb) {
 	 */
 	pgduckdb::pg::PreventInTransactionBlock("mooncake.reset_duckdb()");
 	pgduckdb::DuckDBManager::Get().Reset();
+	PG_RETURN_BOOL(true);
+}
+
+DECLARE_PG_FUNCTION(mooncake_dump_delta_update_records) {
+	duckdb::ColumnstoreMetadata metadata(NULL /*snapshot*/);
+	metadata.FlushDeltaRecords(duckdb::LakeDumpDeltaRecords);
 	PG_RETURN_BOOL(true);
 }
 

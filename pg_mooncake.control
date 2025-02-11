@@ -1,4 +1,4 @@
 comment = 'Columnstore Table in Postgres'
-default_version = '0.1.1'
+default_version = '0.2.0'
 module_pathname = '$libdir/pg_mooncake'
 relocatable = true

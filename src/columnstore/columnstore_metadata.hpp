@@ -1,7 +1,10 @@
 #pragma once
 
 #include "duckdb/common/vector.hpp"
+#include "lake/lake.hpp"
 #include "pgduckdb/pg/declarations.hpp"
+
+#include <functional>
 
 namespace duckdb {
 
@@ -30,6 +33,16 @@ public:
 
     vector<string> SecretsGetDuckdbQueries();
     string SecretsSearchDeltaOptions(const string &path);
+
+    // Initialize the global [delta_update_records] table if not.
+    void InitializeDeltaUpdateRecordTable();
+
+    // Add delta record to [delta_update_records] table.
+    void InsertDeltaRecord(const string &path, const string &delta_options, const vector<string> &file_names,
+                           const vector<int64_t> &file_sizes, const vector<int8_t> &is_add_files);
+
+    // Dump all buffered delta records into storage.
+    void FlushDeltaRecords(std::function<void(DeltaRecord)> dump_func);
 
 private:
     Snapshot snapshot;

@@ -16,6 +16,10 @@ int GetTupleDescNatts(const TupleDesc tupleDesc);
 
 const char *GetAttName(const Form_pg_attribute);
 
+const char *GetNamespaceName(Relation rel);
+
+const char *GetRelationName(Relation rel);
+
 Form_pg_attribute GetAttr(const TupleDesc tupleDesc, int i);
 
 void EstimateRelSize(Relation rel, int32_t *attr_widths, BlockNumber *pages, double *tuples, double *allvisfrac);

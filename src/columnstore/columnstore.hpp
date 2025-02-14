@@ -3,6 +3,10 @@
 #include "duckdb/common/unique_ptr.hpp"
 #include "pgduckdb/pg/declarations.hpp"
 
+extern "C" {
+void columnstore_pg_insert(Relation rel, TupleTableSlot **slots, int nslots);
+}
+
 namespace duckdb {
 
 class ClientContext;
@@ -22,6 +26,8 @@ public:
     static void Commit();
 
     static void LoadSecrets(ClientContext &context);
+
+    static void PgInsert(::Relation rel, TupleTableSlot **slots, int nslots);
 
     static unique_ptr<PhysicalOperator> PlanInsert(ClientContext &context, LogicalInsert &op,
                                                    unique_ptr<PhysicalOperator> plan);

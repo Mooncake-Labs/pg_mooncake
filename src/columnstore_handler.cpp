@@ -94,7 +94,7 @@ TransactionId columnstore_index_delete_tuples(Relation rel, TM_IndexDeleteOp *de
 
 void columnstore_tuple_insert(Relation rel, TupleTableSlot *slot, CommandId cid, int options,
                               struct BulkInsertStateData *bistate) {
-    elog(ERROR, "columnstore_tuple_insert not implemented");
+    columnstore_pg_insert(rel, &slot, 1);
 }
 
 void columnstore_tuple_insert_speculative(Relation rel, TupleTableSlot *slot, CommandId cid, int options,
@@ -108,7 +108,8 @@ void columnstore_tuple_complete_speculative(Relation rel, TupleTableSlot *slot, 
 
 void columnstore_multi_insert(Relation rel, TupleTableSlot **slots, int nslots, CommandId cid, int options,
                               struct BulkInsertStateData *bistate) {
-    elog(ERROR, "columnstore_multi_insert not implemented");
+    columnstore_pg_insert(rel, slots, nslots);
+    // elog(ERROR, "columnstore_multi_insert not implemented");
 }
 
 TM_Result columnstore_tuple_delete(Relation rel, ItemPointer tid, CommandId cid, Snapshot snapshot, Snapshot crosscheck,

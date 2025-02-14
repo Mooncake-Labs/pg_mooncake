@@ -56,3 +56,9 @@ void Columnstore::LoadSecrets(ClientContext &context) {
 }
 
 } // namespace duckdb
+
+extern "C" {
+void columnstore_pg_insert(Relation rel, TupleTableSlot **slots, int nslots) {
+    duckdb::Columnstore::PgInsert(rel, slots, nslots);
+}
+}

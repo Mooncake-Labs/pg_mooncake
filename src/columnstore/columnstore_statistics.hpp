@@ -26,7 +26,12 @@ public:
         return column_stats.at(name).get();
     }
 
+    idx_t NumRows() {
+        return num_rows;
+    }
+
 private:
+    idx_t num_rows;
     unordered_map<string, unique_ptr<BaseStatistics>> column_stats;
 };
 

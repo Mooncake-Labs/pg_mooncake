@@ -1,5 +1,6 @@
 #include "columnstore/columnstore_table.hpp"
 #include "columnstore/columnstore_metadata.hpp"
+#include "columnstore/columnstore_statistics.hpp"
 #include "duckdb/common/serializer/memory_stream.hpp"
 #include "duckdb/common/types/uuid.hpp"
 #include "duckdb/parser/constraints/not_null_constraint.hpp"
@@ -278,6 +279,17 @@ vector<string> ColumnstoreTable::GetFilePaths(const string &path, const vector<s
         }
     }
     return file_paths;
+}
+
+idx_t ColumnstoreTable::Cardinality(const vector<string> &file_names) {
+    idx_t cardinality = 0;
+    for (auto &file_name : file_names) {
+        auto file_stats = columnstore_stats.Get<DataFileStatistics>(file_name);
+        if (file_stats) {
+            cardinality += file_stats->NumRows();
+        }
+    }
+    return cardinality;
 }
 
 } // namespace duckdb

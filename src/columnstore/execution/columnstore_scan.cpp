@@ -153,7 +153,11 @@ TableFunction ColumnstoreTable::GetScanFunction(ClientContext &context, unique_p
     }
     vector<Value> inputs;
     inputs.push_back(Value::LIST(values));
+    idx_t carinality = Cardinality(file_names);
     named_parameter_map_t named_parameters{{"file_row_number", Value(true)}};
+    if (carinality > 0) {
+        named_parameters["explicit_cardinality"] = Value::UBIGINT(carinality);
+    }
     vector<LogicalType> input_table_types;
     vector<string> input_table_names;
     TableFunctionBindInput bind_input(inputs, named_parameters, input_table_types, input_table_names, nullptr /*info*/,

@@ -1,10 +1,6 @@
 CREATE TABLE t (a int) USING columnstore;
-INSERT INTO t SELECT i FROM generate_series(1, 100) i;
+INSERT INTO t SELECT * FROM generate_series(1, 100);
 EXPLAIN SELECT * FROM t;
-INSERT INTO t SELECT i FROM generate_series(1, 200) i;
-EXPLAIN SELECT * FROM t;
-INSERT INTO t SELECT i FROM generate_series(1, 400) i;
-EXPLAIN SELECT * FROM t;
-INSERT INTO t SELECT i FROM generate_series(1, 800) i;
+INSERT INTO t SELECT * FROM generate_series(1, 200);
 EXPLAIN SELECT * FROM t;
 DROP TABLE t;

@@ -22,12 +22,12 @@ public:
         return ObjectType();
     }
 
-    BaseStatistics *Get(const string &name) {
-        return column_stats.at(name).get();
-    }
-
     idx_t NumRows() {
         return num_rows;
+    }
+
+    BaseStatistics *Get(const string &name) {
+        return column_stats.at(name).get();
     }
 
 private:

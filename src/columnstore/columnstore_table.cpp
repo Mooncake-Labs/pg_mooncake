@@ -285,9 +285,8 @@ idx_t ColumnstoreTable::Cardinality(const vector<string> &file_names) {
     idx_t cardinality = 0;
     for (auto &file_name : file_names) {
         auto file_stats = columnstore_stats.Get<DataFileStatistics>(file_name);
-        if (file_stats) {
-            cardinality += file_stats->NumRows();
-        }
+        D_ASSERT(file_stats);
+        cardinality += file_stats->NumRows();
     }
     return cardinality;
 }

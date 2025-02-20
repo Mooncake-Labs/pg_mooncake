@@ -36,7 +36,9 @@ public:
                 ColumnDataCollection *return_collection = nullptr);
 
 private:
-    vector<string> GetFilePaths(const string &path, const vector<string> &file_names);
+    static vector<string> GetFilePaths(const string &path, const vector<string> &file_names);
+
+    static idx_t Cardinality(const vector<string> &file_names);
 
 private:
     Oid oid;

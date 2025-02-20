@@ -27,7 +27,7 @@ DEPS := $(SRCS:%=%.d)
 # ========================
 REGRESS_SQL := $(shell cd $(TEST_DIR)/sql; find * -name '*.sql')
 REGRESS := $(REGRESS_SQL:%.sql=%)
-REGRESS_OPTS = --inputdir=$(TEST_DIR) --load-extension=$(EXTENSION_NAME)
+REGRESS_OPTS = --encoding=UTF8 --inputdir=$(TEST_DIR) --load-extension=$(EXTENSION_NAME)
 
 # ========================
 # Compilation Flags

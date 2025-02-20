@@ -7,6 +7,7 @@
 
 #include "columnstore/columnstore_table.hpp"
 #include "columnstore_handler.hpp"
+#include "columnstore/columnstore_storage.hpp"
 #include "duckdb/parser/parsed_data/create_table_info.hpp"
 #include "duckdb/parser/parsed_data/create_schema_info.hpp"
 #include "duckdb/catalog/catalog.hpp"
@@ -19,6 +20,8 @@ void
 ClosePostgresRelations(duckdb::ClientContext &context) {
 	auto context_state = context.registered_state->GetOrCreate<PostgresContextState>("pgduckdb");
 	context_state->QueryEnd();
+
+	duckdb::ColumnstoreStorageContextState::Get(context).QueryEnd();
 }
 
 PostgresTransaction::PostgresTransaction(duckdb::TransactionManager &_manager, duckdb::ClientContext &_context,

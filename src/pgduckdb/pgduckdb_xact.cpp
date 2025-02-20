@@ -1,4 +1,5 @@
 #include "columnstore/columnstore.hpp"
+#include "columnstore/columnstore_xact.hpp"
 #include "duckdb/common/exception.hpp"
 #include "pgduckdb/pgduckdb_duckdb.hpp"
 #include "pgduckdb/pgduckdb_utils.hpp"
@@ -141,6 +142,8 @@ DuckdbXactCallback_Cpp(XactEvent event) {
 		return;
 	}
 
+	duckdb::MooncakeXactCallback(event);
+
 	if (event == XACT_EVENT_ABORT || event == XACT_EVENT_PARALLEL_ABORT) {
 		duckdb::Columnstore::Abort();
 	} else if (event == XACT_EVENT_COMMIT || event == XACT_EVENT_PARALLEL_COMMIT) {
@@ -217,6 +220,9 @@ DuckdbSubXactCallback_Cpp(SubXactEvent event) {
 	if (!DuckDBManager::IsInitialized()) {
 		return;
 	}
+
+	duckdb::MooncakeSubXactCallback(event);
+
 	auto connection = DuckDBManager::GetConnectionUnsafe();
 	auto &context = *connection->context;
 	if (!context.transaction.HasActiveTransaction()) {

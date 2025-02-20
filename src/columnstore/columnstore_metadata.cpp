@@ -33,6 +33,7 @@ Datum StringGetTextDatum(const string_t &s) {
 
 constexpr int x_tables_natts = 3;
 constexpr int x_data_files_natts = 3;
+constexpr int x_dead_data_files_natts = 3;
 constexpr int x_secrets_natts = 5;
 
 Oid Mooncake() {
@@ -52,6 +53,12 @@ Oid DataFilesOid() {
 }
 Oid DataFilesFileName() {
     return get_relname_relid("data_files_file_name", Mooncake());
+}
+Oid DeadDataFiles() {
+    return get_relname_relid("dead_data_files", Mooncake());
+}
+Oid DeadDataFilesOid() {
+    return get_relname_relid("dead_data_files_oid", Mooncake());
 }
 Oid Secrets() {
     return get_relname_relid("secrets", Mooncake());
@@ -156,21 +163,39 @@ void ColumnstoreMetadata::DataFilesInsert(Oid oid, const string &file_name, cons
     table_close(table, RowExclusiveLock);
 }
 
+// A wrapper for inserting tuple from `data_files` to `dead_data_files`
+//  - table: `dead_data_files` relation
+//  - desc: TupleDesc of `data_files`
+//  - tuple: HeapTuple of `data_files`
+static inline void DataFilesTrackDelete(::Relation table, TupleDesc desc, HeapTuple tuple) {
+    Datum values[x_dead_data_files_natts] = {0};
+    bool isnull[x_dead_data_files_natts] = {0};
+    values[0] = heap_getattr(tuple, 1, desc, &isnull[0]);
+    values[1] = heap_getattr(tuple, 2, desc, &isnull[1]);
+    values[2] = TimestampGetDatum(GetCurrentTransactionStartTimestamp());
+    D_ASSERT(!isnull[0] && !isnull[1]);
+    HeapTuple new_tuple = heap_form_tuple(RelationGetDescr(table), values, isnull);
+    PostgresFunctionGuard(CatalogTupleInsert, table, new_tuple);
+}
+
 void ColumnstoreMetadata::DataFilesDelete(const string &file_name) {
     ::Relation table = table_open(DataFiles(), RowExclusiveLock);
     ::Relation index = index_open(DataFilesFileName(), RowExclusiveLock);
+    ::Relation dead_data_files_table = table_open(DeadDataFiles(), RowExclusiveLock);
     ScanKeyData key[1];
     ScanKeyInit(&key[0], 2 /*attributeNumber*/, BTEqualStrategyNumber, F_TEXTEQ, StringGetTextDatum(file_name));
     SysScanDesc scan = systable_beginscan_ordered(table, index, snapshot, 1 /*nkeys*/, key);
 
     HeapTuple tuple;
     if (HeapTupleIsValid(tuple = systable_getnext_ordered(scan, ForwardScanDirection))) {
+        DataFilesTrackDelete(dead_data_files_table, RelationGetDescr(table), tuple);
         PostgresFunctionGuard(CatalogTupleDelete, table, &tuple->t_self);
         columnstore_stats.Delete(file_name);
     }
 
     systable_endscan_ordered(scan);
     CommandCounterIncrement();
+    table_close(dead_data_files_table, RowExclusiveLock);
     index_close(index, RowExclusiveLock);
     table_close(table, RowExclusiveLock);
 }
@@ -178,6 +203,7 @@ void ColumnstoreMetadata::DataFilesDelete(const string &file_name) {
 void ColumnstoreMetadata::DataFilesDelete(Oid oid) {
     ::Relation table = table_open(DataFiles(), RowExclusiveLock);
     ::Relation index = index_open(DataFilesOid(), RowExclusiveLock);
+    ::Relation dead_data_files_table = table_open(DeadDataFiles(), RowExclusiveLock);
     TupleDesc desc = RelationGetDescr(table);
     ScanKeyData key[1];
     ScanKeyInit(&key[0], 1 /*attributeNumber*/, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(oid));
@@ -188,11 +214,13 @@ void ColumnstoreMetadata::DataFilesDelete(Oid oid) {
         bool isnull;
         auto file_name = TextDatumGetCString(heap_getattr(tuple, 2 /*attnum*/, desc, &isnull));
         columnstore_stats.Delete(file_name);
+        DataFilesTrackDelete(dead_data_files_table, desc, tuple);
         PostgresFunctionGuard(CatalogTupleDelete, table, &tuple->t_self);
     }
 
     systable_endscan_ordered(scan);
     CommandCounterIncrement();
+    table_close(dead_data_files_table, RowExclusiveLock);
     index_close(index, RowExclusiveLock);
     table_close(table, RowExclusiveLock);
 }
@@ -236,6 +264,31 @@ vector<string> ColumnstoreMetadata::DataFilesSearch(Oid oid, ClientContext *cont
             auto file_stats = make_shared_ptr<DataFileStatistics>(reader, *columns);
             columnstore_stats.Put(file_name, std::move(file_stats));
         }
+    }
+
+    systable_endscan_ordered(scan);
+    index_close(index, AccessShareLock);
+    table_close(table, AccessShareLock);
+    return file_names;
+}
+
+vector<string> ColumnstoreMetadata::DeadDataFilesSearch(Oid oid) {
+    ::Relation table = table_open(DeadDataFiles(), AccessShareLock);
+    ::Relation index = index_open(DeadDataFilesOid(), AccessShareLock);
+    TupleDesc desc = RelationGetDescr(table);
+    ScanKeyData key[1];
+    ScanKeyInit(&key[0], 1 /*attributeNumber*/, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(oid));
+    SysScanDesc scan = systable_beginscan_ordered(table, index, snapshot, 1 /*nkeys*/, key);
+
+    vector<string> file_names;
+    HeapTuple tuple;
+    bool isnull;
+    while (HeapTupleIsValid(tuple = systable_getnext_ordered(scan, ForwardScanDirection))) {
+        auto datum = heap_getattr(tuple, 2, desc, &isnull);
+        D_ASSERT(!isnull);
+        auto file_name = TextDatumGetCString(datum);
+        file_names.emplace_back(file_name);
+        pfree(file_name);
     }
 
     systable_endscan_ordered(scan);

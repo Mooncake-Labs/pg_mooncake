@@ -9,6 +9,7 @@ extern "C" {
 #include "postgres.h"
 #include "access/table.h"
 #include "access/tableam.h"
+#include "catalog/objectaccess.h"
 #include "catalog/pg_type.h"
 #include "commands/event_trigger.h"
 #include "fmgr.h"
@@ -37,6 +38,7 @@ extern "C" {
 #include "pgduckdb/pgduckdb_metadata_cache.hpp"
 #include "pgduckdb/utility/copy.hpp"
 #include "pgduckdb/vendor/pg_list.hpp"
+#include "columnstore/columnstore.hpp"
 #include <inttypes.h>
 
 /*
@@ -48,6 +50,7 @@ static bool ctas_skip_data = false;
 
 static bool top_level_ddl = true;
 static ProcessUtility_hook_type prev_process_utility_hook = NULL;
+static object_access_hook_type prev_object_access_hook = NULL;
 
 [[maybe_unused]] static void
 DuckdbHandleDDL(Node *parsetree) {
@@ -195,10 +198,26 @@ DuckdbUtilityHook(PlannedStmt *pstmt, const char *query_string, bool read_only_t
 	InvokeCPPFunc(DuckdbUtilityHook_Cpp, pstmt, query_string, read_only_tree, context, params, query_env, dest, qc);
 }
 
+static void
+MooncakeObjectAccessHook(ObjectAccessType access, Oid classId, Oid objectId, int subId, void *arg) {
+	if (prev_object_access_hook) {
+		prev_object_access_hook(access, classId, objectId, subId, arg);
+	}
+
+	if (access == OAT_DROP && classId == RelationRelationId && !OidIsValid(subId)) {
+		if (IsColumnstoreTable(objectId)) {
+			duckdb::Columnstore::DropTable(objectId);
+		}
+	}
+}
+
 void
 DuckdbInitUtilityHook() {
 	prev_process_utility_hook = ProcessUtility_hook ? ProcessUtility_hook : standard_ProcessUtility;
 	ProcessUtility_hook = DuckdbUtilityHook;
+
+	prev_object_access_hook = object_access_hook;
+	object_access_hook = MooncakeObjectAccessHook;
 }
 
 /*

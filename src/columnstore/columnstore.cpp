@@ -26,6 +26,14 @@ void Columnstore::TruncateTable(Oid oid) {
     }
 }
 
+// Caller must ensure that the table is a columnstore table.
+void Columnstore::DropTable(Oid oid) {
+    // Mark the table's data files as dead. Physical deletion of the data files occurs either after the transaction
+    // commits or during the VACUUM process.
+    ColumnstoreMetadata metadata(NULL /*snapshot*/);
+    metadata.DataFilesDelete(oid);
+}
+
 void Columnstore::Abort() {
     LakeAbort();
 }

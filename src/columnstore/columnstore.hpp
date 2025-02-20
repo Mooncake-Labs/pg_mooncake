@@ -17,6 +17,8 @@ public:
 
     static void TruncateTable(Oid oid);
 
+    static void DropTable(Oid oid);
+
     static void Abort();
 
     static void Commit();

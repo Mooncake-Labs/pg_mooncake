@@ -7,9 +7,9 @@
 
 namespace duckdb {
 
-void Columnstore::CreateTable(Oid oid) {
+void Columnstore::CreateTable(Oid oid, Oid tblspace_oid) {
     ColumnstoreMetadata metadata(NULL /*snapshot*/);
-    string path = metadata.GetTablePath(oid);
+    string path = metadata.GetTablePath(oid, tblspace_oid);
     if (!path.empty() && !duckdb::FileSystem::IsRemoteFile(path)) {
         FileSystem::CreateLocal()->CreateDirectory(path);
     }

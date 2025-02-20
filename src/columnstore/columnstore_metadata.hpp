@@ -18,7 +18,7 @@ public:
     void TablesDelete(Oid oid);
     std::tuple<string /*path*/, string /*timeline_id*/> TablesSearch(Oid oid);
 
-    string GetTablePath(Oid oid);
+    string GetTablePath(Oid oid, Oid tblspace_oid);
     std::tuple<string /*table_name*/, vector<string> /*column_names*/, vector<string> /*column_types*/>
     GetTableMetadata(Oid oid);
 

@@ -154,7 +154,7 @@ void columnstore_relation_set_new_filenode(Relation rel, const RelFileNode *newr
             }
         }
 
-        duckdb::Columnstore::CreateTable(rel->rd_id);
+        duckdb::Columnstore::CreateTable(rel->rd_id, newrlocator->spcOid);
     } else {
         ReleaseSysCache(tp);
         duckdb::Columnstore::TruncateTable(rel->rd_id);

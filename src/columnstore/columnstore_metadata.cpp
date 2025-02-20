@@ -13,6 +13,7 @@ extern "C" {
 #include "catalog/indexing.h"
 #include "catalog/namespace.h"
 #include "commands/dbcommands.h"
+#include "commands/tablespace.h"
 #include "miscadmin.h"
 #include "utils/builtins.h"
 #include "utils/fmgroids.h"
@@ -55,6 +56,10 @@ Oid DataFilesFileName() {
 }
 Oid Secrets() {
     return get_relname_relid("secrets", Mooncake());
+}
+
+char *GetTableSpaceLocation(Oid oid) {
+    return TextDatumGetCString(DirectFunctionCall1(pg_tablespace_location, ObjectIdGetDatum(oid)));
 }
 
 } // namespace
@@ -113,7 +118,7 @@ std::tuple<string /*path*/, string /*timeline_id*/> ColumnstoreMetadata::TablesS
     return {std::move(path), std::move(timeline_id)};
 }
 
-string ColumnstoreMetadata::GetTablePath(Oid oid) {
+string ColumnstoreMetadata::GetTablePath(Oid oid, Oid tblspace_oid) {
     ::Relation table = table_open(oid, AccessShareLock);
     string path =
         StringUtil::Format("mooncake_%s_%s_%d/", get_database_name(MyDatabaseId), RelationGetRelationName(table), oid);
@@ -121,7 +126,12 @@ string ColumnstoreMetadata::GetTablePath(Oid oid) {
     if (mooncake_default_bucket != nullptr && mooncake_default_bucket[0] != '\0') {
         path = StringUtil::Format("%s/%s", mooncake_default_bucket, path);
     } else if (mooncake_allow_local_tables) {
-        path = StringUtil::Format("%s/mooncake_local_tables/%s", DataDir, path);
+        const char *tblspace_path = GetTableSpaceLocation(tblspace_oid);
+        if (tblspace_path != nullptr && tblspace_path[0] != '\0') {
+            path = StringUtil::Format("%s/%s", tblspace_path, path);
+        } else {
+            path = StringUtil::Format("%s/mooncake_local_tables/%s", DataDir, path);
+        }
     } else {
         elog(ERROR, "Columnstore tables on local disk are not allowed. Set mooncake.default_bucket to default "
                     "S3 bucket");

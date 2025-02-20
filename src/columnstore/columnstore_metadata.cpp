@@ -58,7 +58,7 @@ Oid Secrets() {
     return get_relname_relid("secrets", Mooncake());
 }
 
-char *GetTableSpaceLocation(Oid oid) {
+const char *GetTableSpaceLocation(Oid oid) {
     return TextDatumGetCString(DirectFunctionCall1(pg_tablespace_location, ObjectIdGetDatum(oid)));
 }
 

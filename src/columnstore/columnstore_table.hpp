@@ -35,8 +35,9 @@ public:
     void Delete(ClientContext &context, unordered_set<row_t> &row_ids_set,
                 ColumnDataCollection *return_collection = nullptr);
 
+    static vector<string> GetFilePaths(const string &path, const vector<string> &file_names, bool allow_cache = true);
+
 private:
-    static vector<string> GetFilePaths(const string &path, const vector<string> &file_names);
 
     static idx_t Cardinality(const vector<string> &file_names);
 

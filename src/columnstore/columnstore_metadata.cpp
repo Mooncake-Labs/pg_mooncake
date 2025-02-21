@@ -57,9 +57,9 @@ Oid DataFilesFileName() {
 Oid DeadDataFiles() {
     return get_relname_relid("dead_data_files", Mooncake());
 }
-// Oid DeadDataFilesOid() {
-//     return get_relname_relid("dead_data_files_oid", Mooncake());
-// }
+Oid DeadDataFilesOid() {
+    return get_relname_relid("dead_data_files_oid", Mooncake());
+}
 // Oid DeadDataFilesFileName() {
 //     return get_relname_relid("dead_data_files_file_name", Mooncake());
 // }
@@ -267,6 +267,30 @@ vector<string> ColumnstoreMetadata::DataFilesSearch(Oid oid, ClientContext *cont
             auto file_stats = make_shared_ptr<DataFileStatistics>(reader, *columns);
             columnstore_stats.Put(file_name, std::move(file_stats));
         }
+    }
+
+    systable_endscan_ordered(scan);
+    index_close(index, AccessShareLock);
+    table_close(table, AccessShareLock);
+    return file_names;
+}
+
+vector<string> ColumnstoreMetadata::DeadDataFilesSearch(Oid oid) {
+    ::Relation table = table_open(DeadDataFiles(), AccessShareLock);
+    ::Relation index = index_open(DeadDataFilesOid(), AccessShareLock);
+    TupleDesc desc = RelationGetDescr(table);
+    ScanKeyData key[1];
+    ScanKeyInit(&key[0], 1 /*attributeNumber*/, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(oid));
+    SysScanDesc scan = systable_beginscan_ordered(table, index, snapshot, 1 /*nkeys*/, key);
+
+    vector<string> file_names;
+    HeapTuple tuple;
+    bool isnull;
+    while (HeapTupleIsValid(tuple = systable_getnext_ordered(scan, ForwardScanDirection))) {
+        auto datum = heap_getattr(tuple, 2, desc, &isnull);
+        D_ASSERT(!isnull);
+        auto file_name = TextDatumGetCString(datum);
+        file_names.emplace_back(file_name);
     }
 
     systable_endscan_ordered(scan);

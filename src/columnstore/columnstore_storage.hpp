@@ -12,6 +12,8 @@ public:
     Oid oid;
     int nest_level;
     bool at_commit;
+    string table_path;
+    vector<string> file_names;
 };
 
 class ColumnstoreStorageContextState : public duckdb::ClientContextState {
@@ -36,10 +38,6 @@ public:
 
     void AtSubAbort();
 private:
-    // Physically delete the storage of a relation.
-    // Return true if the storage was successfully deleted, false otherwise.
-    bool DropStorage(Oid relid);
-
     duckdb::list<PendingRelDelete> pending_deletes;
 };
 

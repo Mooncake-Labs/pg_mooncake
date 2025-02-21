@@ -204,9 +204,10 @@ MooncakeObjectAccessHook(ObjectAccessType access, Oid classId, Oid objectId, int
 		prev_object_access_hook(access, classId, objectId, subId, arg);
 	}
 
+	ObjectAccessDrop *drop = (ObjectAccessDrop *)arg;
 	if (access == OAT_DROP && classId == RelationRelationId && !OidIsValid(subId)) {
 		if (IsColumnstoreTable(objectId)) {
-			duckdb::Columnstore::DropTable(objectId);
+			duckdb::Columnstore::DropTable(objectId, drop->dropflags);
 		}
 	}
 }

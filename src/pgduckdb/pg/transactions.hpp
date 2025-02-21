@@ -41,4 +41,5 @@ void RegisterXactCallback(XactCallback callback, void *arg);
 void UnregisterXactCallback(XactCallback callback, void *arg);
 void RegisterSubXactCallback(SubXactCallback callback, void *arg);
 void UnregisterSubXactCallback(SubXactCallback callback, void *arg);
+int GetCurrentTransactionNestLevel();
 } // namespace pgduckdb::pg

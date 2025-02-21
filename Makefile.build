@@ -6,7 +6,7 @@ EXTENSION_NAME := pg_mooncake
 SQL_DIR := ../../sql
 SRC_DIR := ../../src
 TEST_DIR := ../../test
-TABLESPACE_DIR := ../../../../home/postgres/tablespace_dir
+TABLESPACE_DIR := ../../../../tmp/tablespace_dir
 
 # ========================
 # Postgres Setup
@@ -83,6 +83,7 @@ thrift/transport/TBufferTransports.cpp.o: ../../third_party/duckdb/third_party/t
 installcheck: installcheck-test-setup installcheck-dirs
 
 installcheck-test-setup:
+	@rm -rf $(TABLESPACE_DIR)
 	@mkdir -p $(TABLESPACE_DIR)
 	@chmod 700 $(TABLESPACE_DIR)
 	@echo "Created temp dir for tablespace testing."

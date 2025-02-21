@@ -1,11 +1,11 @@
 DROP TABLESPACE IF EXISTS mooncake_ts;
 NOTICE:  tablespace "mooncake_ts" does not exist, skipping
-CREATE TABLESPACE mooncake_ts LOCATION '/home/postgres/tablespace_dir';
+CREATE TABLESPACE mooncake_ts LOCATION '/tmp/tablespace_dir';
 CREATE TABLE t (a int) USING columnstore TABLESPACE mooncake_ts;
 SELECT table_name, regexp_replace(path, '[0-9]+/$', 'XXXX/') AS path FROM mooncake.columnstore_tables;
- table_name |                               path                                
-------------+-------------------------------------------------------------------
- t          | /home/postgres/tablespace_dir/mooncake_contrib_regression_t_XXXX/
+ table_name |                          path                           
+------------+---------------------------------------------------------
+ t          | /tmp/tablespace_dir/mooncake_contrib_regression_t_XXXX/
 (1 row)
 
 DROP TABLE t;

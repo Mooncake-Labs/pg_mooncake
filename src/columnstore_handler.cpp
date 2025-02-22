@@ -328,7 +328,6 @@ void CreateOrSetColumnstoreDataDir(const char *path) {
     if (path == nullptr || path[0] == '\0') {
         if (x_mooncake_local_cache) {
             free(x_mooncake_local_cache);
-            x_mooncake_local_cache = nullptr;
         }
         x_mooncake_local_cache = strdup("mooncake_local_cache/");
         return;
@@ -341,11 +340,11 @@ void CreateOrSetColumnstoreDataDir(const char *path) {
     }
     if (!local_fs->DirectoryExists(cache_path)) {
         local_fs->CreateDirectory(cache_path);
-        if (x_mooncake_local_cache) {
-            free(x_mooncake_local_cache);
-            x_mooncake_local_cache = nullptr;
-        }
-        auto x_mooncake_local_cache_str = cache_path + "/";
-        x_mooncake_local_cache = strdup(x_mooncake_local_cache_str.c_str());
     }
+
+    if (x_mooncake_local_cache) {
+        free(x_mooncake_local_cache);
+    }
+    auto x_mooncake_local_cache_str = cache_path + "/";
+    x_mooncake_local_cache = strdup(x_mooncake_local_cache_str.c_str());
 }

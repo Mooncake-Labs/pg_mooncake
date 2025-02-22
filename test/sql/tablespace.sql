@@ -1,5 +1,14 @@
 CREATE TABLESPACE mooncake_ts LOCATION '/tmp/tablespace_dir';
-CREATE TABLE t (a int) USING columnstore TABLESPACE mooncake_ts;
-SELECT table_name, regexp_replace(path, '[0-9]+/$', 'XXXX/') AS path FROM mooncake.columnstore_tables;
-DROP TABLE t;
+SELECT spcname FROM pg_tablespace where spcname = 'mooncake_ts';
+CREATE TABLE t1 (a int) USING columnstore TABLESPACE mooncake_ts;
+SELECT table_name, regexp_replace(path, '[0-9]+/$', 'XXXX/') AS path FROM mooncake.columnstore_tables where table_name = 't1';
+DROP TABLE t1;
+CREATE TABLE t2 (a int) USING columnstore;
+SELECT table_name, regexp_replace(path, '[0-9]+/$', 'XXXX/') AS path FROM mooncake.columnstore_tables where table_name = 't2';
+DROP TABLE t2;
+SET default_tablespace = mooncake_ts;
+SHOW default_tablespace;
+CREATE TABLE t3 (a int) USING columnstore;
+SELECT table_name, regexp_replace(path, '[0-9]+/$', 'XXXX/') AS path FROM mooncake.columnstore_tables where table_name = 't3';
+DROP TABLE t3;
 DROP TABLESPACE mooncake_ts;

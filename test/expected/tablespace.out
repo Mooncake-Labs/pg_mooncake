@@ -1,10 +1,39 @@
 CREATE TABLESPACE mooncake_ts LOCATION '/tmp/tablespace_dir';
-CREATE TABLE t (a int) USING columnstore TABLESPACE mooncake_ts;
-SELECT table_name, regexp_replace(path, '[0-9]+/$', 'XXXX/') AS path FROM mooncake.columnstore_tables;
- table_name |                                     path                                      
-------------+-------------------------------------------------------------------------------
- t          | /tmp/tablespace_dir/mooncake_local_tables/mooncake_contrib_regression_t_XXXX/
+SELECT spcname FROM pg_tablespace where spcname = 'mooncake_ts';
+   spcname   
+-------------
+ mooncake_ts
 (1 row)
 
-DROP TABLE t;
+CREATE TABLE t1 (a int) USING columnstore TABLESPACE mooncake_ts;
+SELECT table_name, regexp_replace(path, '[0-9]+/$', 'XXXX/') AS path FROM mooncake.columnstore_tables where table_name = 't1';
+ table_name |                                      path                                      
+------------+--------------------------------------------------------------------------------
+ t1         | /tmp/tablespace_dir/mooncake_local_tables/mooncake_contrib_regression_t1_XXXX/
+(1 row)
+
+DROP TABLE t1;
+CREATE TABLE t2 (a int) USING columnstore;
+SELECT table_name, regexp_replace(path, '[0-9]+/$', 'XXXX/') AS path FROM mooncake.columnstore_tables where table_name = 't2';
+ table_name |                                       path                                       
+------------+----------------------------------------------------------------------------------
+ t2         | /usr/local/pgsql/data/mooncake_local_tables/mooncake_contrib_regression_t2_XXXX/
+(1 row)
+
+DROP TABLE t2;
+SET default_tablespace = mooncake_ts;
+SHOW default_tablespace;
+ default_tablespace 
+--------------------
+ mooncake_ts
+(1 row)
+
+CREATE TABLE t3 (a int) USING columnstore;
+SELECT table_name, regexp_replace(path, '[0-9]+/$', 'XXXX/') AS path FROM mooncake.columnstore_tables where table_name = 't3';
+ table_name |                                      path                                      
+------------+--------------------------------------------------------------------------------
+ t3         | /tmp/tablespace_dir/mooncake_local_tables/mooncake_contrib_regression_t3_XXXX/
+(1 row)
+
+DROP TABLE t3;
 DROP TABLESPACE mooncake_ts;

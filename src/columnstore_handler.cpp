@@ -1,11 +1,16 @@
+#include "columnstore_handler.hpp"
 #include "columnstore/columnstore.hpp"
+#include "duckdb/common/file_system.hpp"
+#include "duckdb/common/string_util.hpp"
 #include "pgduckdb/pgduckdb_types.hpp"
+#include "pgmooncake_guc.hpp"
 
 extern "C" {
 #include "postgres.h"
 
 #include "access/tableam.h"
 #include "fmgr.h"
+#include "utils/builtins.h"
 #include "utils/syscache.h"
 }
 
@@ -154,6 +159,9 @@ void columnstore_relation_set_new_filenode(Relation rel, const RelFileNode *newr
             }
         }
 
+        auto tblspace_path =
+            TextDatumGetCString(DirectFunctionCall1(pg_tablespace_location, ObjectIdGetDatum(newrlocator->spcOid)));
+        CreateOrSetColumnstoreDataDir(tblspace_path);
         duckdb::Columnstore::CreateTable(rel->rd_id, newrlocator->spcOid);
     } else {
         ReleaseSysCache(tp);
@@ -314,4 +322,30 @@ bool IsColumnstoreTable(Oid oid) {
     bool result = IsColumnstoreTable(rel);
     RelationClose(rel);
     return result;
+}
+
+void CreateOrSetColumnstoreDataDir(const char *path) {
+    if (path == nullptr || path[0] == '\0') {
+        if (x_mooncake_local_cache) {
+            free(x_mooncake_local_cache);
+            x_mooncake_local_cache = nullptr;
+        }
+        x_mooncake_local_cache = strdup("mooncake_local_cache/");
+        return;
+    }
+    auto local_fs = duckdb::FileSystem::CreateLocal();
+    auto tables_path = duckdb::StringUtil::Format("%s/mooncake_local_tables", path);
+    auto cache_path = duckdb::StringUtil::Format("%s/mooncake_local_cache", path);
+    if (!local_fs->DirectoryExists(tables_path)) {
+        local_fs->CreateDirectory(tables_path);
+    }
+    if (!local_fs->DirectoryExists(cache_path)) {
+        local_fs->CreateDirectory(cache_path);
+        if (x_mooncake_local_cache) {
+            free(x_mooncake_local_cache);
+            x_mooncake_local_cache = nullptr;
+        }
+        auto x_mooncake_local_cache_str = cache_path + "/";
+        x_mooncake_local_cache = strdup(x_mooncake_local_cache_str.c_str());
+    }
 }

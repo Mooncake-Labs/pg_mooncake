@@ -128,7 +128,7 @@ string ColumnstoreMetadata::GetTablePath(Oid oid, Oid tblspace_oid) {
     } else if (mooncake_allow_local_tables) {
         const char *tblspace_path = GetTableSpaceLocation(tblspace_oid);
         if (tblspace_path != nullptr && tblspace_path[0] != '\0') {
-            path = StringUtil::Format("%s/%s", tblspace_path, path);
+            path = StringUtil::Format("%s/mooncake_local_tables/%s", tblspace_path, path);
         } else {
             path = StringUtil::Format("%s/mooncake_local_tables/%s", DataDir, path);
         }

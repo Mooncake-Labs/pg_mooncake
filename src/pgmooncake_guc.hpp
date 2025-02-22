@@ -1,6 +1,6 @@
 #pragma once
 
-extern const char *x_mooncake_local_cache;
+extern char *x_mooncake_local_cache;
 
 extern bool mooncake_allow_local_tables;
 extern char *mooncake_default_bucket;

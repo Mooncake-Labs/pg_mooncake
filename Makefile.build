@@ -6,7 +6,7 @@ EXTENSION_NAME := pg_mooncake
 SQL_DIR := ../../sql
 SRC_DIR := ../../src
 TEST_DIR := ../../test
-TABLESPACE_DIR := ../../../../tmp/tablespace_dir
+TABLESPACE_DIR := /tmp/tablespace_dir
 
 # ========================
 # Postgres Setup

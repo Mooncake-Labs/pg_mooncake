@@ -11,7 +11,7 @@ extern "C" {
 void MooncakeInitGUC();
 void DuckdbInitHooks();
 
-const char *x_mooncake_local_cache = "mooncake_local_cache/";
+char *x_mooncake_local_cache = strdup("mooncake_local_cache/");
 
 bool mooncake_allow_local_tables = true;
 char *mooncake_default_bucket = strdup("");

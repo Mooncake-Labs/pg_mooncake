@@ -4,7 +4,7 @@ INSERT INTO t VALUES (2, 'f'), (3, 'g'), (4, 'h');
 UPDATE t SET b = a + 1 WHERE a > 3;
 DELETE FROM t WHERE a < 3;
 INSERT INTO t SELECT 2, b FROM t WHERE a = 3;
-SELECT * FROM t;
+SELECT * FROM t ORDER BY a, b;
 DROP TABLE t;
 
 CREATE TABLE t (a int) USING columnstore;

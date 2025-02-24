@@ -1,4 +1,5 @@
 #include "columnstore/columnstore_table.hpp"
+#include "columnstore/columnstore_deletion_vector.hpp"
 #include "columnstore/columnstore_metadata.hpp"
 #include "columnstore/columnstore_statistics.hpp"
 #include "duckdb/common/serializer/memory_stream.hpp"
@@ -9,6 +10,11 @@
 #include "parquet_reader.hpp"
 #include "parquet_writer.hpp"
 #include "pgmooncake_guc.hpp"
+
+extern "C" {
+#include "postgres.h"
+#include "utils/snapmgr.h"
+}
 
 namespace duckdb {
 
@@ -154,7 +160,7 @@ private:
 ColumnstoreTable::ColumnstoreTable(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info, Oid oid,
                                    Snapshot snapshot)
     : TableCatalogEntry(catalog, schema, info), oid(oid), metadata(make_uniq<ColumnstoreMetadata>(snapshot)),
-      path(std::get<0>(metadata->TablesSearch(oid))) {}
+      dv_manager(make_uniq<DVManager>(snapshot)), path(std::get<0>(metadata->TablesSearch(oid))) {}
 
 ColumnstoreTable::~ColumnstoreTable() = default;
 
@@ -202,63 +208,31 @@ void ColumnstoreTable::FinalizeInsert() {
 void ColumnstoreTable::Delete(ClientContext &context, unordered_set<row_t> &row_ids_set,
                               ColumnDataCollection *return_collection) {
     vector<row_t> row_ids(row_ids_set.begin(), row_ids_set.end());
-    std::sort(row_ids.begin(), row_ids.end());
-    auto file_names = metadata->DataFilesSearch(oid);
+    sort(row_ids.begin(), row_ids.end());
+
+    auto file_names = metadata->DataFilesSearch(oid, &context, &path, &columns);
     auto file_paths = GetFilePaths(path, file_names);
+    auto file_chunk_dv_map = DVManager::BuildFileChunkDVs(row_ids);
 
-    for (idx_t row_ids_index = 0; row_ids_index < row_ids.size();) {
-        int32_t file_number = row_ids[row_ids_index] >> 32;
-        uint32_t next_file_row_number = row_ids[row_ids_index] & 0xFFFFFFFF;
-        ParquetReader reader(context, file_paths[file_number], ParquetOptions{});
-        for (idx_t i = 0; i < reader.GetTypes().size(); i++) {
-            reader.reader_data.column_mapping.push_back(i);
-            reader.reader_data.column_ids.push_back(i);
-        }
-        ParquetReaderScanState state;
-        vector<idx_t> groups_to_read(reader.GetFileMetadata()->row_groups.size());
-        std::iota(groups_to_read.begin(), groups_to_read.end(), 0);
-        reader.InitializeScan(context, state, std::move(groups_to_read));
+    dv_manager->PreFetchDVs(file_paths);
+    dv_manager->ApplyDeletionVectors(file_chunk_dv_map, file_paths);
 
-        DataChunk chunk;
-        chunk.Initialize(context, reader.GetTypes());
-        DataChunk delete_chunk;
-        delete_chunk.Initialize(context, reader.GetTypes());
-        SelectionVector remaining_sel(STANDARD_VECTOR_SIZE);
-        SelectionVector delete_sel(STANDARD_VECTOR_SIZE);
-        uint32_t file_row_number = 0;
-        reader.Scan(state, chunk);
-        while (chunk.size()) {
-            idx_t remaining_sel_size = 0;
-            for (idx_t chunk_row_number = 0; chunk_row_number < chunk.size(); chunk_row_number++, file_row_number++) {
-                if (file_row_number == next_file_row_number) {
-                    row_ids_index++;
-                    if (row_ids_index < row_ids.size() && row_ids[row_ids_index] >> 32 == file_number) {
-                        next_file_row_number = row_ids[row_ids_index] & 0xFFFFFFFF;
-                    }
-                } else {
-                    remaining_sel.set_index(remaining_sel_size++, chunk_row_number);
-                }
+    if (return_collection) {
+        for (auto &[file_number, chunk_map] : file_chunk_dv_map) {
+            auto &file_path = file_paths[file_number];
+            ParquetReader reader(context, file_path, ParquetOptions{});
+
+            auto col_count = reader.GetTypes().size();
+            for (idx_t column_idx = 0; column_idx < col_count; column_idx++) {
+                reader.reader_data.column_mapping.push_back(column_idx);
+                reader.reader_data.column_ids.push_back(column_idx);
             }
-            if (remaining_sel_size < chunk.size()) {
-                if (return_collection) {
-                    idx_t delete_sel_size =
-                        SelectionVector::Inverted(remaining_sel, delete_sel, remaining_sel_size, chunk.size());
-                    delete_chunk.Append(chunk, false /*resize*/, &delete_sel, delete_sel_size);
-                    return_collection->Append(delete_chunk);
-                    delete_chunk.Reset();
-                }
-                chunk.Slice(remaining_sel, remaining_sel_size);
-            }
-            if (chunk.size()) {
-                Insert(context, chunk);
-            }
-            chunk.Reset();
-            reader.Scan(state, chunk);
+
+            DVManager::ReadAndAppendDeletedRows(context, reader, chunk_map, columns, return_collection);
         }
-        metadata->DataFilesDelete(file_names[file_number]);
-        LakeDeleteFile(oid, file_names[file_number]);
     }
-    FinalizeInsert();
+
+    dv_manager->Flush();
 }
 
 vector<string> ColumnstoreTable::GetFilePaths(const string &path, const vector<string> &file_names) {

@@ -1,6 +1,7 @@
 #include "columnstore/columnstore_metadata.hpp"
 #include "columnstore/columnstore_statistics.hpp"
 #include "columnstore/columnstore_table.hpp"
+#include "columnstore/deletion_vector_manager.hpp"
 #include "duckdb/catalog/catalog_entry/table_function_catalog_entry.hpp"
 #include "duckdb/common/multi_file_reader.hpp"
 #include "duckdb/main/extension_util.hpp"
@@ -16,6 +17,7 @@ struct ColumnstoreScanMultiFileReaderGlobalState : public MultiFileReaderGlobalS
     idx_t row_id_index = DConstants::INVALID_INDEX;
     idx_t file_row_number_index = DConstants::INVALID_INDEX;
     unique_ptr<Vector> row_ids;
+    unique_ptr<DVManager> dv_manager;
 };
 
 struct ColumnstoreScanMultiFileReader : public MultiFileReader {
@@ -51,18 +53,33 @@ struct ColumnstoreScanMultiFileReader : public MultiFileReader {
                           const MultiFileReaderBindData &bind_data, const MultiFileList &file_list,
                           const vector<LogicalType> &global_types, const vector<string> &global_names,
                           const vector<column_t> &global_column_ids) override {
-        auto it = std::find_if(global_column_ids.begin(), global_column_ids.end(),
-                               [](column_t global_column_id) { return IsRowIdColumnId(global_column_id); });
+
+        bool include_file_row_number = false;
+        auto it = find(global_names.begin(), global_names.end(), "file_row_number");
+        if (it != global_names.end()) {
+            include_file_row_number = true;
+        }
+
         vector<LogicalType> extra_columns;
-        if (it != global_column_ids.end()) {
+        if (include_file_row_number) {
             extra_columns.push_back(LogicalType::BIGINT);
         }
+
         auto global_state = make_uniq<ColumnstoreScanMultiFileReaderGlobalState>(std::move(extra_columns), file_list);
-        if (it != global_column_ids.end()) {
-            global_state->row_id_index = NumericCast<idx_t>(std::distance(global_column_ids.begin(), it));
+
+        if (include_file_row_number) {
+            auto it = std::find_if(global_column_ids.begin(), global_column_ids.end(), IsRowIdColumnId);
+            if (it != global_column_ids.end()) {
+                global_state->row_id_index = NumericCast<idx_t>(std::distance(global_column_ids.begin(), it));
+                global_state->row_ids = make_uniq<Vector>(LogicalType::BIGINT);
+            }
             global_state->file_row_number_index = global_column_ids.size();
-            global_state->row_ids = make_uniq<Vector>(LogicalType::BIGINT);
         }
+
+        DVManager dv_manager(snapshot);
+        dv_manager.PreFetchDVs(file_list.GetPaths());
+        global_state->dv_manager = make_uniq<DVManager>(std::move(dv_manager));
+
         return std::move(global_state);
     }
 
@@ -74,14 +91,16 @@ struct ColumnstoreScanMultiFileReader : public MultiFileReader {
                        optional_ptr<MultiFileReaderGlobalState> global_state) override {
         MultiFileReader::CreateMapping(file_name, local_types, local_names, global_types, global_names,
                                        global_column_ids, filters, reader_data, initial_file, options, global_state);
+
         auto &gstate = global_state->Cast<ColumnstoreScanMultiFileReaderGlobalState>();
-        if (gstate.row_id_index != DConstants::INVALID_INDEX) {
+        if (gstate.file_row_number_index != DConstants::INVALID_INDEX) {
             auto it = std::find_if(local_names.begin(), local_names.end(), [](const string &local_name) {
                 return StringUtil::CIEquals(local_name, "file_row_number");
             });
-            D_ASSERT(it != local_names.end());
-            reader_data.column_mapping.push_back(gstate.file_row_number_index);
-            reader_data.column_ids.push_back(NumericCast<idx_t>(std::distance(local_names.begin(), it)));
+            if (it != local_names.end()) {
+                reader_data.column_mapping.push_back(gstate.file_row_number_index);
+                reader_data.column_ids.push_back(NumericCast<idx_t>(std::distance(local_names.begin(), it)));
+            }
         }
     }
 
@@ -89,14 +108,29 @@ struct ColumnstoreScanMultiFileReader : public MultiFileReader {
                        const MultiFileReaderData &reader_data, DataChunk &chunk,
                        optional_ptr<MultiFileReaderGlobalState> global_state) override {
         MultiFileReader::FinalizeChunk(context, bind_data, reader_data, chunk, global_state);
+
         auto &gstate = global_state->Cast<ColumnstoreScanMultiFileReaderGlobalState>();
+        const bool has_file_row_number = (gstate.file_row_number_index != DConstants::INVALID_INDEX &&
+                                          gstate.file_row_number_index < chunk.data.size());
+        const bool has_row_ids = (gstate.row_id_index != DConstants::INVALID_INDEX);
+
+        if (!(has_file_row_number || has_row_ids)) {
+            return;
+        }
+
+        const idx_t file_list_idx = reader_data.file_list_idx.GetIndex();
+        auto &file_row_numbers = chunk.data[gstate.file_row_number_index];
+        file_row_numbers.Flatten(chunk.size());
+        auto file_row_numbers_data = FlatVector::GetData<int64_t>(file_row_numbers);
+
+        if (has_file_row_number) {
+            const string file_path = gstate.file_list->GetPaths()[file_list_idx];
+            gstate.dv_manager->FilterChunk(file_path, file_row_numbers_data, chunk);
+        }
+
         if (gstate.row_id_index != DConstants::INVALID_INDEX) {
-            auto &file_row_numbers = chunk.data[gstate.file_row_number_index];
-            file_row_numbers.Flatten(chunk.size());
-            auto file_row_numbers_data = FlatVector::GetData<int64_t>(file_row_numbers);
             gstate.row_ids->SetVectorType(VectorType::FLAT_VECTOR);
             auto row_ids_data = FlatVector::GetData<row_t>(*gstate.row_ids);
-            const idx_t file_list_idx = NumericCast<int32_t>(reader_data.file_list_idx.GetIndex());
             const idx_t file_number = file_numbers.empty() ? file_list_idx : file_numbers[file_list_idx];
             for (idx_t i = 0; i < chunk.size(); i++) {
                 row_ids_data[i] = (file_number << 32) + NumericCast<uint32_t>(file_row_numbers_data[i]);
@@ -105,6 +139,7 @@ struct ColumnstoreScanMultiFileReader : public MultiFileReader {
         }
     }
 
+    Snapshot snapshot = ColumnstoreMetadata::GetActiveSnapshot();
     vector<idx_t> file_numbers;
 };
 
@@ -116,6 +151,7 @@ TableFunction GetParquetScan(ClientContext &context) {
 }
 
 unique_ptr<GlobalTableFunctionState> ColumnstoreScanInitGlobal(ClientContext &context, TableFunctionInitInput &input) {
+
     // UPDATE can generate duplicate global_column_ids which ParquetReader doesn't expect
     unordered_map<column_t, idx_t> column_ids_map;
     vector<column_t> column_ids;

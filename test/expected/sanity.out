@@ -4,16 +4,16 @@ INSERT INTO t VALUES (2, 'f'), (3, 'g'), (4, 'h');
 UPDATE t SET b = a + 1 WHERE a > 3;
 DELETE FROM t WHERE a < 3;
 INSERT INTO t SELECT 2, b FROM t WHERE a = 3;
-SELECT * FROM t;
+SELECT * FROM t ORDER BY a, b;
  a | b 
 ---+---
- 4 | 5
- 5 | 6
- 4 | 5
- 3 | c
- 3 | g
  2 | c
  2 | g
+ 3 | c
+ 3 | g
+ 4 | 5
+ 4 | 5
+ 5 | 6
 (7 rows)
 
 DROP TABLE t;

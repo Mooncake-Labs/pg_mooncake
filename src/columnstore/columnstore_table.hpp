@@ -1,5 +1,6 @@
 #pragma once
 
+#include "columnstore/deletion_vector_manager.hpp"
 #include "duckdb/catalog/catalog_entry/table_catalog_entry.hpp"
 #include "pgduckdb/pg/declarations.hpp"
 
@@ -43,6 +44,7 @@ private:
 private:
     Oid oid;
     unique_ptr<ColumnstoreMetadata> metadata;
+    unique_ptr<DVManager> dv_manager;
     string path;
     unique_ptr<ColumnstoreWriter> writer;
 };

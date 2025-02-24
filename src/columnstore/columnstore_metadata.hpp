@@ -17,6 +17,7 @@ public:
     void TablesInsert(Oid oid, const string &path);
     void TablesDelete(Oid oid);
     std::tuple<string /*path*/, string /*timeline_id*/> TablesSearch(Oid oid);
+    static Snapshot GetActiveSnapshot();
 
     string GetTablePath(Oid oid);
     std::tuple<string /*table_name*/, vector<string> /*column_names*/, vector<string> /*column_types*/>

@@ -16,8 +16,6 @@
         "--cap-add=SYS_PTRACE"
     ],
     "features": {
-        "ghcr.io/devcontainers/features/sshd:1": {
-            "version": "latest"
-        }
+        "ghcr.io/devcontainers/features/sshd:1": {}
     }
 }

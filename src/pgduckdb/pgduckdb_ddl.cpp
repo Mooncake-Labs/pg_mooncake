@@ -1,7 +1,9 @@
 #include "duckdb.hpp"
 #include <regex>
 
+#include "duckdb/common/vector.hpp"
 #include "columnstore_handler.hpp"
+#include "columnstore/columnstore_metadata.hpp"
 #include "pgduckdb/pgduckdb_planner.hpp"
 #include "pgduckdb/pgduckdb_utils.hpp"
 
@@ -126,7 +128,6 @@ MooncakeHandleDDL(PlannedStmt *pstmt, const char *query_string, bool read_only_t
 			return;
 		}
 	}
-
 	prev_process_utility_hook(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc);
 }
 
@@ -162,6 +163,39 @@ DuckdbUtilityHook_Cpp(PlannedStmt *pstmt, const char *query_string, bool read_on
 				SetQueryCompletion(qc, CMDTAG_COPY, processed);
 			}
 			return;
+		}
+	} else if (IsA(parsetree, VacuumStmt)) {
+		VacuumStmt *stmt = castNode(VacuumStmt, parsetree);
+		if (stmt->is_vacuumcmd) {
+			duckdb::ColumnstoreMetadata metadata(NULL /*snapshot*/);
+			List* relations = stmt->rels;
+			duckdb::vector<Oid> oids;
+			// if relations is empty, then we need to vacuum all tables
+			if (list_length(relations) == 0) {
+				oids = metadata.GetAllTableOids();
+			} else {
+				for (int i = 0; i < list_length(relations); i++) {
+					RangeVar *rel = castNode(VacuumRelation, list_nth(relations, i))->relation;
+					Oid relid = RangeVarGetRelid(rel, AccessShareLock, false /*missing_ok*/);
+					oids.emplace_back(relid);
+				}
+			}
+			std::string full_update_no_op_query;
+			auto connection = pgduckdb::DuckDBManager::GetConnection();
+			for (Oid relid : oids) {
+				if (IsColumnstoreTable(relid)) {
+					auto table_metadata = metadata.GetTableMetadata(relid);
+					if (!std::get<1>(table_metadata).empty()) {
+						std::string update_no_op_query = std::string("UPDATE ") + pgduckdb_relation_name(relid) + " SET " + std::get<1>(table_metadata)[0] + " = " + std::get<1>(table_metadata)[0] + ";\n";
+						full_update_no_op_query += update_no_op_query;
+					}
+				}
+			}
+			if (full_update_no_op_query.size() > 0) {
+				PushActiveSnapshot(GetTransactionSnapshot());
+				pgduckdb::DuckDBQueryOrThrow(*connection, full_update_no_op_query);
+				PopActiveSnapshot();
+			}
 		}
 	}
 

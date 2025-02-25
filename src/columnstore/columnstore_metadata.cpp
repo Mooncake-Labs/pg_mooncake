@@ -145,6 +145,23 @@ ColumnstoreMetadata::GetTableMetadata(Oid oid) {
     return {std::move(table_name), std::move(column_names), std::move(column_types)};
 }
 
+vector<Oid> ColumnstoreMetadata::GetAllTableOids() {
+    ::Relation table = table_open(Tables(), AccessShareLock);
+    SysScanDesc scan = systable_beginscan(table, 0, false, snapshot, 0 /*nkeys*/, NULL /*key*/);
+    HeapTuple tuple;
+    std::vector<Oid> oids;
+    TupleDesc desc = RelationGetDescr(table);
+    Datum values[x_tables_natts];
+    bool isnull[x_tables_natts];
+    while (HeapTupleIsValid(tuple = systable_getnext(scan))) {
+        heap_deform_tuple(tuple, desc, values, isnull);
+        oids.emplace_back(DatumGetObjectId(values[0]));
+    }
+    systable_endscan(scan);
+    table_close(table, AccessShareLock);
+    return oids;
+}
+
 void ColumnstoreMetadata::DataFilesInsert(Oid oid, const string &file_name, const string_t &file_metadata) {
     ::Relation table = table_open(DataFiles(), RowExclusiveLock);
     TupleDesc desc = RelationGetDescr(table);

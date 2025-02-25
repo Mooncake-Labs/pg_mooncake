@@ -1,0 +1,68 @@
+CREATE TABLE t (a INT) USING columnstore;
+INSERT INTO t VALUES (1), (2), (3);
+INSERT INTO t VALUES (1), (2), (3);
+SELECT COUNT(*) FROM mooncake.delta_update_records;
+ count 
+-------
+     4
+(1 row)
+
+DELETE FROM t WHERE a = 1;
+SELECT COUNT(*) FROM mooncake.delta_update_records;
+ count 
+-------
+     5
+(1 row)
+
+-- Request to flush buffered records.
+SELECT mooncake.dump_delta_update_records();
+ dump_delta_update_records 
+---------------------------
+ 
+(1 row)
+
+-- Check buffered records after flush.
+SELECT COUNT(*) FROM mooncake.delta_update_records;
+ count 
+-------
+     0
+(1 row)
+
+-- Check buffered records after flush.
+SELECT COUNT(*) FROM mooncake.delta_update_records;
+ count 
+-------
+     0
+(1 row)
+
+-- Rows inserted inside of an aborted transaction are deleted by postgres.
+BEGIN;
+INSERT INTO t VALUES (1), (2), (3);
+SELECT COUNT(*) FROM mooncake.delta_update_records;
+ count 
+-------
+     1
+(1 row)
+
+-- Request to flush buffered records inside of an ongoing transaction doesn't flush any records.
+SELECT mooncake.dump_delta_update_records();
+ dump_delta_update_records 
+---------------------------
+ 
+(1 row)
+
+SELECT COUNT(*) FROM mooncake.delta_update_records;
+ count 
+-------
+     1
+(1 row)
+
+ROLLBACK;
+SELECT COUNT(*) FROM mooncake.delta_update_records;
+ count 
+-------
+     0
+(1 row)
+
+-- Drop the table after test.
+DROP TABLE t;

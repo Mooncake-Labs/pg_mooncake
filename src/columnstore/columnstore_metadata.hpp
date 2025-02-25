@@ -22,6 +22,8 @@ public:
     std::tuple<string /*table_name*/, vector<string> /*column_names*/, vector<string> /*column_types*/>
     GetTableMetadata(Oid oid);
 
+    vector<Oid> GetAllTableOids();
+
     void DataFilesInsert(Oid oid, const string &file_name, const string_t &file_metadata);
     void DataFilesDelete(const string &file_name);
     void DataFilesDelete(Oid oid);

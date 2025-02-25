@@ -180,9 +180,8 @@ void columnstore_relation_copy_for_cluster(Relation OldTable, Relation NewTable,
     elog(ERROR, "columnstore_relation_copy_for_cluster not implemented");
 }
 
-void columnstore_relation_vacuum(Relation rel, struct VacuumParams *params, BufferAccessStrategy bstrategy) {
-    elog(ERROR, "columnstore_relation_vacuum not implemented");
-}
+// Handled in utility hook
+void columnstore_relation_vacuum(Relation rel, VacuumParams *params, BufferAccessStrategy bstrategy) {}
 
 #if PG_VERSION_NUM >= 170000
 bool columnstore_scan_analyze_next_block(TableScanDesc scan, ReadStream *stream) {

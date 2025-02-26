@@ -9,6 +9,53 @@
 
 namespace duckdb {
 
+class TransactionGuard {
+public:
+    TransactionGuard() {
+        auto &context = *pgduckdb::DuckDBManager::GetConnectionUnsafe()->context;
+        if (!context.transaction.HasActiveTransaction()) {
+            context.transaction.BeginTransaction();
+            require_new_transaction = true;
+        }
+    }
+    ~TransactionGuard() {
+        if (require_new_transaction) {
+            auto &context = *pgduckdb::DuckDBManager::GetConnectionUnsafe()->context;
+            context.transaction.Commit();
+        }
+    }
+
+private:
+    bool require_new_transaction = false;
+};
+
+bool ColumnstoreStorage::DeleteFiles(const vector<string> &file_paths) {
+    TransactionGuard transaction_guard;
+    auto &context = *pgduckdb::DuckDBManager::GetConnectionUnsafe()->context;
+    auto &fs = FileSystem::GetFileSystem(context);
+
+    // TODO parallelize
+    for (const auto &path : file_paths) {
+        try {
+            // TODO httpfs s3fs does not implement RemoveFile interface
+            pd_log(DEBUG1, "delete file: %s", path.c_str());
+            fs.RemoveFile(path);
+        } catch (IOException &e) {
+            std::string_view errmsg(e.what());
+            // Ignore ENOENT exception
+            if (errmsg.find("No such file or directory") == string::npos) {
+                pd_log(WARNING, "Failed to delete file: %s", e.what());
+                return false;
+            }
+        } catch (std::exception &e) {
+            pd_log(WARNING, "Failed to delete file: %s", e.what());
+            return false;
+        }
+    }
+
+    return true;
+}
+
 void ColumnstoreStorageContextState::QueryEnd() {
     pending_deletes.clear();
 }
@@ -33,25 +80,8 @@ void ColumnstoreStorageContextState::DoPendingDeletes(bool isCommit) {
         if (pending.at_commit == isCommit) {
             pd_log(DEBUG1, "start deleting files of table: %d", pending.oid);
             auto file_path = ColumnstoreTable::GetFilePaths(pending.table_path, pending.file_names, false);
-            auto &context = *pgduckdb::DuckDBManager::GetConnectionUnsafe()->context;
-            bool require_new_transaction = !context.transaction.HasActiveTransaction();
-            if (require_new_transaction) {
-                context.transaction.BeginTransaction();
-            }
-            auto &fs = FileSystem::GetFileSystem(context);
-            try {
-                for (auto &path : file_path) {
-                    // TODO parallelize
-                    // TODO httpfs s3fs does not implement RemoveFile interface
-                    pd_log(DEBUG1, "delete file: %s", path);
-                    fs.RemoveFile(path);
-                }
-            } catch (const Exception &e) {
-                pd_log(WARNING, "Failed to delete dead file for relation %d, errmsg: %s", pending.oid, e.what());
-            }
-
-            if (require_new_transaction) {
-                context.transaction.Commit();
+            if (!ColumnstoreStorage::DeleteFiles(file_path)) {
+                return false;
             }
         }
         return true;

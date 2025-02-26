@@ -27,6 +27,7 @@ public:
     void DataFilesDelete(Oid oid);
     vector<string> DataFilesSearch(Oid oid, ClientContext *context = nullptr, const string *path = nullptr,
                                    const ColumnList *columns = nullptr);
+    void DeadDataFilesDelete(Oid oid);
     vector<string> DeadDataFilesSearch(Oid oid);
 
     vector<string> SecretsGetDuckdbQueries();

@@ -181,7 +181,7 @@ void columnstore_relation_copy_for_cluster(Relation OldTable, Relation NewTable,
 }
 
 void columnstore_relation_vacuum(Relation rel, struct VacuumParams *params, BufferAccessStrategy bstrategy) {
-    elog(ERROR, "columnstore_relation_vacuum not implemented");
+    duckdb::Columnstore::VacuumTable(rel->rd_id);
 }
 
 #if PG_VERSION_NUM >= 170000

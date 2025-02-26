@@ -299,6 +299,30 @@ vector<string> ColumnstoreMetadata::DeadDataFilesSearch(Oid oid) {
     return file_names;
 }
 
+
+void ColumnstoreMetadata::DeadDataFilesDelete(Oid oid) {
+    ::Relation table = table_open(DeadDataFiles(), RowExclusiveLock);
+    ::Relation index = index_open(DeadDataFilesOid(), RowExclusiveLock);
+    TupleDesc desc = RelationGetDescr(table);
+    ScanKeyData key[1];
+    ScanKeyInit(&key[0], 1 /*attributeNumber*/, BTEqualStrategyNumber, F_OIDEQ, ObjectIdGetDatum(oid));
+    SysScanDesc scan = systable_beginscan_ordered(table, index, snapshot, 1 /*nkeys*/, key);
+
+    HeapTuple tuple;
+    while (HeapTupleIsValid(tuple = systable_getnext_ordered(scan, ForwardScanDirection))) {
+        bool isnull;
+        // TODO file_name is allocated in PG memory context and should be freed
+        auto file_name = TextDatumGetCString(heap_getattr(tuple, 2 /*attnum*/, desc, &isnull));
+        columnstore_stats.Delete(file_name);
+        PostgresFunctionGuard(CatalogTupleDelete, table, &tuple->t_self);
+    }
+
+    systable_endscan_ordered(scan);
+    CommandCounterIncrement();
+    index_close(index, RowExclusiveLock);
+    table_close(table, RowExclusiveLock);
+}
+
 vector<string> ColumnstoreMetadata::SecretsGetDuckdbQueries() {
     ::Relation table = table_open(Secrets(), AccessShareLock);
     TupleDesc desc = RelationGetDescr(table);

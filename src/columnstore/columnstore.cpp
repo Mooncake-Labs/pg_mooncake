@@ -1,5 +1,6 @@
 #include "columnstore/columnstore.hpp"
 #include "columnstore/columnstore_metadata.hpp"
+#include "columnstore/columnstore_table.hpp"
 #include "columnstore/columnstore_storage.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
 #include "lake/lake.hpp"
@@ -30,6 +31,15 @@ void Columnstore::TruncateTable(Oid oid) {
     metadata.DataFilesDelete(oid);
     for (auto file_name : file_names) {
         LakeDeleteFile(oid, file_name);
+    }
+}
+
+void Columnstore::VacuumTable(Oid oid) {
+    ColumnstoreMetadata metadata(NULL /*snapshot*/);
+    vector<string> file_names = metadata.DeadDataFilesSearch(oid);
+    vector<string> file_paths = ColumnstoreTable::GetFilePaths(metadata.GetTablePath(oid), file_names);
+    if (ColumnstoreStorage::DeleteFiles(file_paths)) {
+        metadata.DeadDataFilesDelete(oid);
     }
 }
 

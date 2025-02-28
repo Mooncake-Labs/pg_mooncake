@@ -9,8 +9,9 @@ extern "C" {
 #include "catalog/namespace.h"   // makeRangeVarFromNameList, RangeVarGetRelid
 #include "optimizer/plancat.h"   // estimate_rel_size
 #include "utils/rel.h"
-#include "utils/resowner.h" // CurrentResourceOwner and TopTransactionResourceOwner
-#include "utils/syscache.h" // RELOID
+#include "utils/resowner.h"  // CurrentResourceOwner and TopTransactionResourceOwner
+#include "utils/syscache.h"  // RELOID
+#include "utils/lsyscache.h" //
 }
 
 namespace pgduckdb {
@@ -30,6 +31,16 @@ GetTupleDescNatts(const TupleDesc tupleDesc) {
 const char *
 GetAttName(const Form_pg_attribute att) {
 	return NameStr(att->attname);
+}
+
+const char *
+GetNamespaceName(Relation rel) {
+	return get_namespace_name((rel)->rd_rel->relnamespace);
+}
+
+const char *
+GetRelationName(Relation rel) {
+	return NameStr((rel)->rd_rel->relname);
 }
 
 Form_pg_attribute

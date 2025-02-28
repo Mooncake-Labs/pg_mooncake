@@ -15,7 +15,9 @@ const char *x_mooncake_local_cache = "mooncake_local_cache/";
 
 bool mooncake_allow_local_tables = true;
 char *mooncake_default_bucket = strdup("");
-bool mooncake_enable_local_cache = true;
+bool mooncake_enable_local_write_cache = true;
+bool mooncake_enable_local_read_cache = false;
+int mooncake_local_read_cache_block_size = 1ULL << 18; // 256KiB
 bool mooncake_enable_memory_metadata_cache = false;
 const char *mooncake_timeline_id = "main";
 
@@ -35,6 +37,9 @@ void _PG_init() {
     if (neon_timeline_id) {
         mooncake_allow_local_tables = false;
         mooncake_timeline_id = neon_timeline_id;
+        // Enable read cache for serverless deployment; both read cache and write cache are enabled, with write cache
+        // checked first, then fallback to read cache when write cache cleaned up.
+        mooncake_enable_local_read_cache = true;
     }
 
     auto local_fs = duckdb::FileSystem::CreateLocal();

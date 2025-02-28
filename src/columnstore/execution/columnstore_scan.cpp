@@ -148,6 +148,7 @@ TableFunction ColumnstoreTable::GetScanFunction(ClientContext &context, unique_p
     columnstore_scan.get_multi_file_reader = ColumnstoreScanMultiFileReader::Create;
 
     vector<Value> values;
+    values.reserve(file_paths.size());
     for (auto &file_path : file_paths) {
         values.push_back(Value(file_path));
     }

@@ -35,6 +35,8 @@ public:
     void Delete(ClientContext &context, unordered_set<row_t> &row_ids_set,
                 ColumnDataCollection *return_collection = nullptr);
 
+    void Vacuum(ClientContext &context);
+
 private:
     vector<string> GetFilePaths(const string &path, const vector<string> &file_names);
 

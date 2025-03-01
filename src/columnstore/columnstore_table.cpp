@@ -198,6 +198,38 @@ void ColumnstoreTable::FinalizeInsert() {
     }
 }
 
+void ColumnstoreTable::Vacuum(ClientContext &context) {
+    auto file_names = metadata->DataFilesSearch(oid);
+    auto file_paths = GetFilePaths(path, file_names);
+    for (idx_t file_number = 0; file_number < file_names.size(); file_number++) {
+        ParquetReader reader(context, file_paths[file_number], ParquetOptions{});
+        // TODO: do a check on actual file size?
+        if (reader.GetFileMetadata()->num_rows <= duckdb::Storage::ROW_GROUP_SIZE) {
+            ParquetReaderScanState state;
+            vector<idx_t> groups_to_read(reader.GetFileMetadata()->row_groups.size());
+            std::iota(groups_to_read.begin(), groups_to_read.end(), 0);
+            reader.InitializeScan(context, state, std::move(groups_to_read));
+            for (idx_t i = 0; i < reader.GetTypes().size(); i++) {
+                reader.reader_data.column_mapping.push_back(i);
+                reader.reader_data.column_ids.push_back(i);
+            }
+            DataChunk to_reinsert_chunk;
+            to_reinsert_chunk.Initialize(context, reader.GetTypes());
+            reader.Scan(state, to_reinsert_chunk);
+
+            while (to_reinsert_chunk.size()) {
+                Insert(context, to_reinsert_chunk);
+                to_reinsert_chunk.Reset();
+                reader.Scan(state, to_reinsert_chunk);
+            }
+
+            metadata->DataFilesDelete(file_names[file_number]);
+            LakeDeleteFile(oid, file_names[file_number]);
+        }
+    }
+    FinalizeInsert();
+}
+
 void ColumnstoreTable::Delete(ClientContext &context, unordered_set<row_t> &row_ids_set,
                               ColumnDataCollection *return_collection) {
     vector<row_t> row_ids(row_ids_set.begin(), row_ids_set.end());

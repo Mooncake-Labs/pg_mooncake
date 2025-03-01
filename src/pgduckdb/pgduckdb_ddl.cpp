@@ -4,8 +4,12 @@
 #include "duckdb/common/vector.hpp"
 #include "columnstore_handler.hpp"
 #include "columnstore/columnstore_metadata.hpp"
+#include "columnstore/columnstore_table.hpp"
 #include "pgduckdb/pgduckdb_planner.hpp"
 #include "pgduckdb/pgduckdb_utils.hpp"
+#include "pgduckdb/catalog/pgduckdb_catalog.hpp"
+#include "pgduckdb/catalog/pgduckdb_transaction.hpp"
+#include "pgduckdb/catalog/pgduckdb_transaction_manager.hpp"
 
 extern "C" {
 #include "postgres.h"
@@ -132,6 +136,59 @@ MooncakeHandleDDL(PlannedStmt *pstmt, const char *query_string, bool read_only_t
 }
 
 static void
+MooncakeHandleVacuum(VacuumStmt *stmt) {
+	if (stmt->is_vacuumcmd) {
+		duckdb::vector<Oid> oids;
+		List* relations = stmt->rels;
+		duckdb::ColumnstoreMetadata metadata(NULL /*snapshot*/);
+		if (list_length(relations) == 0) {
+			oids = metadata.GetAllTableOids();
+		} else {
+			for (int i = 0; i < list_length(relations); i++) {
+				RangeVar *rel_range_var = castNode(VacuumRelation, list_nth(relations, i))->relation;
+				Oid relid = RangeVarGetRelid(rel_range_var, AccessShareLock, true);
+				if (IsColumnstoreTable(relid)) {
+					oids.emplace_back(relid);
+				}
+			}
+		}
+		if (oids.size() == 0) {
+			return;
+		}
+
+		duckdb::ClientContext &context = *pgduckdb::DuckDBManager::GetConnection()->context;
+		duckdb::DatabaseManager &db_manager = duckdb::DatabaseManager::Get(*context.db);
+		bool require_new_transaction = !context.transaction.HasActiveTransaction();
+		if (require_new_transaction) {
+			context.transaction.BeginTransaction();
+		}
+
+		duckdb::optional_ptr<duckdb::AttachedDatabase> pgmooncake_db = db_manager.GetDatabase(context, "pgmooncake");
+		pgduckdb::PostgresCatalog &catalog = pgmooncake_db->GetCatalog().Cast<pgduckdb::PostgresCatalog>();
+		duckdb::AttachedDatabase &attached = catalog.GetAttached();
+		pgduckdb::PostgresTransaction &transaction = attached.GetTransactionManager().StartTransaction(context).Cast<pgduckdb::PostgresTransaction>();;
+
+		for (Oid relid : oids) {
+			const char *postgres_schema_name = get_namespace_name_or_temp(get_rel_namespace(relid));
+			const char* relname = get_rel_name(relid);
+
+			// load in schema entry first so that we can retrieve the table entry
+			duckdb::optional_ptr<duckdb::CatalogEntry> schema = transaction.GetCatalogEntry(duckdb::CatalogType::SCHEMA_ENTRY, postgres_schema_name, "");
+			D_ASSERT(schema);
+			duckdb::optional_ptr<duckdb::CatalogEntry> table = transaction.GetCatalogEntry(duckdb::CatalogType::TABLE_ENTRY, postgres_schema_name, relname);
+			D_ASSERT(table);
+
+			auto& columnstore_table = table->Cast<duckdb::ColumnstoreTable>();
+			columnstore_table.Vacuum(context);
+		}
+		attached.GetTransactionManager().CommitTransaction(context, transaction);
+		if (require_new_transaction) {
+			context.transaction.Commit();
+		}
+	}
+}
+
+static void
 DuckdbUtilityHook_Cpp(PlannedStmt *pstmt, const char *query_string, bool read_only_tree, ProcessUtilityContext context,
                       ParamListInfo params, struct QueryEnvironment *query_env, DestReceiver *dest,
                       QueryCompletion *qc) {
@@ -166,37 +223,7 @@ DuckdbUtilityHook_Cpp(PlannedStmt *pstmt, const char *query_string, bool read_on
 		}
 	} else if (IsA(parsetree, VacuumStmt)) {
 		VacuumStmt *stmt = castNode(VacuumStmt, parsetree);
-		if (stmt->is_vacuumcmd) {
-			duckdb::ColumnstoreMetadata metadata(NULL /*snapshot*/);
-			List* relations = stmt->rels;
-			duckdb::vector<Oid> oids;
-			// if relations is empty, then we need to vacuum all tables
-			if (list_length(relations) == 0) {
-				oids = metadata.GetAllTableOids();
-			} else {
-				for (int i = 0; i < list_length(relations); i++) {
-					RangeVar *rel = castNode(VacuumRelation, list_nth(relations, i))->relation;
-					Oid relid = RangeVarGetRelid(rel, AccessShareLock, false /*missing_ok*/);
-					oids.emplace_back(relid);
-				}
-			}
-			std::string full_update_no_op_query;
-			auto connection = pgduckdb::DuckDBManager::GetConnection();
-			for (Oid relid : oids) {
-				if (IsColumnstoreTable(relid)) {
-					auto table_metadata = metadata.GetTableMetadata(relid);
-					if (!std::get<1>(table_metadata).empty()) {
-						std::string update_no_op_query = std::string("UPDATE ") + pgduckdb_relation_name(relid) + " SET " + std::get<1>(table_metadata)[0] + " = " + std::get<1>(table_metadata)[0] + ";\n";
-						full_update_no_op_query += update_no_op_query;
-					}
-				}
-			}
-			if (full_update_no_op_query.size() > 0) {
-				PushActiveSnapshot(GetTransactionSnapshot());
-				pgduckdb::DuckDBQueryOrThrow(*connection, full_update_no_op_query);
-				PopActiveSnapshot();
-			}
-		}
+		MooncakeHandleVacuum(stmt);
 	}
 
 	/*

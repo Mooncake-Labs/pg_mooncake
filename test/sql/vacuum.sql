@@ -1,0 +1,17 @@
+DROP EXTENSION IF EXISTS pg_mooncake CASCADE;
+CREATE EXTENSION pg_mooncake;
+
+CREATE TABLE t (a int, b int) USING columnstore;
+INSERT INTO t VALUES (1, 1);
+INSERT INTO t VALUES (2, 2);
+INSERT INTO t VALUES (3, 3);
+INSERT INTO t VALUES (4, 4);
+INSERT INTO t VALUES (5, 5);
+
+SELECT COUNT(*) FROM mooncake.data_files;
+
+VACUUM t;
+
+SELECT COUNT(*) FROM mooncake.data_files;
+
+DROP TABLE t;

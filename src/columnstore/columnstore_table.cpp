@@ -203,8 +203,7 @@ void ColumnstoreTable::Vacuum(ClientContext &context) {
     auto file_paths = GetFilePaths(path, file_names);
     for (idx_t file_number = 0; file_number < file_names.size(); file_number++) {
         ParquetReader reader(context, file_paths[file_number], ParquetOptions{});
-        // TODO: do a check on actual file size?
-        if (reader.GetFileMetadata()->num_rows <= duckdb::Storage::ROW_GROUP_SIZE) {
+        if (reader.fs.GetFileSize(reader.GetHandle()) <= x_vacuum_threshold_file_size_bytes) {
             ParquetReaderScanState state;
             vector<idx_t> groups_to_read(reader.GetFileMetadata()->row_groups.size());
             std::iota(groups_to_read.begin(), groups_to_read.end(), 0);

@@ -41,6 +41,8 @@ private:
     vector<string> GetFilePaths(const string &path, const vector<string> &file_names);
 
 private:
+    static const idx_t x_vacuum_threshold_file_size_bytes = 1 << 24; // 16MB
+
     Oid oid;
     unique_ptr<ColumnstoreMetadata> metadata;
     string path;

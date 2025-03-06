@@ -223,7 +223,7 @@ vector<string> ColumnstoreMetadata::DataFilesSearch(Oid oid, ClientContext *cont
             auto transport = std::make_shared<TMemoryBuffer>(data_ptr_cast(VARDATA_ANY(file_metadata_text)),
                                                              VARSIZE_ANY_EXHDR(file_metadata_text));
             auto protocol = make_uniq<TCompactProtocolT<TMemoryBuffer>>(std::move(transport));
-            auto file_metadata = make_uniq<FileMetaData>();
+            auto file_metadata = make_uniq<duckdb_parquet::FileMetaData>();
             file_metadata->read(protocol.get());
             auto metadata = make_shared_ptr<ParquetFileMetadataCache>(
                 std::move(file_metadata), std::numeric_limits<time_t>::max() /*read_time*/, nullptr /*geo_metadata*/);

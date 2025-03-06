@@ -180,8 +180,6 @@ DuckDBManager::Initialize() {
 		SET_DUCKDB_OPTION(maximum_threads);
 	}
 
-	config.options.object_cache_enable = mooncake_enable_memory_metadata_cache;
-
 	const char *connection_string = nullptr;
 
 	/*

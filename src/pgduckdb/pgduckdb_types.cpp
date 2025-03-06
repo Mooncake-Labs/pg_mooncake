@@ -1148,7 +1148,7 @@ ConvertPostgresParameterToDuckValue(Datum value, Oid postgres_type) {
 		return duckdb::Value::TIMESTAMP(duckdb::timestamp_t(DatumGetTimestamp(value) + PGDUCKDB_DUCK_TIMESTAMP_OFFSET));
 	case TIMESTAMPTZOID:
 		return duckdb::Value::TIMESTAMPTZ(
-		    duckdb::timestamp_t(DatumGetTimestampTz(value) + PGDUCKDB_DUCK_TIMESTAMP_OFFSET));
+		    duckdb::timestamp_tz_t(DatumGetTimestampTz(value) + PGDUCKDB_DUCK_TIMESTAMP_OFFSET));
 	case FLOAT4OID:
 		return duckdb::Value::FLOAT(DatumGetFloat4(value));
 	case FLOAT8OID:

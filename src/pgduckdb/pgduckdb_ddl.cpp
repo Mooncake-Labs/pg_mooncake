@@ -3,6 +3,7 @@
 
 #include "duckdb/common/vector.hpp"
 #include "columnstore_handler.hpp"
+#include "columnstore/columnstore.hpp"
 #include "columnstore/columnstore_metadata.hpp"
 #include "columnstore/columnstore_table.hpp"
 #include "pgduckdb/pgduckdb_planner.hpp"
@@ -157,31 +158,15 @@ MooncakeHandleVacuum(VacuumStmt *stmt) {
 		}
 
 		duckdb::ClientContext &context = *pgduckdb::DuckDBManager::GetConnection()->context;
-		duckdb::DatabaseManager &db_manager = duckdb::DatabaseManager::Get(*context.db);
 		bool require_new_transaction = !context.transaction.HasActiveTransaction();
 		if (require_new_transaction) {
 			context.transaction.BeginTransaction();
 		}
 
-		duckdb::optional_ptr<duckdb::AttachedDatabase> pgmooncake_db = db_manager.GetDatabase(context, "pgmooncake");
-		pgduckdb::PostgresCatalog &catalog = pgmooncake_db->GetCatalog().Cast<pgduckdb::PostgresCatalog>();
-		duckdb::AttachedDatabase &attached = catalog.GetAttached();
-		pgduckdb::PostgresTransaction &transaction = attached.GetTransactionManager().StartTransaction(context).Cast<pgduckdb::PostgresTransaction>();;
-
 		for (Oid relid : oids) {
-			const char *postgres_schema_name = get_namespace_name_or_temp(get_rel_namespace(relid));
-			const char* relname = get_rel_name(relid);
-
-			// load in schema entry first so that we can retrieve the table entry
-			duckdb::optional_ptr<duckdb::CatalogEntry> schema = transaction.GetCatalogEntry(duckdb::CatalogType::SCHEMA_ENTRY, postgres_schema_name, "");
-			D_ASSERT(schema);
-			duckdb::optional_ptr<duckdb::CatalogEntry> table = transaction.GetCatalogEntry(duckdb::CatalogType::TABLE_ENTRY, postgres_schema_name, relname);
-			D_ASSERT(table);
-
-			auto& columnstore_table = table->Cast<duckdb::ColumnstoreTable>();
+			auto& columnstore_table = duckdb::Columnstore::GetTable(context, relid);
 			columnstore_table.Vacuum(context);
 		}
-		attached.GetTransactionManager().CommitTransaction(context, transaction);
 		if (require_new_transaction) {
 			context.transaction.Commit();
 		}

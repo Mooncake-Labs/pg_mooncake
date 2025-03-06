@@ -24,6 +24,8 @@ public:
 
     vector<Oid> GetAllTableOids();
 
+    std::tuple<string /*table_name*/, string /*schema_name*/> GetTableNameAndSchemaName(Oid oid);
+
     void DataFilesInsert(Oid oid, const string &file_name, const string_t &file_metadata);
     void DataFilesDelete(const string &file_name);
     void DataFilesDelete(Oid oid);

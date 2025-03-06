@@ -2,6 +2,7 @@
 
 #include "duckdb/common/unique_ptr.hpp"
 #include "pgduckdb/pg/declarations.hpp"
+#include "columnstore/columnstore_table.hpp"
 
 namespace duckdb {
 
@@ -14,6 +15,8 @@ class PhysicalOperator;
 class Columnstore {
 public:
     static void CreateTable(Oid oid);
+
+    static ColumnstoreTable &GetTable(ClientContext &context, Oid oid);
 
     static void TruncateTable(Oid oid);
 

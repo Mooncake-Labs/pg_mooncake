@@ -39,6 +39,7 @@ docker run -it --rm --link mooncake-demo:postgres mooncakelabs/pg_mooncake psql 
 ### Option 2: From Source
 Build for Postgres versions 14–17:
 ```bash
+git submodule update --init --recursive
 make release -j$(nproc)
 make install
 ```

@@ -14,4 +14,6 @@ VACUUM t;
 
 SELECT COUNT(*) FROM mooncake.data_files;
 
+SELECT * FROM t ORDER BY a;
+
 DROP TABLE t;

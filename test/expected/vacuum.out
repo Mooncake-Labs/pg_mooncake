@@ -19,4 +19,14 @@ SELECT COUNT(*) FROM mooncake.data_files;
      1
 (1 row)
 
+SELECT * FROM t ORDER BY a;
+ a | b 
+---+---
+ 1 | 1
+ 2 | 2
+ 3 | 3
+ 4 | 4
+ 5 | 5
+(5 rows)
+
 DROP TABLE t;

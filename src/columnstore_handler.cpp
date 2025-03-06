@@ -1,5 +1,7 @@
 #include "columnstore/columnstore.hpp"
 #include "pgduckdb/pgduckdb_types.hpp"
+#include "pgduckdb/pgduckdb_duckdb.hpp"
+#include "columnstore/columnstore_table.hpp"
 
 extern "C" {
 #include "postgres.h"
@@ -180,8 +182,18 @@ void columnstore_relation_copy_for_cluster(Relation OldTable, Relation NewTable,
     elog(ERROR, "columnstore_relation_copy_for_cluster not implemented");
 }
 
-// Handled in utility hook
-void columnstore_relation_vacuum(Relation rel, VacuumParams *params, BufferAccessStrategy bstrategy) {}
+void columnstore_relation_vacuum(Relation rel, VacuumParams *params, BufferAccessStrategy bstrategy) {
+    duckdb::ClientContext &context = *pgduckdb::DuckDBManager::GetConnection()->context;
+    bool require_new_transaction = !context.transaction.HasActiveTransaction();
+    if (require_new_transaction) {
+        context.transaction.BeginTransaction();
+    }
+    duckdb::ColumnstoreTable &table = duckdb::Columnstore::GetTable(context, rel->rd_id);
+    table.Vacuum(context);
+    if (require_new_transaction) {
+        context.transaction.Commit();
+    }
+}
 
 #if PG_VERSION_NUM >= 170000
 bool columnstore_scan_analyze_next_block(TableScanDesc scan, ReadStream *stream) {

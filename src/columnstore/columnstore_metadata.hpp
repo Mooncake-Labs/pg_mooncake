@@ -21,9 +21,6 @@ public:
     string GetTablePath(Oid oid);
     std::tuple<string /*table_name*/, vector<string> /*column_names*/, vector<string> /*column_types*/>
     GetTableMetadata(Oid oid);
-
-    vector<Oid> GetAllTableOids();
-
     std::tuple<string /*table_name*/, string /*schema_name*/> GetTableNameAndSchemaName(Oid oid);
 
     void DataFilesInsert(Oid oid, const string &file_name, const string_t &file_metadata);

@@ -1,16 +1,9 @@
 #include "duckdb.hpp"
 #include <regex>
 
-#include "duckdb/common/vector.hpp"
 #include "columnstore_handler.hpp"
-#include "columnstore/columnstore.hpp"
-#include "columnstore/columnstore_metadata.hpp"
-#include "columnstore/columnstore_table.hpp"
 #include "pgduckdb/pgduckdb_planner.hpp"
 #include "pgduckdb/pgduckdb_utils.hpp"
-#include "pgduckdb/catalog/pgduckdb_catalog.hpp"
-#include "pgduckdb/catalog/pgduckdb_transaction.hpp"
-#include "pgduckdb/catalog/pgduckdb_transaction_manager.hpp"
 
 extern "C" {
 #include "postgres.h"
@@ -133,44 +126,8 @@ MooncakeHandleDDL(PlannedStmt *pstmt, const char *query_string, bool read_only_t
 			return;
 		}
 	}
+
 	prev_process_utility_hook(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc);
-}
-
-static void
-MooncakeHandleVacuum(VacuumStmt *stmt) {
-	if (stmt->is_vacuumcmd) {
-		duckdb::vector<Oid> oids;
-		List* relations = stmt->rels;
-		duckdb::ColumnstoreMetadata metadata(NULL /*snapshot*/);
-		if (list_length(relations) == 0) {
-			oids = metadata.GetAllTableOids();
-		} else {
-			for (int i = 0; i < list_length(relations); i++) {
-				RangeVar *rel_range_var = castNode(VacuumRelation, list_nth(relations, i))->relation;
-				Oid relid = RangeVarGetRelid(rel_range_var, AccessShareLock, true);
-				if (IsColumnstoreTable(relid)) {
-					oids.emplace_back(relid);
-				}
-			}
-		}
-		if (oids.size() == 0) {
-			return;
-		}
-
-		duckdb::ClientContext &context = *pgduckdb::DuckDBManager::GetConnection()->context;
-		bool require_new_transaction = !context.transaction.HasActiveTransaction();
-		if (require_new_transaction) {
-			context.transaction.BeginTransaction();
-		}
-
-		for (Oid relid : oids) {
-			auto& columnstore_table = duckdb::Columnstore::GetTable(context, relid);
-			columnstore_table.Vacuum(context);
-		}
-		if (require_new_transaction) {
-			context.transaction.Commit();
-		}
-	}
 }
 
 static void
@@ -206,9 +163,6 @@ DuckdbUtilityHook_Cpp(PlannedStmt *pstmt, const char *query_string, bool read_on
 			}
 			return;
 		}
-	} else if (IsA(parsetree, VacuumStmt)) {
-		VacuumStmt *stmt = castNode(VacuumStmt, parsetree);
-		MooncakeHandleVacuum(stmt);
 	}
 
 	/*

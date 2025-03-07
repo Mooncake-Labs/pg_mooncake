@@ -37,8 +37,7 @@ bool ColumnstoreStorage::DeleteFiles(const vector<string> &file_paths) {
     // TODO parallelize
     for (const auto &path : file_paths) {
         try {
-            // TODO httpfs s3fs does not implement RemoveFile interface
-            pd_log(DEBUG1, "delete file: %s", path.c_str());
+            pd_log(INFO, "Deleting file: %s", path.c_str());
             fs.RemoveFile(path);
         } catch (IOException &e) {
             std::string_view errmsg(e.what());
@@ -54,6 +53,21 @@ bool ColumnstoreStorage::DeleteFiles(const vector<string> &file_paths) {
     }
 
     return true;
+}
+
+bool ColumnstoreStorage::DeleteDirectory(const std::string &directory) {
+    TransactionGuard transaction_guard;
+    auto &context = *pgduckdb::DuckDBManager::GetConnectionUnsafe()->context;
+    auto &fs = FileSystem::GetFileSystem(context);
+
+    try {
+        pd_log(INFO, "Deleting directory: %s", directory.c_str());
+        fs.RemoveDirectory(directory);
+        return true;
+    } catch (std::exception &e) {
+        pd_log(WARNING, "Failed to delete directory: %s", e.what());
+        return false;
+    }
 }
 
 void ColumnstoreStorageContextState::QueryEnd() {
@@ -80,7 +94,8 @@ void ColumnstoreStorageContextState::DoPendingDeletes(bool isCommit) {
         if (pending.at_commit == isCommit) {
             pd_log(DEBUG1, "start deleting files of table: %d", pending.oid);
             auto file_path = ColumnstoreTable::GetFilePaths(pending.table_path, pending.file_names, false);
-            if (!ColumnstoreStorage::DeleteFiles(file_path)) {
+            if (!ColumnstoreStorage::DeleteFiles(file_path) ||
+                !ColumnstoreStorage::DeleteDirectory(pending.table_path)) {
                 return false;
             }
         }

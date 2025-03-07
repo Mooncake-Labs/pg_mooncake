@@ -19,6 +19,7 @@ public:
 class ColumnstoreStorage {
 public:
     static bool DeleteFiles(const vector<string> &file_paths);
+    static bool DeleteDirectory(const string &directory);
 };
 
 class ColumnstoreStorageContextState : public duckdb::ClientContextState {

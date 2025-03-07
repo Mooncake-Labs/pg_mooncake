@@ -11,17 +11,10 @@ DUCKDB_DIR := third_party/duckdb
 DUCKDB_LIB := $(DUCKDB_DIR)/build/$(BUILD_TYPE)/src/libduckdb.so
 SRC_DIR := src
 
-# set to `make` to disable ninja
-DUCKDB_GEN ?= ninja
 # used to know what version of extensions to download
 DUCKDB_VERSION = v1.2.0
 # duckdb build tweaks
 DUCKDB_CMAKE_VARS = -DBUILD_SHELL=0 -DBUILD_PYTHON=0 -DBUILD_UNITTESTS=0
-# set to 1 to disable asserts in DuckDB. This is particularly useful in combinition with MotherDuck.
-# When asserts are enabled the released motherduck extension will fail some of
-# those asserts. By disabling asserts it's possible to run a debug build of
-# DuckDB agains the release build of MotherDuck.
-DUCKDB_DISABLE_ASSERTIONS ?= 0
 
 # ========================
 # Flags
@@ -119,11 +112,10 @@ duckdb-fast: $(DUCKDB_LIB)
 
 duckdb: | .BUILD
 	OVERRIDE_GIT_DESCRIBE=$(DUCKDB_VERSION) \
-	GEN=$(DUCKDB_GEN) \
+	CMAKE_BUILD_PARALLEL_LEVEL=$(or $(patsubst -j%,%,$(filter -j%,$(MAKEFLAGS))),1) \
 	CMAKE_VARS="$(DUCKDB_CMAKE_VARS)" \
 	DISABLE_SANITIZER=1 \
-	DISABLE_ASSERTIONS=$(DUCKDB_DISABLE_ASSERTIONS) \
-	EXTENSION_CONFIGS="../pg_mooncake.extensions.cmake" \
+	EXTENSION_CONFIGS="../pg_mooncake_extensions.cmake" \
 	$(MAKE) -C $(DUCKDB_DIR) $(BUILD_TYPE)
 ifeq ($(BUILD_TYPE), debug)
 	gdb-add-index $(DUCKDB_LIB)

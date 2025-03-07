@@ -232,6 +232,10 @@ DuckDBManager::Initialize() {
 		                             "SET motherduck_background_catalog_refresh_inactivity_timeout='99 years'");
 	}
 
+	if (mooncake_enable_memory_metadata_cache) {
+		pgduckdb::DuckDBQueryOrThrow(context, "SET parquet_metadata_cache=true");
+	}
+
 	duckdb::LoadPgNextval(context);
 	LoadFunctions(context);
 	// LoadExtensions(context);

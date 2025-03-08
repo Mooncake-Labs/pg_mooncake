@@ -51,7 +51,7 @@ release:
 	@$(MAKE) BUILD_TYPE=release all
 
 all: duckdb-fast delta | .BUILD
-	install -C Makefile.build $(BUILD_DIR)/Makefile
+	cp Makefile.build $(BUILD_DIR)/Makefile
 	@$(MAKE) -C $(BUILD_DIR)
 
 .BUILD: | $(BUILD_DIR)
@@ -103,7 +103,7 @@ format-delta:
 # DuckDB Targets
 # ========================
 duckdb-fast: $(DUCKDB_LIB)
-	install -C $< $(BUILD_DIR)/libduckdb.so
+	cp $< $(BUILD_DIR)/libduckdb.so
 
 duckdb: | .BUILD
 	BUILD_EXTENSIONS="httpfs;icu;json" \
@@ -124,8 +124,8 @@ $(DUCKDB_LIB): | .BUILD
 # ========================
 delta: | .BUILD $(BUILD_RUST_DIR)
 	cargo build --manifest-path=$(DELTA_DIR)/Cargo.toml $(CARGO_FLAGS)
-	install -C $$(readlink -f $(DELTA_HEADER)) $(BUILD_RUST_DIR)/delta.hpp
-	install -C $(DELTA_LIB) $(BUILD_DIR)/libdelta.a
+	cp $$(readlink -f $(DELTA_HEADER)) $(BUILD_RUST_DIR)/delta.hpp
+	cp $(DELTA_LIB) $(BUILD_DIR)/libdelta.a
 
 $(BUILD_RUST_DIR):
 	@mkdir -p $@

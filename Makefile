@@ -11,11 +11,6 @@ DUCKDB_DIR := third_party/duckdb
 DUCKDB_LIB := $(DUCKDB_DIR)/build/$(BUILD_TYPE)/src/libduckdb.so
 SRC_DIR := src
 
-# used to know what version of extensions to download
-DUCKDB_VERSION = v1.2.0
-# duckdb build tweaks
-DUCKDB_CMAKE_VARS = -DBUILD_SHELL=0 -DBUILD_PYTHON=0 -DBUILD_UNITTESTS=0
-
 # ========================
 # Flags
 # ========================
@@ -111,11 +106,11 @@ duckdb-fast: $(DUCKDB_LIB)
 	install -C $< $(BUILD_DIR)/libduckdb.so
 
 duckdb: | .BUILD
-	OVERRIDE_GIT_DESCRIBE=$(DUCKDB_VERSION) \
 	CMAKE_BUILD_PARALLEL_LEVEL=$(or $(patsubst -j%,%,$(filter -j%,$(MAKEFLAGS))),1) \
-	CMAKE_VARS="$(DUCKDB_CMAKE_VARS)" \
+	CMAKE_VARS="-DBUILD_PYTHON=0 -DBUILD_SHELL=0 -DBUILD_UNITTESTS=0" \
 	DISABLE_SANITIZER=1 \
 	EXTENSION_CONFIGS="../pg_mooncake_extensions.cmake" \
+	OVERRIDE_GIT_DESCRIBE=v1.2.0 \
 	$(MAKE) -C $(DUCKDB_DIR) $(BUILD_TYPE)
 ifeq ($(BUILD_TYPE), debug)
 	gdb-add-index $(DUCKDB_LIB)

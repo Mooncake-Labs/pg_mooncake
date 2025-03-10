@@ -9,6 +9,7 @@
 #include "parquet_reader.hpp"
 #include "parquet_writer.hpp"
 #include "pgmooncake_guc.hpp"
+#include "zstd_file_system.hpp"
 
 namespace duckdb {
 
@@ -63,10 +64,11 @@ public:
                    vector<string> names, ChildFieldIDs field_ids)
         : fs(context, file_name), collection(context, types, ColumnDataAllocatorType::HYBRID),
           writer(context, fs, path + file_name, std::move(types), std::move(names),
-                 duckdb_parquet::CompressionCodec::type::SNAPPY /*codec*/, std::move(field_ids), {} /*kv_metadata*/,
-                 nullptr /*encryption_config*/, 1.0 /*dictionary_compression_ratio_threshold*/,
-                 0.01 /*bloom_filter_false_positive_ratio*/, {} /*compression_level*/, true /*debug_use_openssl*/,
-                 ParquetVersion::V2) {
+                 duckdb_parquet::CompressionCodec::SNAPPY /*codec*/, std::move(field_ids), {} /*kv_metadata*/,
+                 {} /*encryption_config*/, x_row_group_size / 100 /*dictionary_size_limit*/,
+                 0.01 /*bloom_filter_false_positive_ratio*/,
+                 ZStdFileSystem::DefaultCompressionLevel() /*compression_level*/, true /*debug_use_openssl*/,
+                 ParquetVersion::V1) {
         collection.InitializeAppend(append_state);
     }
 

@@ -60,9 +60,6 @@ Oid DeadDataFiles() {
 Oid DeadDataFilesOid() {
     return get_relname_relid("dead_data_files_oid", Mooncake());
 }
-// Oid DeadDataFilesFileName() {
-//     return get_relname_relid("dead_data_files_file_name", Mooncake());
-// }
 Oid Secrets() {
     return get_relname_relid("secrets", Mooncake());
 }
@@ -167,7 +164,7 @@ void ColumnstoreMetadata::DataFilesInsert(Oid oid, const string &file_name, cons
 }
 
 // A wrapper for inserting tuple from `data_files` to `dead_data_files`
-//  - table: `dead_data_files`
+//  - table: `dead_data_files` relation
 //  - desc: TupleDesc of `data_files`
 //  - tuple: HeapTuple of `data_files`
 static inline void DataFilesTrackDelete(::Relation table, TupleDesc desc, HeapTuple tuple) {
@@ -291,6 +288,7 @@ vector<string> ColumnstoreMetadata::DeadDataFilesSearch(Oid oid) {
         D_ASSERT(!isnull);
         auto file_name = TextDatumGetCString(datum);
         file_names.emplace_back(file_name);
+        pfree(file_name);
     }
 
     systable_endscan_ordered(scan);

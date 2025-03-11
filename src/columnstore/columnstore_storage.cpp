@@ -3,6 +3,7 @@
 #include "columnstore/columnstore_table.hpp"
 
 #include "duckdb/common/file_system.hpp"
+#include "duckdb/parallel/task_executor.hpp"
 
 #include "pgduckdb/logger.hpp"
 #include "pgduckdb/pg/transactions.hpp"
@@ -29,30 +30,49 @@ private:
     bool require_new_transaction = false;
 };
 
-bool ColumnstoreStorage::DeleteFiles(const vector<string> &file_paths) {
-    TransactionGuard transaction_guard;
-    auto &context = *pgduckdb::DuckDBManager::GetConnectionUnsafe()->context;
-    auto &fs = FileSystem::GetFileSystem(context);
+class FileDeleteTask : public BaseExecutorTask {
+public:
+    FileDeleteTask(TaskExecutor &executor, FileSystem &fs, const string &path, atomic<bool> &success)
+        : BaseExecutorTask(executor), fs(fs), path(path), success(success) {}
 
-    // TODO parallelize
-    for (const auto &path : file_paths) {
+    void ExecuteTask() override {
         try {
-            pd_log(INFO, "Deleting file: %s", path.c_str());
+            pd_log(DEBUG1, "Deleting file: %s", path.c_str());
             fs.RemoveFile(path);
         } catch (IOException &e) {
             std::string_view errmsg(e.what());
             // Ignore ENOENT exception
             if (errmsg.find("No such file or directory") == string::npos) {
                 pd_log(WARNING, "Failed to delete file: %s", e.what());
-                return false;
+                success = false;
             }
         } catch (std::exception &e) {
             pd_log(WARNING, "Failed to delete file: %s", e.what());
-            return false;
+            success = false;
         }
     }
 
-    return true;
+private:
+    FileSystem &fs;
+    const string &path;
+    atomic<bool> &success;
+};
+
+bool ColumnstoreStorage::DeleteFiles(const vector<string> &file_paths) {
+    TransactionGuard transaction_guard;
+    auto &context = *pgduckdb::DuckDBManager::GetConnectionUnsafe()->context;
+    auto &fs = FileSystem::GetFileSystem(context);
+    // Use DuckDB's task system for parallelization
+    TaskExecutor executor(context);
+    std::atomic<bool> success{true};
+
+    for (const auto &path : file_paths) {
+        auto task = make_uniq<FileDeleteTask>(executor, fs, path, success);
+        executor.ScheduleTask(std::move(task));
+    }
+    executor.WorkOnTasks();
+
+    return success;
 }
 
 bool ColumnstoreStorage::DeleteDirectory(const std::string &directory) {
@@ -61,7 +81,7 @@ bool ColumnstoreStorage::DeleteDirectory(const std::string &directory) {
     auto &fs = FileSystem::GetFileSystem(context);
 
     try {
-        pd_log(INFO, "Deleting directory: %s", directory.c_str());
+        pd_log(DEBUG1, "Deleting directory: %s", directory.c_str());
         fs.RemoveDirectory(directory);
         return true;
     } catch (std::exception &e) {

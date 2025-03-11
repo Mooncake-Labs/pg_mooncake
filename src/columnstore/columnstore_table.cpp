@@ -9,6 +9,7 @@
 #include "parquet_reader.hpp"
 #include "parquet_writer.hpp"
 #include "pgmooncake_guc.hpp"
+#include "zstd_file_system.hpp"
 
 namespace duckdb {
 
@@ -63,9 +64,11 @@ public:
                    vector<string> names, ChildFieldIDs field_ids)
         : fs(context, file_name), collection(context, types, ColumnDataAllocatorType::HYBRID),
           writer(context, fs, path + file_name, std::move(types), std::move(names),
-                 duckdb_parquet::format::CompressionCodec::SNAPPY /*codec*/, std::move(field_ids), {} /*kv_metadata*/,
-                 {} /*encryption_config*/, 1.0 /*dictionary_compression_ratio_threshold*/, {} /*compression_level*/,
-                 true /*debug_use_openssl*/) {
+                 duckdb_parquet::CompressionCodec::SNAPPY /*codec*/, std::move(field_ids), {} /*kv_metadata*/,
+                 {} /*encryption_config*/, x_row_group_size / 100 /*dictionary_size_limit*/,
+                 0.01 /*bloom_filter_false_positive_ratio*/,
+                 ZStdFileSystem::DefaultCompressionLevel() /*compression_level*/, true /*debug_use_openssl*/,
+                 ParquetVersion::V1) {
         collection.InitializeAppend(append_state);
     }
 
@@ -84,18 +87,18 @@ public:
 
     std::tuple<idx_t, string_t> Finalize() {
         writer.Flush(collection);
-        idx_t offset = writer.GetWriter().offset;
         idx_t total_written = writer.GetWriter().total_written;
         fs.StartRecording(stream);
         writer.Finalize();
         idx_t file_size = total_written + stream.GetPosition();
-        string_t file_metadata{const_char_ptr_cast(stream.GetData()) + offset,
-                               NumericCast<uint32_t>(stream.GetPosition() - offset - 8)};
+        uint32_t metadata_size = Load<uint32_t>(stream.GetData() + stream.GetPosition() - 8);
+        string_t file_metadata{const_char_ptr_cast(stream.GetData()) + stream.GetPosition() - 8 - metadata_size,
+                               metadata_size};
         return {file_size, std::move(file_metadata)};
     }
 
 private:
-    static const idx_t x_row_group_size = duckdb::Storage::ROW_GROUP_SIZE;
+    static const idx_t x_row_group_size = DEFAULT_ROW_GROUP_SIZE;
     static const idx_t x_row_group_size_bytes = x_row_group_size * 1024;
     static const idx_t x_file_size_bytes = 1 << 30;
 
@@ -210,7 +213,10 @@ void ColumnstoreTable::Delete(ClientContext &context, unordered_set<row_t> &row_
         int32_t file_number = row_ids[row_ids_index] >> 32;
         uint32_t next_file_row_number = row_ids[row_ids_index] & 0xFFFFFFFF;
         ParquetReader reader(context, file_paths[file_number], ParquetOptions{});
-        for (idx_t i = 0; i < reader.GetTypes().size(); i++) {
+        vector<string> names;
+        vector<LogicalType> types;
+        MultiFileReaderColumnDefinition::ExtractNamesAndTypes(reader.GetColumns(), names, types);
+        for (idx_t i = 0; i < types.size(); i++) {
             reader.reader_data.column_mapping.push_back(i);
             reader.reader_data.column_ids.push_back(i);
         }
@@ -220,9 +226,9 @@ void ColumnstoreTable::Delete(ClientContext &context, unordered_set<row_t> &row_
         reader.InitializeScan(context, state, std::move(groups_to_read));
 
         DataChunk chunk;
-        chunk.Initialize(context, reader.GetTypes());
+        chunk.Initialize(context, types);
         DataChunk delete_chunk;
-        delete_chunk.Initialize(context, reader.GetTypes());
+        delete_chunk.Initialize(context, types);
         SelectionVector remaining_sel(STANDARD_VECTOR_SIZE);
         SelectionVector delete_sel(STANDARD_VECTOR_SIZE);
         uint32_t file_row_number = 0;

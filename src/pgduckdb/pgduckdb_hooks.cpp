@@ -227,9 +227,10 @@ static PlannedStmt *
 DuckdbPlannerHook_Cpp(Query *parse, const char *query_string, int cursor_options, ParamListInfo bound_params) {
 	if (pgduckdb::IsExtensionRegistered()) {
 		if (NeedsDuckdbExecution(parse)) {
-			IsAllowedStatement(parse, true);
-
-			return DuckdbPlanNode(parse, query_string, cursor_options, bound_params, true);
+			// IsAllowedStatement(parse, true);
+			if (IsAllowedStatement(parse, false)){
+				return DuckdbPlanNode(parse, query_string, cursor_options, bound_params, true);
+			}
 		} else if (duckdb_force_execution && IsAllowedStatement(parse)) {
 			PlannedStmt *duckdbPlan = DuckdbPlanNode(parse, query_string, cursor_options, bound_params, false);
 			if (duckdbPlan) {

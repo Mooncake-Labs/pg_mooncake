@@ -1,9 +1,16 @@
 #include "columnstore/columnstore.hpp"
 #include "columnstore/columnstore_metadata.hpp"
+#include "columnstore/columnstore_storage.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
 #include "lake/lake.hpp"
 #include "pgduckdb/pgduckdb_utils.hpp"
 #include "pgduckdb/utility/cpp_wrapper.hpp"
+
+extern "C" {
+#include "postgres.h"
+
+#include "catalog/dependency.h"
+}
 
 namespace duckdb {
 
@@ -23,6 +30,18 @@ void Columnstore::TruncateTable(Oid oid) {
     metadata.DataFilesDelete(oid);
     for (auto file_name : file_names) {
         LakeDeleteFile(oid, file_name);
+    }
+}
+
+void Columnstore::DropTable(Oid oid, int flags) {
+    // Mark the table's data files as dead. Physical deletion of the data files occurs either after the transaction
+    // commits or during the VACUUM process.
+    ColumnstoreMetadata metadata(NULL /*snapshot*/);
+    metadata.DataFilesDelete(oid);
+
+    // Skip storage deletion if the DROP is triggered internally, e.g., drop a temp table.
+    if (!(flags & PERFORM_DELETION_INTERNAL)) {
+        ColumnstoreStorageContextState::Get().RelationDropStorage(oid);
     }
 }
 

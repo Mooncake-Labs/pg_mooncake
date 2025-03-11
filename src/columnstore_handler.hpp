@@ -5,3 +5,5 @@
 bool IsColumnstoreTable(Relation rel);
 
 bool IsColumnstoreTable(Oid oid);
+
+void CreateOrSetColumnstoreDataDir(const char *path);

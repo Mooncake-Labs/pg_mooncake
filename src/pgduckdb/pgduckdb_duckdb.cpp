@@ -180,8 +180,6 @@ DuckDBManager::Initialize() {
 		SET_DUCKDB_OPTION(maximum_threads);
 	}
 
-	config.options.object_cache_enable = mooncake_enable_memory_metadata_cache;
-
 	const char *connection_string = nullptr;
 
 	/*
@@ -232,6 +230,10 @@ DuckDBManager::Initialize() {
 		 */
 		pgduckdb::DuckDBQueryOrThrow(context,
 		                             "SET motherduck_background_catalog_refresh_inactivity_timeout='99 years'");
+	}
+
+	if (mooncake_enable_memory_metadata_cache) {
+		pgduckdb::DuckDBQueryOrThrow(context, "SET parquet_metadata_cache=true");
 	}
 
 	duckdb::LoadPgNextval(context);

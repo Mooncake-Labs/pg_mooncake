@@ -1,0 +1,15 @@
+{
+    "build": {
+        "dockerfile": "Dockerfile"
+    },
+    "postCreateCommand": "git config devcontainers-theme.show-dirty 1",
+    "customizations": {
+        "vscode": {
+            "extensions": [
+                "eamodio.gitlens",
+                "ms-vscode.cpptools",
+                "rust-lang.rust-analyzer"
+            ]
+        }
+    }
+}

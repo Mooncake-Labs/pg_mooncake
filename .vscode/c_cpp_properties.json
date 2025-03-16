@@ -1,0 +1,11 @@
+{
+    "version": 4,
+    "configurations": [
+        {
+            "name": "Dev Container",
+            "includePath": [
+                "/home/vscode/.pgrx/17.5/src/**"
+            ]
+        }
+    ]
+}

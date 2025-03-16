@@ -1,0 +1,15 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "Attach Postgres",
+            "type": "lldb",
+            "request": "attach",
+            "pid": "${command:pickProcess}",
+            "initCommands": [
+                "process handle -s false SIGUSR1",
+                "command script import ~/rust_prettifier_for_lldb.py"
+            ]
+        }
+    ]
+}

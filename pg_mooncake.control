@@ -1,0 +1,5 @@
+comment = 'Real-time analytics on Postgres tables'
+default_version = '@CARGO_VERSION@'
+module_pathname = 'pg_mooncake'
+relocatable = false
+superuser = true

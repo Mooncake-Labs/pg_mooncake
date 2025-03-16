@@ -146,14 +146,14 @@ ColumnstoreMetadata::GetTableMetadata(Oid oid) {
 }
 
 std::tuple<string, string> ColumnstoreMetadata::GetTableNameAndSchemaName(Oid oid) {
-    const char* relname = get_rel_name(oid);
-    const char* postgres_schema_name = get_namespace_name_or_temp(get_rel_namespace(oid));
+    const char *relname = get_rel_name(oid);
+    const char *postgres_schema_name = get_namespace_name_or_temp(get_rel_namespace(oid));
     if (relname == NULL || postgres_schema_name == NULL) {
-        throw duckdb::InvalidInputException("(ColumnstoreMetadata/GetTableNameAndSchemaName) Failed to get table name and schema name for oid " + std::to_string(oid));
+        elog(ERROR,
+             "(ColumnstoreMetadata/GetTableNameAndSchemaName) Failed to get table name and schema name for oid %d",
+             oid);
     }
-    string table_name(relname);
-    string schema_name(postgres_schema_name);
-    return {std::move(table_name), std::move(schema_name)};
+    return {string(relname), string(postgres_schema_name)};
 }
 
 void ColumnstoreMetadata::DataFilesInsert(Oid oid, const string &file_name, const string_t &file_metadata) {

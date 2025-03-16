@@ -1,7 +1,8 @@
 #include "columnstore/columnstore.hpp"
-#include "pgduckdb/pgduckdb_types.hpp"
-#include "pgduckdb/pgduckdb_duckdb.hpp"
 #include "columnstore/columnstore_table.hpp"
+#include "pgduckdb/pgduckdb_duckdb.hpp"
+#include "pgduckdb/pgduckdb_types.hpp"
+#include "pgduckdb/utility/cpp_wrapper.hpp"
 
 extern "C" {
 #include "postgres.h"
@@ -182,17 +183,17 @@ void columnstore_relation_copy_for_cluster(Relation OldTable, Relation NewTable,
     elog(ERROR, "columnstore_relation_copy_for_cluster not implemented");
 }
 
-void columnstore_relation_vacuum(Relation rel, VacuumParams *params, BufferAccessStrategy bstrategy) {
+void ColumnstoreRelationVacuum_Cpp(Relation rel) {
     duckdb::ClientContext &context = *pgduckdb::DuckDBManager::GetConnection()->context;
-    bool require_new_transaction = !context.transaction.HasActiveTransaction();
-    if (require_new_transaction) {
-        context.transaction.BeginTransaction();
-    }
+    // postgres vacuum cannot be run in a postgres transaction block, so we need to start one for duckdb
+    context.transaction.BeginTransaction();
     duckdb::ColumnstoreTable &table = duckdb::Columnstore::GetTable(context, rel->rd_id);
     table.Vacuum(context);
-    if (require_new_transaction) {
-        context.transaction.Commit();
-    }
+    context.transaction.Commit();
+}
+
+void columnstore_relation_vacuum(Relation rel, VacuumParams *params, BufferAccessStrategy bstrategy) {
+    InvokeCPPFunc(ColumnstoreRelationVacuum_Cpp, rel);
 }
 
 #if PG_VERSION_NUM >= 170000

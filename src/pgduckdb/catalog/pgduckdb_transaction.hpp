@@ -5,7 +5,7 @@
 #include "duckdb/transaction/transaction.hpp"
 #include "pgduckdb/pg/declarations.hpp"
 
-// #include "pgduckdb/utility/cpp_only_file.hpp" // Must be last include.
+#include "pgduckdb/utility/cpp_only_file.hpp" // Must be last include.
 
 namespace pgduckdb {
 

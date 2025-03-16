@@ -1,8 +1,8 @@
 #pragma once
 
+#include "columnstore/columnstore_table.hpp"
 #include "duckdb/common/unique_ptr.hpp"
 #include "pgduckdb/pg/declarations.hpp"
-#include "columnstore/columnstore_table.hpp"
 
 namespace duckdb {
 

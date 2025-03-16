@@ -14,6 +14,8 @@ public:
     explicit ColumnstoreMetadata(Snapshot snapshot) : snapshot(snapshot) {}
 
 public:
+    static std::tuple<string /*table_name*/, string /*schema_name*/> GetTableNameAndSchemaName(Oid oid);
+
     void TablesInsert(Oid oid, const string &path);
     void TablesDelete(Oid oid);
     std::tuple<string /*path*/, string /*timeline_id*/> TablesSearch(Oid oid);
@@ -21,7 +23,6 @@ public:
     string GetTablePath(Oid oid);
     std::tuple<string /*table_name*/, vector<string> /*column_names*/, vector<string> /*column_types*/>
     GetTableMetadata(Oid oid);
-    std::tuple<string /*table_name*/, string /*schema_name*/> GetTableNameAndSchemaName(Oid oid);
 
     void DataFilesInsert(Oid oid, const string &file_name, const string_t &file_metadata);
     void DataFilesDelete(const string &file_name);

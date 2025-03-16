@@ -1,32 +1,53 @@
-DROP EXTENSION IF EXISTS pg_mooncake CASCADE;
-CREATE EXTENSION pg_mooncake;
-CREATE TABLE t (a int, b int) USING columnstore;
-INSERT INTO t VALUES (1, 1);
-INSERT INTO t VALUES (2, 2);
-INSERT INTO t VALUES (3, 3);
-INSERT INTO t VALUES (4, 4);
-INSERT INTO t VALUES (5, 5);
-SELECT COUNT(*) FROM mooncake.data_files;
+CREATE TABLE t1 (a int, b int) USING columnstore;
+CREATE TABLE t2 (a int, b int) USING columnstore;
+INSERT INTO t1 VALUES (1, 1);
+INSERT INTO t1 VALUES (2, 2);
+INSERT INTO t1 VALUES (3, 3);
+INSERT INTO t2 VALUES (4, 4);
+INSERT INTO t2 VALUES (5, 5);
+INSERT INTO t2 VALUES (6, 6);
+INSERT INTO t2 VALUES (7, 7);
+SELECT COUNT(*) FROM mooncake.data_files WHERE oid = (SELECT oid FROM pg_catalog.pg_class WHERE relname = 't1');
  count 
 -------
-     5
+     3
 (1 row)
 
-VACUUM t;
-SELECT COUNT(*) FROM mooncake.data_files;
+SELECT COUNT(*) FROM mooncake.data_files WHERE oid = (SELECT oid FROM pg_catalog.pg_class WHERE relname = 't2');
+ count 
+-------
+     4
+(1 row)
+
+VACUUM;
+SELECT COUNT(*) FROM mooncake.data_files WHERE oid = (SELECT oid FROM pg_catalog.pg_class WHERE relname = 't1');
  count 
 -------
      1
 (1 row)
 
-SELECT * FROM t ORDER BY a;
+SELECT COUNT(*) FROM mooncake.data_files WHERE oid = (SELECT oid FROM pg_catalog.pg_class WHERE relname = 't2');
+ count 
+-------
+     1
+(1 row)
+
+SELECT * FROM t1 ORDER BY a;
  a | b 
 ---+---
  1 | 1
  2 | 2
  3 | 3
+(3 rows)
+
+SELECT * FROM t2 ORDER BY a;
+ a | b 
+---+---
  4 | 4
  5 | 5
-(5 rows)
+ 6 | 6
+ 7 | 7
+(4 rows)
 
-DROP TABLE t;
+DROP TABLE t1;
+DROP TABLE t2;

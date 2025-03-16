@@ -1,6 +1,0 @@
-CREATE TABLE t (a int, b int) USING columnstore;
-UPDATE t SET (a, b) = (SELECT 1, 2);
-ERROR:  DuckDB does not support UPDATE with multi-column assignment
-UPDATE t SET (b, a) = (SELECT 1, 2);
-ERROR:  DuckDB does not support UPDATE with multi-column assignment
-DROP TABLE t;

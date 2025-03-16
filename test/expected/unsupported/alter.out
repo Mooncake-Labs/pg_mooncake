@@ -1,4 +1,0 @@
-CREATE TABLE t (a int) USING columnstore;
-ALTER TABLE t ADD COLUMN b int;
-ERROR:  ALTER TABLE on columnstore table is not supported
-DROP TABLE t;

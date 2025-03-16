@@ -1,9 +1,0 @@
-CREATE TABLE t (a int) USING columnstore;
-INSERT INTO t VALUES (1), (2), (3);
-CREATE USER user1;
-GRANT SELECT ON t TO user1;
-SET ROLE user1;
-SELECT * FROM t;
-RESET ROLE;
-DROP TABLE t;
-DROP USER user1;

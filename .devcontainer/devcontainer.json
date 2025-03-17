@@ -11,5 +11,8 @@
                 "rust-lang.rust-analyzer"
             ]
         }
+    },
+    "remoteEnv": {
+        "PG_CONFIG": "/home/vscode/.pgrx/17.5/pgrx-install/bin/pg_config"
     }
 }

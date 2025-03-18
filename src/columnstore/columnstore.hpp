@@ -17,6 +17,11 @@ public:
 
     static void TruncateTable(Oid oid);
 
+    // Caller must ensure that the table is a columnstore table.
+    // - oid: relation oid
+    // - flags: PERFORM_DELETION_xxx defined in dependency.h
+    static void DropTable(Oid oid, int flags);
+
     static void Abort();
 
     static void Commit();

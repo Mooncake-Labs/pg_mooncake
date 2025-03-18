@@ -1,7 +1,10 @@
 #include "columnstore/columnstore.hpp"
 #include "columnstore/columnstore_metadata.hpp"
+#include "columnstore_handler.hpp"
 #include "duckdb/main/secret/secret_manager.hpp"
 #include "lake/lake.hpp"
+#include "pgduckdb/catalog/pgduckdb_catalog.hpp"
+#include "pgduckdb/catalog/pgduckdb_transaction.hpp"
 #include "pgduckdb/pgduckdb_utils.hpp"
 #include "pgduckdb/utility/cpp_wrapper.hpp"
 
@@ -15,6 +18,28 @@ void Columnstore::CreateTable(Oid oid) {
     }
     metadata.TablesInsert(oid, path);
     InvokeCPPFunc(LakeCreateTable, oid, path);
+}
+
+ColumnstoreTable &Columnstore::GetTable(ClientContext &context, Oid oid) {
+    D_ASSERT(IsColumnstoreTable(oid));
+
+    duckdb::DatabaseManager &db_manager = duckdb::DatabaseManager::Get(*context.db);
+    duckdb::optional_ptr<duckdb::AttachedDatabase> pgmooncake_db = db_manager.GetDatabase(context, "pgmooncake");
+    pgduckdb::PostgresCatalog &catalog = pgmooncake_db->GetCatalog().Cast<pgduckdb::PostgresCatalog>();
+    pgduckdb::PostgresTransaction &transaction =
+        duckdb::Transaction::Get(context, catalog).Cast<pgduckdb::PostgresTransaction>();
+
+    auto [table_name, schema_name] = PostgresFunctionGuard(ColumnstoreMetadata::GetTableNameAndSchemaName, oid);
+
+    // load in schema entry first so that we can retrieve the table entry
+    duckdb::optional_ptr<duckdb::CatalogEntry> schema =
+        transaction.GetCatalogEntry(duckdb::CatalogType::SCHEMA_ENTRY, schema_name, "");
+    D_ASSERT(schema);
+    duckdb::optional_ptr<duckdb::CatalogEntry> table =
+        transaction.GetCatalogEntry(duckdb::CatalogType::TABLE_ENTRY, schema_name, table_name);
+    D_ASSERT(table);
+
+    return table->Cast<duckdb::ColumnstoreTable>();
 }
 
 void Columnstore::TruncateTable(Oid oid) {

@@ -145,6 +145,17 @@ ColumnstoreMetadata::GetTableMetadata(Oid oid) {
     return {std::move(table_name), std::move(column_names), std::move(column_types)};
 }
 
+std::tuple<string, string> ColumnstoreMetadata::GetTableNameAndSchemaName(Oid oid) {
+    const char *relname = get_rel_name(oid);
+    const char *postgres_schema_name = get_namespace_name_or_temp(get_rel_namespace(oid));
+    if (relname == NULL || postgres_schema_name == NULL) {
+        elog(ERROR,
+             "(ColumnstoreMetadata/GetTableNameAndSchemaName) Failed to get table name and schema name for oid %d",
+             oid);
+    }
+    return {string(relname), string(postgres_schema_name)};
+}
+
 void ColumnstoreMetadata::DataFilesInsert(Oid oid, const string &file_name, const string_t &file_metadata) {
     ::Relation table = table_open(DataFiles(), RowExclusiveLock);
     TupleDesc desc = RelationGetDescr(table);

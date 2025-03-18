@@ -211,16 +211,21 @@ void ColumnstoreTable::Vacuum(ClientContext &context) {
     for (idx_t file_number = 0; file_number < file_names.size(); file_number++) {
         ParquetReader reader(context, file_paths[file_number], ParquetOptions{});
         if (reader.fs.GetFileSize(reader.GetHandle()) <= x_vacuum_threshold_file_size_bytes) {
+            vector<string> names;
+            vector<LogicalType> types;
+            MultiFileReaderColumnDefinition::ExtractNamesAndTypes(reader.GetColumns(), names, types);
+            for (idx_t i = 0; i < types.size(); i++) {
+                reader.reader_data.column_mapping.push_back(i);
+                reader.reader_data.column_ids.push_back(i);
+            }
+
             ParquetReaderScanState state;
             vector<idx_t> groups_to_read(reader.GetFileMetadata()->row_groups.size());
             std::iota(groups_to_read.begin(), groups_to_read.end(), 0);
             reader.InitializeScan(context, state, std::move(groups_to_read));
-            for (idx_t i = 0; i < reader.GetTypes().size(); i++) {
-                reader.reader_data.column_mapping.push_back(i);
-                reader.reader_data.column_ids.push_back(i);
-            }
+
             DataChunk to_reinsert_chunk;
-            to_reinsert_chunk.Initialize(context, reader.GetTypes());
+            to_reinsert_chunk.Initialize(context, types);
             reader.Scan(state, to_reinsert_chunk);
 
             while (to_reinsert_chunk.size()) {

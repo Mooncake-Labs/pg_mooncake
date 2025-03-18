@@ -201,6 +201,9 @@ void ColumnstoreTable::FinalizeInsert() {
 void ColumnstoreTable::Vacuum(ClientContext &context) {
     auto file_names = metadata->DataFilesSearch(oid);
     auto file_paths = GetFilePaths(path, file_names);
+    if (file_names.size() <= 1) {
+        return;
+    }
     for (idx_t file_number = 0; file_number < file_names.size(); file_number++) {
         ParquetReader reader(context, file_paths[file_number], ParquetOptions{});
         if (reader.fs.GetFileSize(reader.GetHandle()) <= x_vacuum_threshold_file_size_bytes) {

@@ -27,7 +27,7 @@ DEPS := $(SRCS:%=%.d)
 # ========================
 REGRESS_SQL := $(shell cd $(TEST_DIR)/sql; find * -name '*.sql')
 REGRESS := $(REGRESS_SQL:%.sql=%)
-REGRESS_OPTS = --inputdir=$(TEST_DIR) --load-extension=$(EXTENSION_NAME)
+REGRESS_OPTS = --encoding=UTF8 --inputdir=$(TEST_DIR) --load-extension=$(EXTENSION_NAME)
 
 # ========================
 # Compilation Flags
@@ -35,6 +35,7 @@ REGRESS_OPTS = --inputdir=$(TEST_DIR) --load-extension=$(EXTENSION_NAME)
 PG_CPPFLAGS := -I$(SRC_DIR) \
                -I$(DUCKDB_DIR)/extension/parquet/include \
                -I$(DUCKDB_DIR)/src/include \
+               -I$(DUCKDB_DIR)/third_party/fastpforlib \
                -I$(DUCKDB_DIR)/third_party/parquet \
                -I$(DUCKDB_DIR)/third_party/thrift \
                -I../src \

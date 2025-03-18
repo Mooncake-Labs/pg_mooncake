@@ -38,7 +38,9 @@ public:
     void Vacuum(ClientContext &context);
 
 private:
-    vector<string> GetFilePaths(const string &path, const vector<string> &file_names);
+    static vector<string> GetFilePaths(const string &path, const vector<string> &file_names);
+
+    static idx_t Cardinality(const vector<string> &file_names);
 
 private:
     static const idx_t x_vacuum_threshold_file_size_bytes = 1 << 24; // 16MB

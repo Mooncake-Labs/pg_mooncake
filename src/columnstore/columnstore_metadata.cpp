@@ -228,7 +228,7 @@ vector<string> ColumnstoreMetadata::DataFilesSearch(Oid oid, ClientContext *cont
         if (context && !columnstore_stats.Get<DataFileStatistics>(file_name)) {
             using duckdb_apache::thrift::protocol::TCompactProtocolT;
             using duckdb_apache::thrift::transport::TMemoryBuffer;
-            using duckdb_parquet::format::FileMetaData;
+            using duckdb_parquet::FileMetaData;
 
             auto file_metadata_text = PG_DETOAST_DATUM_PACKED(values[2]);
             auto transport = std::make_shared<TMemoryBuffer>(data_ptr_cast(VARDATA_ANY(file_metadata_text)),

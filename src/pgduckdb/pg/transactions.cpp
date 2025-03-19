@@ -48,4 +48,9 @@ UnregisterSubXactCallback(SubXactCallback callback, void *arg) {
 	return PostgresFunctionGuard(::UnregisterSubXactCallback, callback, arg);
 }
 
+int
+GetCurrentTransactionNestLevel() {
+	return ::GetCurrentTransactionNestLevel();
+}
+
 } // namespace pgduckdb::pg

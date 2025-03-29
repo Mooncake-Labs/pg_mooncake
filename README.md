@@ -97,7 +97,7 @@ Columnstore tables are stored in the local file system by default. You can confi
 ## Columnstore Tables as Iceberg or Delta Lake Tables
 Find your columnstore table location:
 ```sql
-SELECT * FROM mooncake.columnstore_tables;
+SELECT * FROM mooncake.tables;
 ```
 
 The directory contains a Delta Lake (and soon Iceberg) table that can be queried directly using Pandas, DuckDB, Polars, or Spark.

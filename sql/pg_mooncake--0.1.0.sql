@@ -7,7 +7,8 @@ CREATE SCHEMA mooncake;
 
 CREATE TABLE mooncake.tables (
     oid OID NOT NULL,
-    path TEXT NOT NULL
+    path TEXT NOT NULL,
+    timeline_id TEXT NOT NULL
 );
 CREATE UNIQUE INDEX tables_oid ON mooncake.tables (oid);
 

@@ -26,12 +26,14 @@ public:
 class ColumnstoreUpdate : public PhysicalOperator {
 public:
     ColumnstoreUpdate(vector<LogicalType> types, idx_t estimated_cardinality, ColumnstoreTable &table,
-                      vector<PhysicalIndex> columns, bool return_chunk)
+                      vector<PhysicalIndex> columns, vector<unique_ptr<BoundConstraint>> bound_constraints,
+                      bool return_chunk)
         : PhysicalOperator(PhysicalOperatorType::EXTENSION, std::move(types), estimated_cardinality), table(table),
-          columns(std::move(columns)), return_chunk(return_chunk) {}
+          columns(std::move(columns)), bound_constraints(std::move(bound_constraints)), return_chunk(return_chunk) {}
 
     ColumnstoreTable &table;
     vector<PhysicalIndex> columns;
+    vector<unique_ptr<BoundConstraint>> bound_constraints;
     bool return_chunk;
 
 public:
@@ -91,6 +93,7 @@ public:
         for (idx_t i = 0; i < columns.size(); i++) {
             gstate.chunk.data[columns[i].index].Reference(chunk.data[i]);
         }
+        table.VerifyConstraints(gstate.chunk, bound_constraints);
         table.Insert(context.client, gstate.chunk);
         if (return_chunk) {
             gstate.return_collection.Append(gstate.chunk);
@@ -118,7 +121,7 @@ unique_ptr<PhysicalOperator> Columnstore::PlanUpdate(ClientContext &context, Log
                                                      unique_ptr<PhysicalOperator> plan) {
     D_ASSERT(op.update_is_del_and_insert);
     auto update = make_uniq<ColumnstoreUpdate>(op.types, op.estimated_cardinality, op.table.Cast<ColumnstoreTable>(),
-                                               std::move(op.columns), op.return_chunk);
+                                               std::move(op.columns), std::move(op.bound_constraints), op.return_chunk);
     update->children.push_back(std::move(plan));
     return std::move(update);
 }

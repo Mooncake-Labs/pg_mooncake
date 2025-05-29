@@ -7,7 +7,8 @@ INSERT INTO t SELECT 2, b FROM t WHERE a = 3;
 SELECT * FROM t;
 DROP TABLE t;
 
-CREATE TABLE t (a int);
+CREATE TABLE t (a int) USING columnstore;
+ANALYZE t;
 
 BEGIN;
 INSERT INTO t VALUES (123);

@@ -354,13 +354,13 @@ DECLARE_PG_FUNCTION(cache_delete) {
 	PG_RETURN_BOOL(result);
 }
 
-DECLARE_PG_FUNCTION(pgduckdb_recycle_ddb) {
+DECLARE_PG_FUNCTION(mooncake_reset_duckdb) {
 	/*
 	 * We cannot safely run this in a transaction block, because a DuckDB
 	 * transaction might have already started. Recycling the database will
 	 * violate our assumptions about DuckDB its transaction lifecycle
 	 */
-	pgduckdb::pg::PreventInTransactionBlock("duckdb.recycle_ddb()");
+	pgduckdb::pg::PreventInTransactionBlock("mooncake.reset_duckdb()");
 	pgduckdb::DuckDBManager::Get().Reset();
 	PG_RETURN_BOOL(true);
 }

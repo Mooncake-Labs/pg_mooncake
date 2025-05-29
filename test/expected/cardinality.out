@@ -1,0 +1,44 @@
+CREATE TABLE t (a int) USING columnstore;
+INSERT INTO t SELECT * FROM generate_series(1, 100);
+EXPLAIN SELECT * FROM t;
+                             QUERY PLAN                             
+--------------------------------------------------------------------
+ Custom Scan (MooncakeDuckDBScan)  (cost=0.00..0.00 rows=0 width=0)
+   DuckDB Execution Plan: 
+ 
+ ┌───────────────────────────┐
+ │     COLUMNSTORE_SCAN      │
+ │    ────────────────────   │
+ │         Function:         │
+ │      COLUMNSTORE_SCAN     │
+ │                           │
+ │       Projections: a      │
+ │                           │
+ │         ~100 Rows         │
+ └───────────────────────────┘
+ 
+ 
+(15 rows)
+
+INSERT INTO t SELECT * FROM generate_series(1, 200);
+EXPLAIN SELECT * FROM t;
+                             QUERY PLAN                             
+--------------------------------------------------------------------
+ Custom Scan (MooncakeDuckDBScan)  (cost=0.00..0.00 rows=0 width=0)
+   DuckDB Execution Plan: 
+ 
+ ┌───────────────────────────┐
+ │     COLUMNSTORE_SCAN      │
+ │    ────────────────────   │
+ │         Function:         │
+ │      COLUMNSTORE_SCAN     │
+ │                           │
+ │       Projections: a      │
+ │                           │
+ │         ~300 Rows         │
+ └───────────────────────────┘
+ 
+ 
+(15 rows)
+
+DROP TABLE t;

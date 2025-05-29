@@ -1,208 +1,119 @@
+<div align="center">
+
 # pg_mooncake 🥮
+Postgres extension for 1000x faster analytics
+
 [![License](https://img.shields.io/badge/License-MIT-blue)](https://github.com/Mooncake-Labs/pg_mooncake/blob/main/LICENSE)
-[![Slack URL](https://img.shields.io/badge/Mooncake%20Slack-purple?logo=slack&link=https%3A%2F%2Fjoin.slack.com%2Ft%2Fmooncakelabs%2Fshared_invite%2Fzt-2sepjh5hv-rb9jUtfYZ9bvbxTCUrsEEA)](https://join.slack.com/t/mooncakelabs/shared_invite/zt-2sepjh5hv-rb9jUtfYZ9bvbxTCUrsEEA)
-[![X URL](https://img.shields.io/twitter/url?url=https%3A%2F%2Fx.com%2Fmooncakelabs&label=%40mooncakelabs)](https://x.com/mooncakelabs)
-[![Documentation](https://img.shields.io/badge/Docs-pgmooncake.com-orange?logo=read-the-docs)]([https://pgmooncake.com/docs])
+[![Slack](https://img.shields.io/badge/Mooncake%20Slack-purple?logo=slack)](https://join.slack.com/t/mooncakelabs/shared_invite/zt-2sepjh5hv-rb9jUtfYZ9bvbxTCUrsEEA)
+[![Twitter](https://img.shields.io/twitter/url?url=https%3A%2F%2Fx.com%2Fmooncakelabs&label=%40mooncakelabs)](https://x.com/mooncakelabs)
+[![Docs](https://img.shields.io/badge/Documentation-pgmooncake.com-blue?style=flat&logo=readthedocs&logoColor=white)](https://pgmooncake.com/docs)
 
+</div>
 
-[**pg_mooncake**](https://pgmooncake.com) is a PostgreSQL extension that adds native columnstore tables with DuckDB execution for 1000x faster analytics.
+## Overview
+**pg_mooncake** is a Postgres extension that adds columnar storage and vectorized execution (DuckDB) for fast analytics within Postgres. Postgres + pg_mooncake ranks among the top 10 fastest in [ClickBench](https://www.mooncake.dev/blog/clickbench-v0.1).
 
-Columnstore tables are stored as [Iceberg](https://github.com/apache/iceberg) or [Delta Lake](https://github.com/delta-io/delta) tables (parquet files + metadata) in object storage.
+Columnstore tables are stored as [Iceberg](https://github.com/apache/iceberg) or [Delta Lake](https://github.com/delta-io/delta) tables in local file system or cloud storage.
 
 The extension is maintained by [Mooncake Labs](https://mooncake.dev/) and is available on [Neon Postgres](https://neon.tech/home).
+<div align="center">
+  <a href="https://www.mooncake.dev/blog/how-we-built-pgmooncake">
+    <img src="https://www.mooncake.dev/images/blog/blog_4venn.jpg" width="50%"/>
+  </a>
+</div>
 
-```sql
--- Create a columnstore table in PostgreSQL
-CREATE TABLE user_activity (....) USING columnstore;
+## [Installation](https://pgmooncake.com/docs/installation)
 
--- Insert data into a columnstore table
-INSERT INTO user_activity VALUES ....;
-
--- Query a columnstore table in PostgreSQL
-SELECT * FROM user_activity LIMIT 5;
-```
-
-## Key Features
-- **Table Semantics**: Columnstore tables support transactional and batch inserts, updates, and deletes, as well as joins with regular PostgreSQL tables.
-- **DuckDB Execution**: Run analytic queries up to 1000x faster than on regular PostgreSQL tables, with performance similar to DuckDB on Parquet.
-- **Iceberg and Delta Lake**: Columnstore tables are stored as Parquet files with Iceberg or Delta metadata, allowing external engines (e.g., Snowflake, DuckDB, Pandas, Polars) to query them as native tables.
-
-
-## Installation
-You can install **pg_mooncake** using our Docker image, from source, or on [Neon Postgres](https://neon.tech/home).
-
-### Docker Image:
-To quickly get a PostgreSQL instance with **pg_mooncake** extension up and running, pull and run the latest Docker image:
+### Option 1: Docker
+Get started quickly with our Docker image:
 ```bash
 docker pull mooncakelabs/pg_mooncake
+
+# server
 docker run --name mooncake-demo -e POSTGRES_HOST_AUTH_METHOD=trust -d mooncakelabs/pg_mooncake
-```
-This will start a PostgreSQL 17 instance with **pg_mooncake** extension. You can then connect to it using psql:
-```bash
+
+# client
 docker run -it --rm --link mooncake-demo:postgres mooncakelabs/pg_mooncake psql -h postgres -U postgres
 ```
 
-### From Source:
-You can compile and install **pg_mooncake** extension to add it to your PostgreSQL instance. PostgreSQL versions 14, 15, 16, and 17 are currently supported.
+### Option 2: From Source
+Get source code from [releases](https://github.com/Mooncake-Labs/pg_mooncake/releases) or clone:
 ```bash
-git submodule update --init --recursive
+git clone --recurse-submodules https://github.com/Mooncake-Labs/pg_mooncake.git
+```
+
+Build for Postgres versions 14–17:
+```bash
 make release -j$(nproc)
 make install
 ```
 
-### On Neon Postgres:
-To quickly install the **pg_mooncake** extension on Neon, [create a Neon project](https://console.neon.tech/signup) and run the following command from the [Neon SQL Editor](https://neon.tech/docs/get-started-with-neon/query-with-neon-sql-editor) or a [connected SQL client such as psql](https://neon.tech/docs/connect/query-with-psql-editor) before you enable the extension.
+### Option 3: On Neon Postgres
+1. [Create a Neon project](https://console.neon.tech/signup)
+2. Enable beta extensions:
 ```sql
 SET neon.allow_unstable_extensions='true';
 ```
 
-### Enable the Extension:
+## [Quick Start](https://pgmooncake.com/docs/quick-start)
+1. Enable the extension
 ```sql
 CREATE EXTENSION pg_mooncake;
 ```
-
-## Use Cases
-1. **Run Analytics on Live Application Data in PostgreSQL**
-   Run transactions on columnstore tables, ensuring up-to-date analytics without managing individual Parquet files.
-
-2. **Write PostgreSQL Tables to Your Lake or Lakehouse**
-   Make application data accessible as native tables for data engineering and science outside of PostgreSQL, without complex ETL, CDC or stitching of files.
-
-3. **Query and Update existing Lakehouse Tables Natively in PostgreSQL** (coming soon)
-   Connect existing Lakehouse catalogs and expose them directly as columnstore tables in PostgreSQL.
-
-## Usage
-### 1. (Optional) Add S3 secret and bucket
-This will be where your columnstore tables are stored. If no S3 configurations are specified, these tables will be created in your local file system.
-> **Note**: If you are using **pg_mooncake** on [Neon](https://neon.tech), you will need to bring your own S3 bucket for now. We’re  working to improve this DX.
-```sql
--- for S3 buckets
-SELECT mooncake.create_secret('<name>', 'S3', '<key_id>', '<secret>', '{"REGION": "<s3-region>"}');
-
--- for R2 buckets
-SELECT mooncake.create_secret('<name>', 'S3', '<key_id>', '<secret>', '{"ENDPOINT":"<ACCOUNT_ID>.r2.cloudflarestorage.com/"}');
-
-SET mooncake.default_bucket = 's3://<bucket>';
-```
-
-### 2. Creating columnstore tables
-Create a columnstore table:
+2. Create a columnstore table:
 ```sql
 CREATE TABLE user_activity(
-    user_id BIGINT,
-    activity_type TEXT,
-    activity_timestamp TIMESTAMP,
-    duration INT
+  user_id BIGINT,
+  activity_type TEXT,
+  activity_timestamp TIMESTAMP,
+  duration INT
 ) USING columnstore;
 ```
-Insert data:
+3. Insert data:
 ```sql
 INSERT INTO user_activity VALUES
-    (1, 'login', '2024-01-01 08:00:00', 120),
-    (2, 'page_view', '2024-01-01 08:05:00', 30),
-    (3, 'logout', '2024-01-01 08:30:00', 60),
-    (4, 'error', '2024-01-01 08:13:00', 60);
-
-SELECT * FROM user_activity;
-```
-
-You can also insert data directly from a parquet file (can also be from S3):
-```sql
-COPY user_activity FROM '<parquet_file>'
-```
-
-Update and delete rows:
-```sql
-UPDATE user_activity
-SET activity_timestamp = '2024-01-01 09:50:00'
-WHERE user_id = 3 AND activity_type = 'logout';
-
-DELETE FROM user_activity
-WHERE user_id = 4 AND activity_type = 'error';
+  (1, 'login', '2024-01-01 08:00:00', 120),
+  (2, 'page_view', '2024-01-01 08:05:00', 30),
+  (3, 'logout', '2024-01-01 08:30:00', 60),
+  (4, 'error', '2024-01-01 08:13:00', 60);
 
 SELECT * from user_activity;
 ```
 
-Run transactions:
-```sql
-BEGIN;
+Columnstore tables behave just like regular Postgres heap tables, supporting transactions, updates, deletes, joins, and more.
 
-INSERT INTO user_activity VALUES
-    (5, 'login', '2024-01-02 10:00:00', 200),
-    (6, 'login', '2024-01-02 10:30:00', 90);
+## [Cloud Storage](https://pgmooncake.com/docs/cloud-storage)
+Columnstore tables are stored in the local file system by default. You can configure `mooncake.default_bucket` to store data in S3 or R2 buckets instead.
 
-ROLLBACK;
+> **Note**: On Neon, only cloud storage is supported. Neon users must bring their own S3 or R2 buckets or get a free S3 bucket by signing up at [s3.pgmooncake.com](https://s3.pgmooncake.com/). For cloud storage configuration instructions, see [Cloud Storage](https://pgmooncake.com/docs/cloud-storage). We are working to improve this experience.
 
-SELECT * FROM user_activity;
-```
+## [Load Data](https://pgmooncake.com/docs/load-data)
+**pg_mooncake** supports loading data from:
+- Postgres heap tables
+- Parquet, CSV, JSON files
+- Iceberg, Delta Lake tables
+- Hugging Face datasets
 
-### 3. Run Analytic queries in PostgreSQL
-Run aggregates and groupbys:
-```sql
-SELECT
-    user_id,
-    activity_type,
-    SUM(duration) AS total_duration,
-    COUNT(*) AS activity_count
-FROM
-    user_activity
-GROUP BY
-    user_id, activity_type
-ORDER BY
-    user_id, activity_type;
-```
-
-Joins with regular PostgreSQL tables:
-```sql
-CREATE TABLE users (
-    user_id BIGINT,
-    username TEXT,
-    email TEXT
-);
-
-INSERT INTO users VALUES
-    (1,'alice', 'alice@example.com'),
-    (2, 'bob', 'bob@example.com'),
-    (3, 'charlie', 'charlie@example.com');
-
-SELECT * FROM users u
-JOIN user_activity a ON u.user_id = a.user_id;
-```
-
-### 4. Querying Columnstore tables outside of PostgresSQL
-Find path where the columnstore table was created in:
+## Columnstore Tables as Iceberg or Delta Lake Tables
+Find your columnstore table location:
 ```sql
 SELECT * FROM mooncake.columnstore_tables;
 ```
 
-Create a Polars dataframe directly from this table:
-```python
-import polars as pl
-from deltalake import DeltaTable
-
-delta_table_path = '<path>'
-delta_table = DeltaTable(delta_table_path)
-df = pl.DataFrame(delta_table.to_pyarrow_table())
-```
+The directory contains a Delta Lake (and soon Iceberg) table that can be queried directly using Pandas, DuckDB, Polars, or Spark.
 
 ## Roadmap
-- [x] **Support for local file system and Object Store (S3)**
-- [x] **Transactional select, insert, copy, updates, and deletes**
-- [x] **Real-time and mini-batch inserts**
-- [x] **Join with regular Postgres tables**
-- [x] **Write Delta Lake format**
-- [x] **Directly insert Parquet files into columnstore tables**
-- [x] **Read existing Iceberg or Delta Lake tables**
-- [ ] **Write Iceberg format**
-- [ ] **Secondary indexes and constraints (primary, unique, and foreign keys)**
-- [ ] **Partitioned tables**
+- [x] **Transactional INSERT, SELECT, UPDATE, DELETE, and COPY**
+- [x] **JOIN with regular Postgres heap tables**
+- [x] **Load Parquet, CSV, and JSON files into columnstore tables**
+- [x] **Read existing Iceberg and Delta Lake tables**
+- [x] **File statistics and skipping**
+- [x] **Write Delta Lake tables**
+- [ ] **Write Iceberg tables**
+- [ ] **Batched small writes and compaction**
+- [ ] **Secondary indexes and constraints**
+- [ ] **Partitioned tables ^**
 
-> [!CAUTION]
-> **pg_mooncake** is currently in preview and actively under development. For inquiries about production use cases, please reach out to us on our [Slack community](https://join.slack.com/t/mooncakelabs/shared_invite/zt-2sepjh5hv-rb9jUtfYZ9bvbxTCUrsEEA)!
-> Some functionality may not continue to be supported and some key features are not yet implemented.
+> [^](https://github.com/Mooncake-Labs/pg_mooncake/issues/17) File statistics and skipping should cover most use cases of partitioned tables in Postgres, including time series.
 
-## Built with ❤️ by Mooncake Labs 🥮
-**pg_mooncake** is the first project from our open-source software studio, **Mooncake Labs**. Mooncake is building a managed lakehouse with a clean Postgres and Python experience. With Mooncake, developers ship analytics and AI to their applications without complex ETL, CDC and pipelines.
-
-## License
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
+[v0.2.0 Roadmap](https://github.com/Mooncake-Labs/pg_mooncake/discussions/91)

@@ -1,15 +1,17 @@
 #include "columnstore/columnstore_table.hpp"
 #include "columnstore/columnstore_metadata.hpp"
+#include "columnstore/columnstore_statistics.hpp"
 #include "duckdb/common/serializer/memory_stream.hpp"
 #include "duckdb/common/types/uuid.hpp"
+#include "duckdb/parser/constraints/not_null_constraint.hpp"
+#include "duckdb/planner/constraints/bound_not_null_constraint.hpp"
 #include "lake/lake.hpp"
 #include "parquet_reader.hpp"
 #include "parquet_writer.hpp"
 #include "pgmooncake_guc.hpp"
+#include "zstd_file_system.hpp"
 
 namespace duckdb {
-
-const char *x_mooncake_local_cache = "mooncake_local_cache/";
 
 class SingleFileCachedWriteFileSystem : public FileSystem {
 public:
@@ -62,9 +64,11 @@ public:
                    vector<string> names, ChildFieldIDs field_ids)
         : fs(context, file_name), collection(context, types, ColumnDataAllocatorType::HYBRID),
           writer(context, fs, path + file_name, std::move(types), std::move(names),
-                 duckdb_parquet::format::CompressionCodec::SNAPPY /*codec*/, std::move(field_ids), {} /*kv_metadata*/,
-                 {} /*encryption_config*/, 1.0 /*dictionary_compression_ratio_threshold*/, {} /*compression_level*/,
-                 true /*debug_use_openssl*/) {
+                 duckdb_parquet::CompressionCodec::SNAPPY /*codec*/, std::move(field_ids), {} /*kv_metadata*/,
+                 {} /*encryption_config*/, x_row_group_size / 100 /*dictionary_size_limit*/,
+                 0.01 /*bloom_filter_false_positive_ratio*/,
+                 ZStdFileSystem::DefaultCompressionLevel() /*compression_level*/, true /*debug_use_openssl*/,
+                 ParquetVersion::V1) {
         collection.InitializeAppend(append_state);
     }
 
@@ -81,20 +85,20 @@ public:
         return false;
     }
 
-    pair<idx_t, string_t> Finalize() {
+    std::tuple<idx_t, string_t> Finalize() {
         writer.Flush(collection);
-        idx_t offset = writer.GetWriter().offset;
         idx_t total_written = writer.GetWriter().total_written;
         fs.StartRecording(stream);
         writer.Finalize();
         idx_t file_size = total_written + stream.GetPosition();
-        string_t file_metadata{const_char_ptr_cast(stream.GetData()) + offset,
-                               NumericCast<uint32_t>(stream.GetPosition() - offset - 8)};
+        uint32_t metadata_size = Load<uint32_t>(stream.GetData() + stream.GetPosition() - 8);
+        string_t file_metadata{const_char_ptr_cast(stream.GetData()) + stream.GetPosition() - 8 - metadata_size,
+                               metadata_size};
         return {file_size, std::move(file_metadata)};
     }
 
 private:
-    static const idx_t x_row_group_size = duckdb::Storage::ROW_GROUP_SIZE;
+    static const idx_t x_row_group_size = DEFAULT_ROW_GROUP_SIZE;
     static const idx_t x_row_group_size_bytes = x_row_group_size * 1024;
     static const idx_t x_file_size_bytes = 1 << 30;
 
@@ -107,9 +111,9 @@ private:
 
 class ColumnstoreWriter {
 public:
-    ColumnstoreWriter(Oid oid, ColumnstoreMetadata &metadata, vector<LogicalType> types, vector<string> names)
-        : oid(oid), metadata(metadata), path(metadata.TablesSearch(oid)), types(std::move(types)),
-          names(std::move(names)) {}
+    ColumnstoreWriter(Oid oid, ColumnstoreMetadata &metadata, string path, vector<LogicalType> types,
+                      vector<string> names)
+        : oid(oid), metadata(metadata), path(std::move(path)), types(std::move(types)), names(std::move(names)) {}
 
 public:
     void Write(ClientContext &context, DataChunk &chunk) {
@@ -152,7 +156,8 @@ private:
 
 ColumnstoreTable::ColumnstoreTable(Catalog &catalog, SchemaCatalogEntry &schema, CreateTableInfo &info, Oid oid,
                                    Snapshot snapshot)
-    : TableCatalogEntry(catalog, schema, info), oid(oid), metadata(make_uniq<ColumnstoreMetadata>(snapshot)) {}
+    : TableCatalogEntry(catalog, schema, info), oid(oid), metadata(make_uniq<ColumnstoreMetadata>(snapshot)),
+      path(std::get<0>(metadata->TablesSearch(oid))) {}
 
 ColumnstoreTable::~ColumnstoreTable() = default;
 
@@ -167,9 +172,25 @@ TableStorageInfo ColumnstoreTable::GetStorageInfo(ClientContext &context) {
     return result;
 }
 
+void ColumnstoreTable::VerifyConstraints(DataChunk &chunk,
+                                         const vector<unique_ptr<BoundConstraint>> &bound_constraints) const {
+    for (idx_t i = 0; i < bound_constraints.size(); i++) {
+        auto &constraint = constraints[i];
+        auto &bound_constraint = bound_constraints[i];
+        if (constraint->type == ConstraintType::NOT_NULL) {
+            auto &not_null = constraint->Cast<NotNullConstraint>();
+            auto &bound_not_null = bound_constraint->Cast<BoundNotNullConstraint>();
+            auto &column = columns.GetColumn(LogicalIndex(not_null.index));
+            if (VectorOperations::HasNull(chunk.data[bound_not_null.index.index], chunk.size())) {
+                throw ConstraintException("NOT NULL constraint failed: %s.%s", name, column.Name());
+            }
+        }
+    }
+}
+
 void ColumnstoreTable::Insert(ClientContext &context, DataChunk &chunk) {
     if (!writer) {
-        writer = make_uniq<ColumnstoreWriter>(oid, *metadata, columns.GetColumnTypes(), columns.GetColumnNames());
+        writer = make_uniq<ColumnstoreWriter>(oid, *metadata, path, columns.GetColumnTypes(), columns.GetColumnNames());
     }
     writer->Write(context, chunk);
 }
@@ -185,7 +206,6 @@ void ColumnstoreTable::Delete(ClientContext &context, unordered_set<row_t> &row_
                               ColumnDataCollection *return_collection) {
     vector<row_t> row_ids(row_ids_set.begin(), row_ids_set.end());
     std::sort(row_ids.begin(), row_ids.end());
-    auto path = metadata->TablesSearch(oid);
     auto file_names = metadata->DataFilesSearch(oid);
     auto file_paths = GetFilePaths(path, file_names);
 
@@ -193,7 +213,10 @@ void ColumnstoreTable::Delete(ClientContext &context, unordered_set<row_t> &row_
         int32_t file_number = row_ids[row_ids_index] >> 32;
         uint32_t next_file_row_number = row_ids[row_ids_index] & 0xFFFFFFFF;
         ParquetReader reader(context, file_paths[file_number], ParquetOptions{});
-        for (idx_t i = 0; i < reader.GetTypes().size(); i++) {
+        vector<string> names;
+        vector<LogicalType> types;
+        MultiFileReaderColumnDefinition::ExtractNamesAndTypes(reader.GetColumns(), names, types);
+        for (idx_t i = 0; i < types.size(); i++) {
             reader.reader_data.column_mapping.push_back(i);
             reader.reader_data.column_ids.push_back(i);
         }
@@ -203,9 +226,9 @@ void ColumnstoreTable::Delete(ClientContext &context, unordered_set<row_t> &row_
         reader.InitializeScan(context, state, std::move(groups_to_read));
 
         DataChunk chunk;
-        chunk.Initialize(context, reader.GetTypes());
+        chunk.Initialize(context, types);
         DataChunk delete_chunk;
-        delete_chunk.Initialize(context, reader.GetTypes());
+        delete_chunk.Initialize(context, types);
         SelectionVector remaining_sel(STANDARD_VECTOR_SIZE);
         SelectionVector delete_sel(STANDARD_VECTOR_SIZE);
         uint32_t file_row_number = 0;
@@ -262,6 +285,16 @@ vector<string> ColumnstoreTable::GetFilePaths(const string &path, const vector<s
         }
     }
     return file_paths;
+}
+
+idx_t ColumnstoreTable::Cardinality(const vector<string> &file_names) {
+    idx_t cardinality = 0;
+    for (auto &file_name : file_names) {
+        auto file_stats = columnstore_stats.Get<DataFileStatistics>(file_name);
+        D_ASSERT(file_stats);
+        cardinality += file_stats->NumRows();
+    }
+    return cardinality;
 }
 
 } // namespace duckdb

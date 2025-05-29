@@ -54,13 +54,14 @@ SchemaItems::GetTable(const duckdb::string &entry_name) {
 
 	duckdb::CreateTableInfo info;
 	info.table = entry_name;
-	PostgresTable::SetTableInfo(info, rel);
 
 	if (IsColumnstoreTable(rel)) {
+		PostgresTable::SetTableInfo(info, rel, true /*setDefaultValue*/);
 		CloseRelation(rel);
 		tables.emplace(entry_name, duckdb::make_uniq<duckdb::ColumnstoreTable>(schema->catalog, *schema, info, rel_oid,
 		                                                                       schema->snapshot));
 	} else {
+		PostgresTable::SetTableInfo(info, rel, false /*setDefaultValue*/);
 		auto cardinality = PostgresTable::GetTableCardinality(rel);
 		tables.emplace(entry_name, duckdb::make_uniq<PostgresHeapTable>(schema->catalog, *schema, info, rel,
 		                                                                cardinality, schema->snapshot));

@@ -4,6 +4,7 @@
 #include "duckdb/common/exception.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 #include "pgduckdb/pgduckdb_guc.h"
+#include "pgmooncake_guc.hpp"
 #include "duckdb/main/extension_util.hpp"
 #include "duckdb/parser/parsed_data/create_scalar_function_info.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
@@ -231,9 +232,16 @@ DuckDBManager::Initialize() {
 		                             "SET motherduck_background_catalog_refresh_inactivity_timeout='99 years'");
 	}
 
+	if (mooncake_enable_memory_metadata_cache) {
+		pgduckdb::DuckDBQueryOrThrow(context, "SET parquet_metadata_cache=true");
+	}
+
 	duckdb::LoadPgNextval(context);
 	LoadFunctions(context);
 	// LoadExtensions(context);
+	if (!context.Query("INSTALL iceberg", false /*allow_stream_result*/)->HasError()) {
+		DuckDBQueryOrThrow(context, "LOAD iceberg");
+	}
 }
 
 void
@@ -398,9 +406,9 @@ DuckDBManager::CreateConnection() {
 /* Returns the cached connection to the global DuckDB instance. */
 duckdb::Connection *
 DuckDBManager::GetConnection(bool force_transaction) {
-	if (!pgduckdb::IsDuckdbExecutionAllowed()) {
-		elog(ERROR, "DuckDB execution is not allowed because you have not been granted the duckdb.postgres_role");
-	}
+	// if (!pgduckdb::IsDuckdbExecutionAllowed()) {
+	// 	elog(ERROR, "DuckDB execution is not allowed because you have not been granted the duckdb.postgres_role");
+	// }
 
 	auto &instance = Get();
 	auto &context = *instance.connection->context;

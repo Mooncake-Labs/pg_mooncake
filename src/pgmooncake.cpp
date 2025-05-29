@@ -5,14 +5,19 @@ extern "C" {
 #include "postgres.h"
 
 #include "fmgr.h"
+#include "utils/guc.h"
 }
 
 void MooncakeInitGUC();
 void DuckdbInitHooks();
 
+const char *x_mooncake_local_cache = "mooncake_local_cache/";
+
 bool mooncake_allow_local_tables = true;
 char *mooncake_default_bucket = strdup("");
 bool mooncake_enable_local_cache = true;
+bool mooncake_enable_memory_metadata_cache = false;
+const char *mooncake_timeline_id = "main";
 
 extern "C" {
 PG_MODULE_MAGIC;
@@ -24,6 +29,13 @@ void _PG_init() {
     DuckdbInitHooks();
     DuckdbInitNode();
     pgduckdb::RegisterDuckdbXactCallback();
+
+    const char *neon_timeline_id =
+        GetConfigOption("neon.timeline_id", true /*missing_ok*/, false /*restrict_privileged*/);
+    if (neon_timeline_id) {
+        mooncake_allow_local_tables = false;
+        mooncake_timeline_id = neon_timeline_id;
+    }
 
     auto local_fs = duckdb::FileSystem::CreateLocal();
     local_fs->CreateDirectory("mooncake_local_cache");

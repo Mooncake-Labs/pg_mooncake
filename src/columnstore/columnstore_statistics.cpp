@@ -3,11 +3,10 @@
 
 namespace duckdb {
 
-DataFileStatistics::DataFileStatistics(ClientContext &context, const ColumnList &columns,
-                                       shared_ptr<ParquetFileMetadataCache> metadata) {
+DataFileStatistics::DataFileStatistics(ParquetReader &reader, const ColumnList &columns) : num_rows(reader.NumRows()) {
     for (auto &col : columns.Physical()) {
         auto name = col.GetName();
-        column_stats[name] = ParquetReader::ReadStatistics(context, ParquetOptions{}, metadata, name);
+        column_stats[name] = reader.ReadStatistics(name);
     }
 }
 

@@ -19,7 +19,7 @@ struct ColumnstoreScanMultiFileReaderGlobalState : public MultiFileReaderGlobalS
 };
 
 struct ColumnstoreScanMultiFileReader : public MultiFileReader {
-    static unique_ptr<MultiFileReader> Create() {
+    static unique_ptr<MultiFileReader> Create(const TableFunction &) {
         return std::move(make_uniq<ColumnstoreScanMultiFileReader>());
     }
 
@@ -49,10 +49,12 @@ struct ColumnstoreScanMultiFileReader : public MultiFileReader {
     unique_ptr<MultiFileReaderGlobalState>
     InitializeGlobalState(ClientContext &context, const MultiFileReaderOptions &file_options,
                           const MultiFileReaderBindData &bind_data, const MultiFileList &file_list,
-                          const vector<LogicalType> &global_types, const vector<string> &global_names,
-                          const vector<column_t> &global_column_ids) override {
-        auto it = std::find_if(global_column_ids.begin(), global_column_ids.end(),
-                               [](column_t global_column_id) { return IsRowIdColumnId(global_column_id); });
+                          const vector<MultiFileReaderColumnDefinition> &global_columns,
+                          const vector<ColumnIndex> &global_column_ids) override {
+        auto it =
+            std::find_if(global_column_ids.begin(), global_column_ids.end(), [](const ColumnIndex &global_column_id) {
+                return IsRowIdColumnId(global_column_id.GetPrimaryIndex());
+            });
         vector<LogicalType> extra_columns;
         if (it != global_column_ids.end()) {
             extra_columns.push_back(LogicalType::BIGINT);
@@ -66,22 +68,24 @@ struct ColumnstoreScanMultiFileReader : public MultiFileReader {
         return std::move(global_state);
     }
 
-    void CreateMapping(const string &file_name, const vector<LogicalType> &local_types,
-                       const vector<string> &local_names, const vector<LogicalType> &global_types,
-                       const vector<string> &global_names, const vector<column_t> &global_column_ids,
-                       optional_ptr<TableFilterSet> filters, MultiFileReaderData &reader_data,
-                       const string &initial_file, const MultiFileReaderBindData &options,
+    void CreateMapping(const string &file_name, const vector<MultiFileReaderColumnDefinition> &local_columns,
+                       const vector<MultiFileReaderColumnDefinition> &global_columns,
+                       const vector<ColumnIndex> &global_column_ids, optional_ptr<TableFilterSet> filters,
+                       MultiFileReaderData &reader_data, const string &initial_file,
+                       const MultiFileReaderBindData &options,
                        optional_ptr<MultiFileReaderGlobalState> global_state) override {
-        MultiFileReader::CreateMapping(file_name, local_types, local_names, global_types, global_names,
-                                       global_column_ids, filters, reader_data, initial_file, options, global_state);
+        MultiFileReader::CreateMapping(file_name, local_columns, global_columns, global_column_ids, filters,
+                                       reader_data, initial_file, options, global_state);
         auto &gstate = global_state->Cast<ColumnstoreScanMultiFileReaderGlobalState>();
         if (gstate.row_id_index != DConstants::INVALID_INDEX) {
-            auto it = std::find_if(local_names.begin(), local_names.end(), [](const string &local_name) {
-                return StringUtil::CIEquals(local_name, "file_row_number");
-            });
-            D_ASSERT(it != local_names.end());
+            vector<string> names;
+            vector<LogicalType> types;
+            MultiFileReaderColumnDefinition::ExtractNamesAndTypes(local_columns, names, types);
+            auto it = std::find_if(names.begin(), names.end(),
+                                   [](const string &name) { return StringUtil::CIEquals(name, "file_row_number"); });
+            D_ASSERT(it != names.end());
             reader_data.column_mapping.push_back(gstate.file_row_number_index);
-            reader_data.column_ids.push_back(NumericCast<idx_t>(std::distance(local_names.begin(), it)));
+            reader_data.column_ids.push_back(NumericCast<idx_t>(std::distance(names.begin(), it)));
         }
     }
 
@@ -135,8 +139,7 @@ unique_ptr<GlobalTableFunctionState> ColumnstoreScanInitGlobal(ClientContext &co
 }
 
 TableFunction ColumnstoreTable::GetScanFunction(ClientContext &context, unique_ptr<FunctionData> &bind_data) {
-    auto path = metadata->TablesSearch(oid);
-    auto file_names = metadata->DataFilesSearch(oid, &context, &columns);
+    auto file_names = metadata->DataFilesSearch(oid, &context, &path, &columns);
     auto file_paths = GetFilePaths(path, file_names);
     if (file_paths.empty()) {
         return TableFunction("columnstore_scan", {} /*arguments*/, EmptyColumnstoreScan);
@@ -145,6 +148,7 @@ TableFunction ColumnstoreTable::GetScanFunction(ClientContext &context, unique_p
     TableFunction columnstore_scan = GetParquetScan(context);
     columnstore_scan.name = "columnstore_scan";
     columnstore_scan.init_global = ColumnstoreScanInitGlobal;
+    columnstore_scan.statistics = nullptr;
     columnstore_scan.get_multi_file_reader = ColumnstoreScanMultiFileReader::Create;
 
     vector<Value> values;
@@ -153,7 +157,8 @@ TableFunction ColumnstoreTable::GetScanFunction(ClientContext &context, unique_p
     }
     vector<Value> inputs;
     inputs.push_back(Value::LIST(values));
-    named_parameter_map_t named_parameters{{"file_row_number", Value(true)}};
+    named_parameter_map_t named_parameters{{"file_row_number", Value(true)},
+                                           {"explicit_cardinality", Value::UBIGINT(Cardinality(file_names))}};
     vector<LogicalType> input_table_types;
     vector<string> input_table_names;
     TableFunctionBindInput bind_input(inputs, named_parameters, input_table_types, input_table_names, nullptr /*info*/,

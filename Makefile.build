@@ -27,7 +27,7 @@ DEPS := $(SRCS:%=%.d)
 # ========================
 REGRESS_SQL := $(shell cd $(TEST_DIR)/sql; find * -name '*.sql')
 REGRESS := $(REGRESS_SQL:%.sql=%)
-REGRESS_OPTS = --inputdir=$(TEST_DIR) --load-extension=$(EXTENSION_NAME)
+REGRESS_OPTS = --encoding=UTF8 --inputdir=$(TEST_DIR) --load-extension=$(EXTENSION_NAME)
 
 # ========================
 # Compilation Flags
@@ -35,6 +35,7 @@ REGRESS_OPTS = --inputdir=$(TEST_DIR) --load-extension=$(EXTENSION_NAME)
 PG_CPPFLAGS := -I$(SRC_DIR) \
                -I$(DUCKDB_DIR)/extension/parquet/include \
                -I$(DUCKDB_DIR)/src/include \
+               -I$(DUCKDB_DIR)/third_party/fastpforlib \
                -I$(DUCKDB_DIR)/third_party/parquet \
                -I$(DUCKDB_DIR)/third_party/thrift \
                -I../src \
@@ -48,7 +49,9 @@ SHLIB_LINK := -L. -Wl,-rpath,$(PG_LIB_DIR) -lduckdb -lstdc++
 # ========================
 MODULES := libduckdb
 MODULE_big := $(EXTENSION_NAME)
-DATA := $(SQL_DIR)/pg_mooncake--0.0.1.sql
+DATA := $(SQL_DIR)/pg_mooncake--0.1.0.sql \
+        $(SQL_DIR)/pg_mooncake--0.1.0--0.1.1.sql \
+        $(SQL_DIR)/pg_mooncake--0.1.1--0.1.2.sql
 EXTENSION := ../../$(EXTENSION_NAME)
 PGXS := $(shell $(PG_CONFIG) --pgxs)
 override with_llvm := no

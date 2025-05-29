@@ -7,6 +7,7 @@
 
 extern "C" {
 #include "postgres.h"
+#include "access/table.h"
 #include "access/tableam.h"
 #include "catalog/pg_type.h"
 #include "commands/event_trigger.h"
@@ -19,6 +20,7 @@ extern "C" {
 #include "optimizer/optimizer.h"
 #include "tcop/utility.h"
 #include "utils/builtins.h"
+#include "utils/snapmgr.h"
 #include "utils/syscache.h"
 #include "utils/lsyscache.h"
 #include "commands/event_trigger.h"
@@ -47,7 +49,7 @@ static bool ctas_skip_data = false;
 static bool top_level_ddl = true;
 static ProcessUtility_hook_type prev_process_utility_hook = NULL;
 
-static void
+[[maybe_unused]] static void
 DuckdbHandleDDL(Node *parsetree) {
 	if (!pgduckdb::IsExtensionRegistered()) {
 		/* We're not installed, so don't mess with the query */
@@ -99,12 +101,42 @@ DuckdbHandleDDL(Node *parsetree) {
 }
 
 static void
+MooncakeHandleDDL(PlannedStmt *pstmt, const char *query_string, bool read_only_tree, ProcessUtilityContext context,
+                  ParamListInfo params, struct QueryEnvironment *query_env, DestReceiver *dest, QueryCompletion *qc) {
+	Node *parsetree = pstmt->utilityStmt;
+	if (IsA(parsetree, CreateTableAsStmt)) {
+		auto stmt = castNode(CreateTableAsStmt, parsetree);
+		char *access_method = stmt->into->accessMethod ? stmt->into->accessMethod : default_table_access_method;
+		if (strcmp(access_method, "columnstore") == 0) {
+			bool skip_data = stmt->into->skipData;
+			stmt->into->skipData = true;
+			prev_process_utility_hook(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc);
+			if (!skip_data) {
+				auto connection = pgduckdb::DuckDBManager::GetConnection();
+				Relation rel = table_openrv(stmt->into->rel, AccessShareLock);
+				Oid relid = RelationGetRelid(rel);
+				table_close(rel, AccessShareLock);
+				const char *ctas_query_string = pgduckdb_get_querydef(castNode(Query, stmt->query));
+				std::string insert_string =
+				    std::string("INSERT INTO ") + pgduckdb_relation_name(relid) + " " + ctas_query_string;
+				PushActiveSnapshot(GetTransactionSnapshot());
+				pgduckdb::DuckDBQueryOrThrow(*connection, insert_string);
+				PopActiveSnapshot();
+			}
+			return;
+		}
+	}
+
+	prev_process_utility_hook(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc);
+}
+
+static void
 DuckdbUtilityHook_Cpp(PlannedStmt *pstmt, const char *query_string, bool read_only_tree, ProcessUtilityContext context,
                       ParamListInfo params, struct QueryEnvironment *query_env, DestReceiver *dest,
                       QueryCompletion *qc) {
 	Node *parsetree = pstmt->utilityStmt;
 	if (IsA(parsetree, AlterTableStmt)) {
-		AlterTableStmt *stmt = (AlterTableStmt *)pstmt->utilityStmt;
+		AlterTableStmt *stmt = castNode(AlterTableStmt, pstmt->utilityStmt);
 		if (IsColumnstoreTable(RangeVarGetRelid(stmt->relation, AccessShareLock, false /*missing_ok*/))) {
 			elog(ERROR, "ALTER TABLE on columnstore table is not supported");
 		}
@@ -112,8 +144,11 @@ DuckdbUtilityHook_Cpp(PlannedStmt *pstmt, const char *query_string, bool read_on
 		ListCell *lcmd;
 		foreach (lcmd, stmt->cmds) {
 			AlterTableCmd *cmd = lfirst_node(AlterTableCmd, lcmd);
-			if (cmd->subtype == AT_SetAccessMethod && strcmp(cmd->name, "columnstore") == 0) {
-				elog(ERROR, "ALTER TABLE changing ACCESS METHOD to columnstore is not supported");
+			if (cmd->subtype == AT_SetAccessMethod) {
+				char *access_method = cmd->name ? cmd->name : default_table_access_method;
+				if (strcmp(access_method, "columnstore") == 0) {
+					elog(ERROR, "ALTER TABLE changing ACCESS METHOD to columnstore is not supported");
+				}
 			}
 		}
 #endif
@@ -127,11 +162,6 @@ DuckdbUtilityHook_Cpp(PlannedStmt *pstmt, const char *query_string, bool read_on
 				SetQueryCompletion(qc, CMDTAG_COPY, processed);
 			}
 			return;
-		}
-	} else if (IsA(parsetree, CreateTableAsStmt)) {
-		CreateTableAsStmt *stmt = (CreateTableAsStmt *)pstmt->utilityStmt;
-		if (stmt->into->accessMethod && strcmp(stmt->into->accessMethod, "columnstore") == 0) {
-			elog(ERROR, "CREATE TABLE AS USING columnstore is not supported");
 		}
 	}
 
@@ -148,8 +178,9 @@ DuckdbUtilityHook_Cpp(PlannedStmt *pstmt, const char *query_string, bool read_on
 	bool prev_top_level_ddl = top_level_ddl;
 	top_level_ddl = context == PROCESS_UTILITY_TOPLEVEL;
 
-	DuckdbHandleDDL(parsetree);
-	prev_process_utility_hook(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc);
+	// DuckdbHandleDDL(parsetree);
+	// prev_process_utility_hook(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc);
+	MooncakeHandleDDL(pstmt, query_string, read_only_tree, context, params, query_env, dest, qc);
 
 	top_level_ddl = prev_top_level_ddl;
 }

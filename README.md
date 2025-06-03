@@ -14,9 +14,7 @@ The Postgres columnstore extension for fast analytics on Postgres tables.
 **pg_mooncake** is a Clickhouse alternative for real-time analytics on your Postgres tables.
 
 1. Columnstore tables are sync'd with Postgres tables and maintain real-time consistency with transactional data.
-
 2. Queries on columnstore tables are executed by DuckDB and rank among the fastest on [ClickBench](https://www.mooncake.dev/blog/clickbench-v0.1).
-
 3. Columnstore data is stored as Iceberg tables (parquet + metadata) in local file system or cloud storage. 
 
 pg_mooncake is a Postgres extension is maintained by [Mooncake Labs](https://mooncake.dev/), and relies on [Moonlink](https://github.com/Mooncake-Labs/moonlink/tree/main) (real-time Postgres to Iceberg sync). 

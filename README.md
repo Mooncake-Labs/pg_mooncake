@@ -84,8 +84,8 @@ SELECT * FROM user_activity_col;
 Columnstore tables are created as a copy of a regular Postgres table (rowstore). 
 
 1. Direct writes to the columnstore table are not supported.
-2. All data modifications (point + batch updates/inserts/deletes) are performed on the regular Postgres table and are replicated to the columnstore with sub-second consistency.
-3. (Roadmap) Maintain full table history in columnstore while keeping only recent data in rowstore, by selectively truncating rowstore tables without affecting the columnstore.
+2. All data modifications (updates/inserts/deletes) are performed on the regular Postgres table and are replicated to the columnstore with sub-second consistency.
+3. (Roadmap) Maintain full table history in columnstore while keeping only recent data in rowstore. 
 
 ## [Read Path](https://pgmooncake.com/docs/load-data)
 Query a columnstore table as you would a regular postgres table. Including:
@@ -97,12 +97,13 @@ Query a columnstore table as you would a regular postgres table. Including:
 
 Columnstore tables are stored written as Iceberg tables (Parquet Files + Metadata), and can be read by engines like DuckDB, Snowflake, Spark, etc.
 
-This is powered by [Moonlink](https://github.com/Mooncake-Labs/moonlink/tree/main). Moonlink optimizes, manages and compacts Iceberg state for real-time mirroring from Postgres. 
+This is powered by [Moonlink](https://github.com/Mooncake-Labs/moonlink/tree/main) optimizes, manages and compacts Iceberg state for real-time mirroring from Postgres. 
 
 ## Roadmap
 
-- [x] **Real-time consistency with rowstore for small/batch inserts, updates, and deletes**
-- [x] **Create columnstore table from a rowstore table with keys, indexes, constraints**
+
+- [x] **Efficiently handle point insets/updates/deletes**
+- [x] **Create columnstore table that's sync'd with a rowstore table**
 - [x] **JOINs between columnstore and rowstore tables**
 - [x] **Read from existing Iceberg and Delta Lake tables**
 - [x] **File statistics and predicate pushdown**
@@ -113,9 +114,7 @@ This is powered by [Moonlink](https://github.com/Mooncake-Labs/moonlink/tree/mai
 
 
 ## V0.2 vs V0.1
-
-
-pg_mooncake v0.2 introduces a completely redesigned architecture that enables:
+pg_mooncake v0.2 introduces a redesigned architecture that enables:
 
 1. **Real-time mirroring** of rowstore to columnstore tables. 
 2. **Optimizations for point insertsupdates/deletes** without creating a parquet file per operation. 

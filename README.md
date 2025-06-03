@@ -1,7 +1,7 @@
 <div align="center">
 
 # pg_mooncake 🥮
-The Postgres columnstore extension for fast & up-to-date analytics.
+The Postgres columnstore extension for fast analytics on Postgres tables. 
 
 [![License](https://img.shields.io/badge/License-MIT-blue)](https://github.com/Mooncake-Labs/pg_mooncake/blob/main/LICENSE)
 [![Slack](https://img.shields.io/badge/Mooncake%20Slack-purple?logo=slack)](https://join.slack.com/t/mooncakelabs/shared_invite/zt-2sepjh5hv-rb9jUtfYZ9bvbxTCUrsEEA)

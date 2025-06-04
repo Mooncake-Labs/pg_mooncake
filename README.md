@@ -7,6 +7,7 @@ Postgres extension for 1000x faster analytics
 [![Slack](https://img.shields.io/badge/Mooncake%20Slack-purple?logo=slack)](https://join.slack.com/t/mooncakelabs/shared_invite/zt-2sepjh5hv-rb9jUtfYZ9bvbxTCUrsEEA)
 [![Twitter](https://img.shields.io/twitter/url?url=https%3A%2F%2Fx.com%2Fmooncakelabs&label=%40mooncakelabs)](https://x.com/mooncakelabs)
 [![Docs](https://img.shields.io/badge/Documentation-pgmooncake.com-blue?style=flat&logo=readthedocs&logoColor=white)](https://pgmooncake.com/docs)
+[![Ask DeepWiki](https://deepwiki.com/badge.svg)](https://deepwiki.com/Mooncake-Labs/pg_mooncake)
 
 </div>
 

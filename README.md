@@ -97,18 +97,23 @@ Columnstore tables are stored written as Iceberg tables (Parquet Files + Metadat
 
 This is powered by [Moonlink](https://github.com/Mooncake-Labs/moonlink/tree/main) optimizes, manages and compacts Iceberg state for real-time mirroring from Postgres. 
 
+## Known Limitations
+Current temporary limitations:
+
+1. Create a columnstore from an existing rowstore with pre-populated data.
+2. Recovery operations on columnstore tables.
+3. Create a columnstore table for a rowstore table that includes enums and composite types.
+
 ## Roadmap
-
-
 - [x] **Efficiently handle point insets/updates/deletes**
 - [x] **Create columnstore table that's sync'd with a rowstore table**
 - [x] **JOINs between columnstore and rowstore tables**
 - [x] **Read from existing Iceberg and Delta Lake tables**
 - [x] **File statistics and predicate pushdown**
 - [x] **Writing data as Iceberg tables**
-- [ ] **Integration with cloud storage + Iceberg REST Catalog**
-- [ ] **Periodical truncate rowstore tables, while maintaining full history in columnstore**
-- [ ] **Secondary indexes**
+- [ ] **Cloud storage integration with Iceberg REST Catalog**
+- [ ] **Truncate rowstore tables periodically, maintaining full history in columnstore**
+- [ ] **Seconday indexes (fulltext, vector) on Columnstore**
 
 
 ## V0.2 vs V0.1
@@ -118,6 +123,6 @@ pg_mooncake v0.2 introduces a redesigned architecture that enables:
 2. **Optimizations for point insertsupdates/deletes** without creating a parquet file per operation. 
 3. **Writing Iceberg table format**. 
 
-Stay tuned for an architecture deep dive. 
 
+🥮
 

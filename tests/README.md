@@ -38,10 +38,10 @@ python3 stress_test.py --duration 60 --verbose
 #### Advanced Usage
 ```bash
 python3 stress_test.py \
-    --host /tmp \
-    --port 28813 \
+    --host /home/ubuntu/.pgrx \
+    --port 28817 \
     --database pg_mooncake \
-    --user postgres \
+    --user ubuntu \
     --duration 120 \
     --batch-workers 3 \
     --point-workers 4 \

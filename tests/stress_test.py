@@ -44,7 +44,7 @@ class StressTest:
         conn = self.get_connection()
         try:
             with conn.cursor() as cur:
-                cur.execute("CREATE EXTENSION IF NOT EXISTS pg_mooncake;")
+                cur.execute("CREATE EXTENSION pg_mooncake;")
                 
                 cur.execute("DROP TABLE IF EXISTS stress_regular CASCADE;")
                 cur.execute("DROP TABLE IF EXISTS stress_columnstore CASCADE;")
@@ -279,10 +279,10 @@ class StressTest:
 
 def main():
     parser = argparse.ArgumentParser(description='pg_mooncake stress test')
-    parser.add_argument('--host', default='/tmp', help='PostgreSQL host (use /tmp for Unix socket)')
-    parser.add_argument('--port', type=int, default=28813, help='PostgreSQL port (pgrx default: 28813)')
+    parser.add_argument('--host', default='/home/ubuntu/.pgrx', help='PostgreSQL host (use /home/ubuntu/.pgrx for Unix socket)')
+    parser.add_argument('--port', type=int, default=28817, help='PostgreSQL port (pgrx default: 28817)')
     parser.add_argument('--database', default='pg_mooncake', help='Database name')
-    parser.add_argument('--user', default='postgres', help='Database user')
+    parser.add_argument('--user', default='ubuntu', help='Database user')
     parser.add_argument('--password', default='', help='Database password')
     parser.add_argument('--duration', type=int, default=30, help='Test duration in seconds')
     parser.add_argument('--batch-workers', type=int, default=2, help='Number of batch insert workers')

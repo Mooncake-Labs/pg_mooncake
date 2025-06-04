@@ -60,7 +60,7 @@ CREATE TABLE user_activity(
 ```
 3. Create a columnstore copy `user_activity_col` that's in sync with `user_activity`:
 ```sql
-CALL create_mooncake_table('user_activity_col', 'user_activity');
+CALL mooncake.create_columnstore_table('user_activity_col', 'user_activity');
 ```
 
 4. Insert data into `user_activity`;

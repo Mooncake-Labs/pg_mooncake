@@ -105,16 +105,16 @@ Current temporary limitations:
 3. Create a columnstore table for a rowstore table that includes enums and composite types.
 
 ## Roadmap
-- [x] **Efficiently handle point insets/updates/deletes**
-- [x] **Create columnstore table that's sync'd with a rowstore table**
-- [x] **JOINs between columnstore and rowstore tables**
-- [x] **Read from existing Iceberg and Delta Lake tables**
-- [x] **File statistics and predicate pushdown**
-- [x] **Writing data as Iceberg tables**
-- [ ] **Cloud storage integration with Iceberg REST Catalog**
-- [ ] **Truncate rowstore tables periodically, maintaining full history in columnstore**
-- [ ] **Seconday indexes (fulltext, vector) on Columnstore**
 
+### Short Term
+
+- [ ] Implement read cache
+- [ ] Integrate cloud storage buckets (S3, R2) and Iceberg REST Catalog (S3 Tables, R2 Tables, Polaris etc)
+- [ ] Periodically truncate rowstore tables while preserving full history in columnstore
+
+### Long Term
+- [ ] Implement secondary indexes (fulltext, vector)
+- [ ] Read columnstore tables with strong consistency
 
 ## V0.2 vs V0.1
 pg_mooncake v0.2 introduces a redesigned architecture that enables:

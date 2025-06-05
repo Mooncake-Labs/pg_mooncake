@@ -25,6 +25,10 @@ postgres.git = "https://github.com/Mooncake-Labs/rust-postgres.git"
 regex = "1"
 tokio = { version = "1.45", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal"] }
 
+[dev-dependencies]
+tokio-postgres = { version = "0.7.13" }
+rand = "0.8"
+
 [profile.release]
 codegen-units = 1
 debug = 1

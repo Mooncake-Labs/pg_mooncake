@@ -34,3 +34,5 @@ RUN cat >> /usr/share/postgresql/postgresql.conf.sample <<EOF
 shared_preload_libraries = 'pg_mooncake'
 wal_level = logical
 EOF
+
+ENV RUST_BACKTRACE="1"

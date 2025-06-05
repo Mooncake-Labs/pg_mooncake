@@ -42,7 +42,7 @@ fn create_snapshot(dst: &str) {
 fn get_loopback_uri() -> String {
     let hosts = unsafe { CStr::from_ptr(pg_sys::Unix_socket_directories) };
     let host = hosts.to_str().unwrap().split(", ").next().unwrap();
-    let port: i32 = unsafe { direct_function_call(pg_sys::inet_server_port, &[]).unwrap() };
+    let port: i32 = unsafe { pg_sys::PostPortNumber };
     let database: &CStr = unsafe { direct_function_call(pg_sys::current_database, &[]).unwrap() };
     let database = database.to_str().unwrap();
     format!(

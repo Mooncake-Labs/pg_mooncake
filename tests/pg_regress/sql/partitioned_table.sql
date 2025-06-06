@@ -1,0 +1,10 @@
+CREATE TABLE r (a int PRIMARY KEY, b TEXT) PARTITION BY RANGE (a);
+CREATE TABLE r1 PARTITION OF r FOR VALUES FROM (0) TO (50);
+CREATE TABLE r2 PARTITION OF r FOR VALUES FROM (50) TO (100);
+CALL mooncake.create_table('c', 'r');
+INSERT INTO r SELECT g, 'val_' || g from generate_series(0, 99) g;
+DELETE FROM r WHERE a > 90;
+SELECT count(*) FROM c WHERE a < 25;
+SELECT count(*) FROM c WHERE a < 75;
+SELECT count(*) FROM c WHERE a < 25 OR a > 75;
+DROP TABLE r, c;

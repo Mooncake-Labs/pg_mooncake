@@ -45,10 +45,13 @@ fn get_loopback_uri() -> String {
     let port: i32 = unsafe { pg_sys::PostPortNumber };
     let database: &CStr = unsafe { direct_function_call(pg_sys::current_database, &[]).unwrap() };
     let database = database.to_str().unwrap();
+    let user = unsafe { CStr::from_ptr(pg_sys::GetUserNameFromId(pg_sys::GetUserId(), false)) };
+    let user = user.to_str().unwrap();
     format!(
-        "postgresql:///{}?host={}&port={port}",
+        "postgresql:///{}?host={}&port={port}&user={}",
         uri_encode(database),
-        uri_encode(host)
+        uri_encode(host),
+        uri_encode(user)
     )
 }
 

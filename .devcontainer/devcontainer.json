@@ -13,6 +13,7 @@
         }
     },
     "remoteEnv": {
-        "PG_CONFIG": "/home/vscode/.pgrx/17.5/pgrx-install/bin/pg_config"
+        "PG_CONFIG": "/home/vscode/.pgrx/17.5/pgrx-install/bin/pg_config",
+        "RUST_LOG": "moonlink=debug,moonlink_backend=debug,moonlink_connectors=debug"
     }
 }

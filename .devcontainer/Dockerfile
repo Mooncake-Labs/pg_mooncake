@@ -17,13 +17,6 @@ USER vscode
 RUN cargo install --locked cargo-pgrx@0.14.3 \
  && cargo pgrx init
 
-ENV PATH="/home/vscode/.pgrx/17.5/pgrx-install/bin/:${PATH}" \
-    RUSTFLAGS="-C link-arg=-fuse-ld=mold"
-
-COPY . /tmp/.devcontainer
-
-RUN cd /tmp/.devcontainer \
- && cat .psqlrc >> ~/.psqlrc \
- && cat postgres.conf >> ~/.pgrx/data-17/postgresql.conf
-
 RUN wget -P ~ https://raw.githubusercontent.com/cmrschwarz/rust-prettifier-for-lldb/refs/heads/main/rust_prettifier_for_lldb.py
+
+ENV RUSTFLAGS="-C link-arg=-fuse-ld=mold"

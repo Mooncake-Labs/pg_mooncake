@@ -31,8 +31,9 @@ FROM base
 
 COPY --from=build /pg_mooncake/target/release/pg_mooncake-pg17/ /
 
-COPY .devcontainer /tmp/.devcontainer
-
-RUN cat /tmp/.devcontainer/postgres.conf >> /usr/share/postgresql/postgresql.conf.sample
+RUN cat >> /usr/share/postgresql/postgresql.conf.sample <<EOF
+shared_preload_libraries = 'pg_mooncake'
+wal_level = logical
+EOF
 
 ENV RUST_BACKTRACE="1"

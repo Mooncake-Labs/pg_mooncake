@@ -2,7 +2,7 @@
     "build": {
         "dockerfile": "Dockerfile"
     },
-    "postCreateCommand": "git config devcontainers-theme.show-dirty 1",
+    "postCreateCommand": "bash .devcontainer/postCreateCommand.sh",
     "customizations": {
         "vscode": {
             "extensions": [
@@ -11,8 +11,5 @@
                 "rust-lang.rust-analyzer"
             ]
         }
-    },
-    "remoteEnv": {
-        "PG_CONFIG": "/home/vscode/.pgrx/17.5/pgrx-install/bin/pg_config"
     }
 }

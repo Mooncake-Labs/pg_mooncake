@@ -39,9 +39,11 @@ Then, clone the repository:
 git clone --recurse-submodules https://github.com/Mooncake-Labs/pg_mooncake.git
 ```
 
-To build and install for Postgres version 17 (support for more versions is coming), run:
+To build and install for Postgres versions 14-17, run:
 ```bash
-make install
+# Replace with your Postgres version
+cargo pgrx init --pg17=$(which pg_config)
+make install PG_VERSION=pg17
 ```
 
 Finally, add pg_mooncake to `shared_preload_libraries` in your `postgresql.conf` file and enable logical replication:

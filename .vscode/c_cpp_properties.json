@@ -5,7 +5,7 @@
             "name": "Dev Container",
             "includePath": [
                 "${workspaceFolder}/pg_duckdb/**",
-                "/home/vscode/.pgrx/17.5/src/**"
+                "/home/vscode/.pgrx/17.*/src/**"
             ]
         }
     ]

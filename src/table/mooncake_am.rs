@@ -31,6 +31,9 @@ static mut MOONCAKE_AM: pg_sys::TableAmRoutine = pg_sys::TableAmRoutine {
     tuple_update: Some(mooncake_tuple_update),
     tuple_lock: Some(mooncake_tuple_lock),
     finish_bulk_insert: Some(mooncake_finish_bulk_insert),
+    #[cfg(any(feature = "pg14", feature = "pg15"))]
+    relation_set_new_filenode: Some(mooncake_relation_set_new_filenode),
+    #[cfg(any(feature = "pg16", feature = "pg17"))]
     relation_set_new_filelocator: Some(mooncake_relation_set_new_filelocator),
     relation_nontransactional_truncate: Some(mooncake_relation_nontransactional_truncate),
     relation_copy_data: Some(mooncake_relation_copy_data),
@@ -289,6 +292,25 @@ extern "C-unwind" fn mooncake_tuple_delete(
 
 #[pg_guard]
 #[allow(clippy::too_many_arguments)]
+#[cfg(any(feature = "pg14", feature = "pg15"))]
+extern "C-unwind" fn mooncake_tuple_update(
+    _rel: pg_sys::Relation,
+    _otid: pg_sys::ItemPointer,
+    _slot: *mut pg_sys::TupleTableSlot,
+    _cid: pg_sys::CommandId,
+    _snapshot: pg_sys::Snapshot,
+    _crosscheck: pg_sys::Snapshot,
+    _wait: bool,
+    _tmfd: *mut pg_sys::TM_FailureData,
+    _lockmode: *mut pg_sys::LockTupleMode::Type,
+    _update_indexes: *mut bool,
+) -> pg_sys::TM_Result::Type {
+    unimplemented!("mooncake_tuple_update");
+}
+
+#[pg_guard]
+#[allow(clippy::too_many_arguments)]
+#[cfg(any(feature = "pg16", feature = "pg17"))]
 extern "C-unwind" fn mooncake_tuple_update(
     _rel: pg_sys::Relation,
     _otid: pg_sys::ItemPointer,
@@ -326,6 +348,18 @@ extern "C-unwind" fn mooncake_finish_bulk_insert(_rel: pg_sys::Relation, _option
 }
 
 #[pg_guard]
+#[cfg(any(feature = "pg14", feature = "pg15"))]
+extern "C-unwind" fn mooncake_relation_set_new_filenode(
+    _rel: pg_sys::Relation,
+    _newrnode: *const pg_sys::RelFileNode,
+    _persistence: c_char,
+    _freeze_xid: *mut pg_sys::TransactionId,
+    _minmulti: *mut pg_sys::MultiXactId,
+) {
+}
+
+#[pg_guard]
+#[cfg(any(feature = "pg16", feature = "pg17"))]
 extern "C-unwind" fn mooncake_relation_set_new_filelocator(
     _rel: pg_sys::Relation,
     _newrlocator: *const pg_sys::RelFileLocator,
@@ -339,6 +373,16 @@ extern "C-unwind" fn mooncake_relation_set_new_filelocator(
 extern "C-unwind" fn mooncake_relation_nontransactional_truncate(_rel: pg_sys::Relation) {}
 
 #[pg_guard]
+#[cfg(any(feature = "pg14", feature = "pg15"))]
+extern "C-unwind" fn mooncake_relation_copy_data(
+    _rel: pg_sys::Relation,
+    _newrnode: *const pg_sys::RelFileNode,
+) {
+    unimplemented!("mooncake_relation_copy_data");
+}
+
+#[pg_guard]
+#[cfg(any(feature = "pg16", feature = "pg17"))]
 extern "C-unwind" fn mooncake_relation_copy_data(
     _rel: pg_sys::Relation,
     _newrlocator: *const pg_sys::RelFileLocator,
@@ -373,6 +417,17 @@ extern "C-unwind" fn mooncake_relation_vacuum(
 }
 
 #[pg_guard]
+#[cfg(any(feature = "pg14", feature = "pg15", feature = "pg16"))]
+extern "C-unwind" fn mooncake_scan_analyze_next_block(
+    _scan: pg_sys::TableScanDesc,
+    _blockno: pg_sys::BlockNumber,
+    _bstrategy: pg_sys::BufferAccessStrategy,
+) -> bool {
+    false
+}
+
+#[pg_guard]
+#[cfg(feature = "pg17")]
 extern "C-unwind" fn mooncake_scan_analyze_next_block(
     _scan: pg_sys::TableScanDesc,
     _stream: *mut pg_sys::ReadStream,

@@ -1,6 +1,6 @@
 FROM postgres:17 AS base
 
-FROM base AS pg_mooncake
+FROM base AS build
 
 RUN apt update \
  && apt install -y \
@@ -9,6 +9,7 @@ RUN apt update \
     git \
     g++ \
     liblz4-dev \
+    ninja-build \
     pkg-config \
     postgresql-server-dev-17 \
  && rm -rf /var/lib/apt/lists/*
@@ -20,19 +21,18 @@ ENV PATH="/root/.cargo/bin:$PATH"
 RUN cargo install --locked cargo-pgrx@0.14.3 \
  && cargo pgrx init --pg17=$(which pg_config)
 
-COPY . /build/pg_mooncake
+COPY . /pg_mooncake
 
-RUN cd /build/pg_mooncake \
+RUN cd /pg_mooncake \
  && make clean \
- && make package
+ && make package -j$(nproc)
 
 FROM base
 
-COPY --from=pg_mooncake /build/pg_mooncake/target/release/pg_mooncake-pg17/ /
+COPY --from=build /pg_mooncake/target/release/pg_mooncake-pg17/ /
 
-RUN cat >> /usr/share/postgresql/postgresql.conf.sample <<EOF
-shared_preload_libraries = 'pg_mooncake'
-wal_level = logical
-EOF
+COPY .devcontainer /tmp/.devcontainer
+
+RUN cat /tmp/.devcontainer/postgres.conf >> /usr/share/postgresql/postgresql.conf.sample
 
 ENV RUST_BACKTRACE="1"

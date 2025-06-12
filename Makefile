@@ -29,7 +29,7 @@ package: pgduckdb
 	@cargo pgrx package
 
 pgduckdb:
-	@$(MAKE) -C pg_duckdb all-static-lib duckdb DUCKDB_BUILD=ReleaseStatic DUCKDB_GEN=make
+	@$(MAKE) -C pg_duckdb all-static-lib duckdb DUCKDB_BUILD=ReleaseStatic
 
 run: pgduckdb
 	@cargo pgrx run

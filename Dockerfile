@@ -9,7 +9,6 @@ RUN apt update \
     git \
     g++ \
     liblz4-dev \
-    ninja-build \
     pkg-config \
     postgresql-server-dev-17 \
  && rm -rf /var/lib/apt/lists/*
@@ -24,8 +23,9 @@ RUN cargo install --locked cargo-pgrx@0.14.3 \
 COPY . /pg_mooncake
 
 RUN cd /pg_mooncake \
+ && PG_VERSION=pg17 \
  && make clean \
- && make package -j$(nproc)
+ && make package
 
 FROM base
 

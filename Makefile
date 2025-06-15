@@ -1,6 +1,6 @@
 PG_VERSION ?= pg17
 export PG_CONFIG := $(shell cargo pgrx info pg-config $(PG_VERSION))
-MAKEFLAGS := --no-print-directory
+MAKEFLAGS += --no-print-directory
 
 .PHONY: help clean format package pgduckdb run test
 
@@ -39,7 +39,7 @@ pgduckdb:
 		mkdir -p target; \
 		echo $(PG_VERSION) > target/.pg_version; \
 	fi
-	@$(MAKE) -C pg_duckdb all-static-lib duckdb DUCKDB_BUILD=ReleaseStatic
+	@$(MAKE) -C pg_duckdb all-static-lib duckdb DUCKDB_BUILD=ReleaseStatic DUCKDB_GEN=make
 
 run: pgduckdb
 	@cargo pgrx run

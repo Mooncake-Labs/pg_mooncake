@@ -8,7 +8,6 @@ RUN apt update \
     flex \
     libclang-dev \
     mold \
-    ninja-build \
  && rm -rf /var/lib/apt/lists/* \
  && ln -s /usr/bin/clang-format-19 /usr/bin/clang-format
 

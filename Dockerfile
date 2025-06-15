@@ -25,7 +25,7 @@ COPY . /pg_mooncake
 
 RUN cd /pg_mooncake \
  && make clean \
- && make package -j$(nproc)
+ && make package -j$(nproc) PG_VERSION=pg17
 
 FROM base
 

@@ -22,6 +22,33 @@ fn create_table(dst: &str, src: &str, src_uri: Option<&str>) {
 }
 
 #[pg_extern(sql = "
+CREATE FUNCTION mooncake_drop_trigger() RETURNS event_trigger LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
+CREATE EVENT TRIGGER mooncake_drop_trigger ON sql_drop EXECUTE FUNCTION mooncake_drop_trigger();
+")]
+fn drop_trigger() {
+    Spi::connect(|client| {
+        let database_id = unsafe { pg_sys::MyDatabaseId.to_u32() };
+        let get_dropped_tables_query =
+            "SELECT objid FROM pg_event_trigger_dropped_objects() WHERE object_type = 'table'";
+        let dropped_tables = client
+            .select(get_dropped_tables_query, None, &[])
+            .expect("error reading dropped objects");
+        for dropped_table in dropped_tables {
+            let table_id = dropped_table
+                .get::<pg_sys::Oid>(1)
+                .expect("error reading dropped object")
+                .expect("error reading dropped object")
+                .to_u32();
+            let callback = move || {
+                pgmoonlink::drop_table(database_id, table_id);
+            };
+            pgrx::register_xact_callback(pgrx::PgXactCallbackEvent::PreCommit, callback);
+            pgrx::register_xact_callback(pgrx::PgXactCallbackEvent::ParallelPreCommit, callback);
+        }
+    });
+}
+
+#[pg_extern(sql = "
 CREATE PROCEDURE mooncake.create_snapshot(dst TEXT) LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
 ")]
 fn create_snapshot(dst: &str) {

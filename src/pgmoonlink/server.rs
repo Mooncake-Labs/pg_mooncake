@@ -8,7 +8,8 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::signal::unix::{signal, SignalKind};
 
-static BACKEND: LazyLock<MoonlinkBackend<TableId>> = LazyLock::new(MoonlinkBackend::default);
+static BACKEND: LazyLock<MoonlinkBackend<TableId>> =
+    LazyLock::new(|| MoonlinkBackend::new("./pg_mooncake".to_owned()));
 
 #[tokio::main]
 pub(super) async fn start() {
@@ -40,6 +41,7 @@ async fn handle_stream(mut stream: UnixStream) -> Result<(), Eof> {
                 uri,
                 table,
             } => create_table(&mut stream, table_id, table, uri).await?,
+            Request::DropTable { table_id } => drop_table(&mut stream, table_id).await?,
             Request::ScanTableBegin { table_id, lsn } => {
                 scan_table_begin(&mut stream, &mut map, table_id, lsn).await?
             }
@@ -65,6 +67,11 @@ async fn create_table(
     uri: String,
 ) -> Result<(), Eof> {
     BACKEND.create_table(table_id, &table, &uri).await.unwrap();
+    write(stream, &()).await
+}
+
+async fn drop_table(stream: &mut UnixStream, table_id: TableId) -> Result<(), Eof> {
+    BACKEND.drop_table(table_id).await.unwrap();
     write(stream, &()).await
 }
 

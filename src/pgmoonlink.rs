@@ -5,4 +5,4 @@ mod ffi;
 mod server;
 
 pub(crate) use bgworker::init;
-pub(crate) use client::{create_snapshot, create_table};
+pub(crate) use client::{create_snapshot, create_table, drop_table};

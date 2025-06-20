@@ -34,6 +34,16 @@ pub(crate) fn create_table(database_id: u32, table_id: u32, table: String, uri: 
     read(&mut stream)
 }
 
+pub(crate) fn drop_table(database_id: u32, table_id: u32) {
+    let mut stream = STREAM.lock().unwrap();
+    let table_id = TableId {
+        database_id,
+        table_id,
+    };
+    write(&mut stream, &Request::DropTable { table_id });
+    read(&mut stream)
+}
+
 pub(super) fn scan_table_begin(table_id: TableId, lsn: u64) -> Vec<u8> {
     let mut stream = STREAM.lock().unwrap();
     write(&mut stream, &Request::ScanTableBegin { table_id, lsn });

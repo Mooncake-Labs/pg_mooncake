@@ -2,19 +2,26 @@ use super::common::*;
 use bincode::{Decode, Encode};
 use moonlink_backend::{MoonlinkBackend, ReadState};
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock};
+use std::sync::{Arc, OnceLock};
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::signal::unix::{signal, SignalKind};
 
-static BACKEND: LazyLock<MoonlinkBackend<TableId>> =
-    LazyLock::new(|| MoonlinkBackend::new("./pg_mooncake".to_owned()));
+static BACKEND: OnceLock<MoonlinkBackend<TableId>> = OnceLock::new();
+
+fn backend() -> &'static MoonlinkBackend<TableId> {
+    BACKEND.get().expect("BACKEND is not initialized")
+}
 
 #[tokio::main]
-pub(super) async fn start() {
+pub(super) async fn start(uris: Vec<String>) {
     let mut sigterm = signal(SignalKind::terminate()).unwrap();
-    LazyLock::force(&BACKEND);
+    BACKEND
+        .set(MoonlinkBackend::new("./pg_mooncake".to_owned(), uris))
+        .ok()
+        .expect("BACKEND already initialized");
+
     if fs::metadata(SOCKET_PATH).await.is_ok() {
         fs::remove_file(SOCKET_PATH).await.unwrap();
     }
@@ -53,7 +60,7 @@ async fn handle_stream(mut stream: UnixStream) -> Result<(), Eof> {
 }
 
 async fn create_snapshot(stream: &mut UnixStream, table_id: TableId, lsn: u64) -> Result<(), Eof> {
-    BACKEND
+    backend()
         .create_iceberg_snapshot(&table_id, lsn)
         .await
         .unwrap();
@@ -66,12 +73,15 @@ async fn create_table(
     table: String,
     uri: String,
 ) -> Result<(), Eof> {
-    BACKEND.create_table(table_id, &table, &uri).await.unwrap();
+    backend()
+        .create_table(table_id, &table, &uri)
+        .await
+        .unwrap();
     write(stream, &()).await
 }
 
 async fn drop_table(stream: &mut UnixStream, table_id: TableId) -> Result<(), Eof> {
-    BACKEND.drop_table(table_id).await.unwrap();
+    backend().drop_table(table_id).await.unwrap();
     write(stream, &()).await
 }
 
@@ -81,7 +91,7 @@ async fn scan_table_begin(
     table_id: TableId,
     lsn: u64,
 ) -> Result<(), Eof> {
-    let state = BACKEND.scan_table(&table_id, Some(lsn)).await.unwrap();
+    let state = backend().scan_table(&table_id, Some(lsn)).await.unwrap();
     write(stream, &state.data).await?;
     map.insert(table_id, state);
     Ok(())

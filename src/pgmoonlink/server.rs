@@ -8,7 +8,7 @@ use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::signal::unix::{signal, SignalKind};
 
-static BACKEND: LazyLock<MoonlinkBackend<TableId>> =
+static BACKEND: LazyLock<MoonlinkBackend<u32, u32>> =
     LazyLock::new(|| MoonlinkBackend::new("./pg_mooncake".to_owned()));
 
 #[tokio::main]
@@ -33,28 +33,43 @@ async fn handle_stream(mut stream: UnixStream) -> Result<(), Eof> {
     let mut map = HashMap::new();
     loop {
         match read(&mut stream).await? {
-            Request::CreateSnapshot { table_id, lsn } => {
-                create_snapshot(&mut stream, table_id, lsn).await?
-            }
-            Request::CreateTable {
+            Request::CreateSnapshot {
+                database_id,
                 table_id,
-                uri,
-                table,
-            } => create_table(&mut stream, table_id, table, uri).await?,
-            Request::DropTable { table_id } => drop_table(&mut stream, table_id).await?,
-            Request::ScanTableBegin { table_id, lsn } => {
-                scan_table_begin(&mut stream, &mut map, table_id, lsn).await?
-            }
-            Request::ScanTableEnd { table_id } => {
-                scan_table_end(&mut stream, &mut map, table_id).await?
-            }
+                lsn,
+            } => create_snapshot(&mut stream, database_id, table_id, lsn).await?,
+            Request::CreateTable {
+                database_id,
+                table_id,
+                dst_uri,
+                src,
+                src_uri,
+            } => create_table(&mut stream, database_id, table_id, dst_uri, src, src_uri).await?,
+            Request::DropTable {
+                database_id,
+                table_id,
+            } => drop_table(&mut stream, database_id, table_id).await?,
+            Request::ScanTableBegin {
+                database_id,
+                table_id,
+                lsn,
+            } => scan_table_begin(&mut stream, &mut map, database_id, table_id, lsn).await?,
+            Request::ScanTableEnd {
+                database_id,
+                table_id,
+            } => scan_table_end(&mut stream, &mut map, database_id, table_id).await?,
         }
     }
 }
 
-async fn create_snapshot(stream: &mut UnixStream, table_id: TableId, lsn: u64) -> Result<(), Eof> {
+async fn create_snapshot(
+    stream: &mut UnixStream,
+    database_id: u32,
+    table_id: u32,
+    lsn: u64,
+) -> Result<(), Eof> {
     BACKEND
-        .create_iceberg_snapshot(&table_id, lsn)
+        .create_snapshot(database_id, table_id, lsn)
         .await
         .unwrap();
     write(stream, &()).await
@@ -62,37 +77,47 @@ async fn create_snapshot(stream: &mut UnixStream, table_id: TableId, lsn: u64) -
 
 async fn create_table(
     stream: &mut UnixStream,
-    table_id: TableId,
-    table: String,
-    uri: String,
+    database_id: u32,
+    table_id: u32,
+    dst_uri: String,
+    src: String,
+    src_uri: String,
 ) -> Result<(), Eof> {
-    BACKEND.create_table(table_id, &table, &uri).await.unwrap();
+    BACKEND
+        .create_table(database_id, table_id, dst_uri, src, src_uri)
+        .await
+        .unwrap();
     write(stream, &()).await
 }
 
-async fn drop_table(stream: &mut UnixStream, table_id: TableId) -> Result<(), Eof> {
-    BACKEND.drop_table(table_id).await.unwrap();
+async fn drop_table(stream: &mut UnixStream, database_id: u32, table_id: u32) -> Result<(), Eof> {
+    BACKEND.drop_table(database_id, table_id).await;
     write(stream, &()).await
 }
 
 async fn scan_table_begin(
     stream: &mut UnixStream,
-    map: &mut HashMap<TableId, Arc<ReadState>>,
-    table_id: TableId,
+    map: &mut HashMap<(u32, u32), Arc<ReadState>>,
+    database_id: u32,
+    table_id: u32,
     lsn: u64,
 ) -> Result<(), Eof> {
-    let state = BACKEND.scan_table(&table_id, Some(lsn)).await.unwrap();
+    let state = BACKEND
+        .scan_table(database_id, table_id, Some(lsn))
+        .await
+        .unwrap();
     write(stream, &state.data).await?;
-    map.insert(table_id, state);
+    map.insert((database_id, table_id), state);
     Ok(())
 }
 
 async fn scan_table_end(
     stream: &mut UnixStream,
-    map: &mut HashMap<TableId, Arc<ReadState>>,
-    table_id: TableId,
+    map: &mut HashMap<(u32, u32), Arc<ReadState>>,
+    database_id: u32,
+    table_id: u32,
 ) -> Result<(), Eof> {
-    map.remove(&table_id);
+    map.remove(&(database_id, table_id));
     write(stream, &()).await
 }
 

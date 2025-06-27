@@ -14,7 +14,7 @@ extern "C" {
 }
 
 #[pg_guard]
-extern "C-unwind" fn _PG_init() {
+extern "C" fn _PG_init() {
     unsafe { pgduckdb_init() };
     #[cfg(feature = "bgworker")]
     bgworker::init();

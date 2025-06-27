@@ -66,7 +66,7 @@ fn drop_trigger() {
                 .get::<pg_sys::Oid>(1)
                 .expect("error reading dropped object")
                 .expect("error reading dropped object")
-                .to_u32();
+                .as_u32();
             let callback = move || {
                 block_on(moonlink_rpc::drop_table(
                     &mut *get_stream(),

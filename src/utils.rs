@@ -24,5 +24,5 @@ pub(crate) fn get_stream() -> MutexGuard<'static, UnixStream> {
 }
 
 pub(crate) fn get_database_id() -> u32 {
-    unsafe { pgrx::pg_sys::MyDatabaseId.to_u32() }
+    unsafe { pgrx::pg_sys::MyDatabaseId.as_u32() }
 }

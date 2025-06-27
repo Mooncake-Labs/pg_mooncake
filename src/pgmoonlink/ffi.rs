@@ -11,7 +11,7 @@ extern "C-unwind" fn mooncake_scan_table_begin(
     len: *mut usize,
 ) {
     let table_id = TableId {
-        database_id: unsafe { pgrx::pg_sys::MyDatabaseId.to_u32() },
+        database_id: unsafe { pgrx::pg_sys::MyDatabaseId.as_u32() },
         table_id,
     };
     let mut bytes = scan_table_begin(table_id, lsn);
@@ -24,7 +24,7 @@ extern "C-unwind" fn mooncake_scan_table_begin(
 #[no_mangle]
 extern "C-unwind" fn mooncake_scan_table_end(table_id: u32, data: *mut u8, len: usize) {
     let table_id = TableId {
-        database_id: unsafe { pgrx::pg_sys::MyDatabaseId.to_u32() },
+        database_id: unsafe { pgrx::pg_sys::MyDatabaseId.as_u32() },
         table_id,
     };
     unsafe { Vec::from_raw_parts(data, len, len) };

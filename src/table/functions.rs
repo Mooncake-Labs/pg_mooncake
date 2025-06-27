@@ -16,7 +16,7 @@ fn create_table(dst: &str, src: &str, src_uri: Option<&str>) {
     let src = parse_table(src);
     let dst_uri = get_loopback_uri();
     let src_uri = src_uri.unwrap_or(&dst_uri).to_owned();
-    let database_id = unsafe { pg_sys::MyDatabaseId.to_u32() };
+    let database_id = unsafe { pg_sys::MyDatabaseId.as_u32() };
     let table_id = create_mooncake_table(&dst, &dst_uri, &src, &src_uri);
     pgmoonlink::create_table(database_id, table_id, src, src_uri);
 }
@@ -27,7 +27,7 @@ CREATE EVENT TRIGGER mooncake_drop_trigger ON sql_drop EXECUTE FUNCTION mooncake
 ")]
 fn drop_trigger() {
     Spi::connect(|client| {
-        let database_id = unsafe { pg_sys::MyDatabaseId.to_u32() };
+        let database_id = unsafe { pg_sys::MyDatabaseId.as_u32() };
         let get_dropped_tables_query =
             "SELECT objid FROM pg_event_trigger_dropped_objects() WHERE object_type = 'table'";
         let dropped_tables = client
@@ -38,7 +38,7 @@ fn drop_trigger() {
                 .get::<pg_sys::Oid>(1)
                 .expect("error reading dropped object")
                 .expect("error reading dropped object")
-                .to_u32();
+                .as_u32();
             let callback = move || {
                 pgmoonlink::drop_table(database_id, table_id);
             };
@@ -54,7 +54,7 @@ CREATE PROCEDURE mooncake.create_snapshot(dst TEXT) LANGUAGE c AS 'MODULE_PATHNA
 fn create_snapshot(dst: &str) {
     let dst = parse_table(dst);
     let dst_uri = get_loopback_uri();
-    let database_id = unsafe { pg_sys::MyDatabaseId.to_u32() };
+    let database_id = unsafe { pg_sys::MyDatabaseId.as_u32() };
     let mut client = Client::connect(&dst_uri, NoTls)
         .unwrap_or_else(|_| panic!("error connecting to server: {dst_uri}"));
     let get_table_id_query = format!("SELECT '{}'::regclass::oid", dst.replace("'", "''"));

@@ -20,7 +20,7 @@ pg17 = ["pgrx/pg17"]
 [dependencies]
 bincode = "2"
 moonlink_backend.path = "moonlink/src/moonlink_backend"
-pgrx = "0.14.3"
+pgrx = "0.13.1"
 postgres.git = "https://github.com/Mooncake-Labs/rust-postgres.git"
 regex = "1"
 tokio = { version = "1.45", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal"] }

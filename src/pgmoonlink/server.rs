@@ -1,20 +1,17 @@
 use super::common::*;
 use bincode::{Decode, Encode};
-use moonlink_backend::{MoonlinkBackend, ReadState};
+use moonlink_backend::MoonlinkBackend;
 use std::collections::HashMap;
-use std::sync::{Arc, LazyLock};
+use std::sync::Arc;
 use tokio::fs;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{UnixListener, UnixStream};
 use tokio::signal::unix::{signal, SignalKind};
 
-static BACKEND: LazyLock<MoonlinkBackend<TableId>> =
-    LazyLock::new(|| MoonlinkBackend::new("./pg_mooncake".to_owned()));
-
 #[tokio::main]
 pub(super) async fn start() {
     let mut sigterm = signal(SignalKind::terminate()).unwrap();
-    LazyLock::force(&BACKEND);
+    let backend = Arc::new(MoonlinkBackend::new("./pg_mooncake".to_owned()));
     if fs::metadata(SOCKET_PATH).await.is_ok() {
         fs::remove_file(SOCKET_PATH).await.unwrap();
     }
@@ -23,77 +20,72 @@ pub(super) async fn start() {
         tokio::select! {
             _ = sigterm.recv() => break,
             Ok((stream, _addr)) = listener.accept() => {
-                tokio::spawn(async move { handle_stream(stream).await });
+                let backend = Arc::clone(&backend);
+                tokio::spawn(async move { handle_stream(backend, stream).await });
             }
         }
     }
 }
 
-async fn handle_stream(mut stream: UnixStream) -> Result<(), Eof> {
+async fn handle_stream(
+    backend: Arc<MoonlinkBackend<u32, u32>>,
+    mut stream: UnixStream,
+) -> Result<(), Eof> {
     let mut map = HashMap::new();
     loop {
         match read(&mut stream).await? {
-            Request::CreateSnapshot { table_id, lsn } => {
-                create_snapshot(&mut stream, table_id, lsn).await?
+            Request::CreateSnapshot {
+                database_id,
+                table_id,
+                lsn,
+            } => {
+                backend
+                    .create_snapshot(database_id, table_id, lsn)
+                    .await
+                    .unwrap();
+                write(&mut stream, &()).await?;
             }
             Request::CreateTable {
+                database_id,
                 table_id,
-                uri,
-                table,
-            } => create_table(&mut stream, table_id, table, uri).await?,
-            Request::DropTable { table_id } => drop_table(&mut stream, table_id).await?,
-            Request::ScanTableBegin { table_id, lsn } => {
-                scan_table_begin(&mut stream, &mut map, table_id, lsn).await?
+                dst_uri,
+                src,
+                src_uri,
+            } => {
+                backend
+                    .create_table(database_id, table_id, dst_uri, src, src_uri)
+                    .await
+                    .unwrap();
+                write(&mut stream, &()).await?;
             }
-            Request::ScanTableEnd { table_id } => {
-                scan_table_end(&mut stream, &mut map, table_id).await?
+            Request::DropTable {
+                database_id,
+                table_id,
+            } => {
+                backend.drop_table(database_id, table_id).await;
+                write(&mut stream, &()).await?;
+            }
+            Request::ScanTableBegin {
+                database_id,
+                table_id,
+                lsn,
+            } => {
+                let state = backend
+                    .scan_table(database_id, table_id, Some(lsn))
+                    .await
+                    .unwrap();
+                write(&mut stream, &state.data).await?;
+                map.insert((database_id, table_id), state);
+            }
+            Request::ScanTableEnd {
+                database_id,
+                table_id,
+            } => {
+                map.remove(&(database_id, table_id));
+                write(&mut stream, &()).await?;
             }
         }
     }
-}
-
-async fn create_snapshot(stream: &mut UnixStream, table_id: TableId, lsn: u64) -> Result<(), Eof> {
-    BACKEND
-        .create_iceberg_snapshot(&table_id, lsn)
-        .await
-        .unwrap();
-    write(stream, &()).await
-}
-
-async fn create_table(
-    stream: &mut UnixStream,
-    table_id: TableId,
-    table: String,
-    uri: String,
-) -> Result<(), Eof> {
-    BACKEND.create_table(table_id, &table, &uri).await.unwrap();
-    write(stream, &()).await
-}
-
-async fn drop_table(stream: &mut UnixStream, table_id: TableId) -> Result<(), Eof> {
-    BACKEND.drop_table(table_id).await.unwrap();
-    write(stream, &()).await
-}
-
-async fn scan_table_begin(
-    stream: &mut UnixStream,
-    map: &mut HashMap<TableId, Arc<ReadState>>,
-    table_id: TableId,
-    lsn: u64,
-) -> Result<(), Eof> {
-    let state = BACKEND.scan_table(&table_id, Some(lsn)).await.unwrap();
-    write(stream, &state.data).await?;
-    map.insert(table_id, state);
-    Ok(())
-}
-
-async fn scan_table_end(
-    stream: &mut UnixStream,
-    map: &mut HashMap<TableId, Arc<ReadState>>,
-    table_id: TableId,
-) -> Result<(), Eof> {
-    map.remove(&table_id);
-    write(stream, &()).await
 }
 
 async fn write<E: Encode>(stream: &mut UnixStream, data: &E) -> Result<(), Eof> {

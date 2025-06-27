@@ -7,53 +7,63 @@ use std::sync::{LazyLock, Mutex};
 static STREAM: LazyLock<Mutex<UnixStream>> =
     LazyLock::new(|| Mutex::new(UnixStream::connect(SOCKET_PATH).unwrap()));
 
-pub(crate) fn create_snapshot(database_id: u32, table_id: u32, lsn: u64) {
+pub(crate) fn create_snapshot(table_id: u32, lsn: u64) {
     let mut stream = STREAM.lock().unwrap();
-    let table_id = TableId {
-        database_id,
+    let request = Request::CreateSnapshot {
+        database_id: get_database_id(),
+        table_id,
+        lsn,
+    };
+    write(&mut stream, &request);
+    read(&mut stream)
+}
+
+pub(crate) fn create_table(table_id: u32, dst_uri: String, src: String, src_uri: String) {
+    let mut stream = STREAM.lock().unwrap();
+    let request = Request::CreateTable {
+        database_id: get_database_id(),
+        table_id,
+        dst_uri,
+        src,
+        src_uri,
+    };
+    write(&mut stream, &request);
+    read(&mut stream)
+}
+
+pub(crate) fn drop_table(table_id: u32) {
+    let mut stream = STREAM.lock().unwrap();
+    let request = Request::DropTable {
+        database_id: get_database_id(),
         table_id,
     };
-    write(&mut stream, &Request::CreateSnapshot { table_id, lsn });
+    write(&mut stream, &request);
     read(&mut stream)
 }
 
-pub(crate) fn create_table(database_id: u32, table_id: u32, table: String, uri: String) {
+pub(super) fn scan_table_begin(table_id: u32, lsn: u64) -> Vec<u8> {
     let mut stream = STREAM.lock().unwrap();
-    let table_id = TableId {
-        database_id,
+    let request = Request::ScanTableBegin {
+        database_id: get_database_id(),
+        table_id,
+        lsn,
+    };
+    write(&mut stream, &request);
+    read(&mut stream)
+}
+
+pub(super) fn scan_table_end(table_id: u32) {
+    let mut stream = STREAM.lock().unwrap();
+    let request = Request::ScanTableEnd {
+        database_id: get_database_id(),
         table_id,
     };
-    write(
-        &mut stream,
-        &Request::CreateTable {
-            table_id,
-            table,
-            uri,
-        },
-    );
+    write(&mut stream, &request);
     read(&mut stream)
 }
 
-pub(crate) fn drop_table(database_id: u32, table_id: u32) {
-    let mut stream = STREAM.lock().unwrap();
-    let table_id = TableId {
-        database_id,
-        table_id,
-    };
-    write(&mut stream, &Request::DropTable { table_id });
-    read(&mut stream)
-}
-
-pub(super) fn scan_table_begin(table_id: TableId, lsn: u64) -> Vec<u8> {
-    let mut stream = STREAM.lock().unwrap();
-    write(&mut stream, &Request::ScanTableBegin { table_id, lsn });
-    read(&mut stream)
-}
-
-pub(super) fn scan_table_end(table_id: TableId) {
-    let mut stream = STREAM.lock().unwrap();
-    write(&mut stream, &Request::ScanTableEnd { table_id });
-    read(&mut stream)
+fn get_database_id() -> u32 {
+    unsafe { pgrx::pg_sys::MyDatabaseId.to_u32() }
 }
 
 fn write<E: Encode>(stream: &mut UnixStream, data: &E) {

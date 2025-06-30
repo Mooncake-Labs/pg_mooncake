@@ -21,8 +21,8 @@ fn create_table(dst: &str, src: &str, src_uri: Option<&str>) {
 }
 
 #[pg_extern(sql = "
-CREATE FUNCTION mooncake_drop_trigger() RETURNS event_trigger LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
-CREATE EVENT TRIGGER mooncake_drop_trigger ON sql_drop EXECUTE FUNCTION mooncake_drop_trigger();
+CREATE FUNCTION mooncake.drop_trigger() RETURNS event_trigger LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
+CREATE EVENT TRIGGER mooncake_drop_trigger ON sql_drop EXECUTE FUNCTION mooncake.drop_trigger();
 ")]
 fn drop_trigger() {
     Spi::connect(|client| {

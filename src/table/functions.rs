@@ -50,12 +50,11 @@ CREATE PROCEDURE mooncake.create_snapshot(dst TEXT) LANGUAGE c AS 'MODULE_PATHNA
 fn create_snapshot(dst: &str) {
     let dst = parse_table(dst);
     let dst_uri = get_loopback_uri();
-    let mut client = Client::connect(&dst_uri, NoTls)
-        .unwrap_or_else(|_| panic!("error connecting to server: {dst_uri}"));
+    let mut client = Client::connect(&dst_uri, NoTls).expect("error connecting to server");
     let get_table_id_query = format!("SELECT '{}'::regclass::oid", dst.replace("'", "''"));
     let table_id: u32 = client
         .query_one(&get_table_id_query, &[])
-        .unwrap_or_else(|_| panic!("relation does not exist: {dst}"))
+        .expect("relation does not exist")
         .get(0);
     let lsn = unsafe { GetActiveLsn() };
     pgmoonlink::create_snapshot(table_id, lsn);
@@ -63,12 +62,14 @@ fn create_snapshot(dst: &str) {
 
 fn get_loopback_uri() -> String {
     let hosts = unsafe { CStr::from_ptr(pg_sys::Unix_socket_directories) };
-    let host = hosts.to_str().unwrap().split(", ").next().unwrap();
+    let hosts = hosts.to_str().expect("error reading hosts");
+    let host = hosts.split(", ").next().expect("error reading host");
     let port: i32 = unsafe { pg_sys::PostPortNumber };
-    let database: &CStr = unsafe { direct_function_call(pg_sys::current_database, &[]).unwrap() };
-    let database = database.to_str().unwrap();
+    let database = unsafe { direct_function_call(pg_sys::current_database, &[]) };
+    let database: &CStr = database.expect("error reading database");
+    let database = database.to_str().expect("error reading database");
     let user = unsafe { CStr::from_ptr(pg_sys::GetUserNameFromId(pg_sys::GetUserId(), false)) };
-    let user = user.to_str().unwrap();
+    let user = user.to_str().expect("error reading user");
     format!(
         "postgresql:///{}?host={}&port={port}&user={}",
         uri_encode(database),
@@ -81,15 +82,13 @@ fn parse_table(table: &str) -> String {
     // https://www.postgresql.org/docs/current/sql-syntax-lexical.html#SQL-SYNTAX-IDENTIFIERS
     let ident = r#"([\w$]+|"([^"]|"")+")"#;
     let pattern = format!(r#"^((?<schema>{ident})\.)?(?<table>{ident})$"#);
-    let re = Regex::new(&pattern).unwrap();
-    let caps = re
-        .captures(table)
-        .unwrap_or_else(|| panic!("invalid input: {table}"));
+    let re = Regex::new(&pattern).expect("error creating regex");
+    let caps = re.captures(table).expect("invalid input: {table}");
     let schema = caps.name("schema").map_or_else(
         || {
-            let schema: &CStr =
-                unsafe { direct_function_call(pg_sys::current_schema, &[]).unwrap() };
-            schema.to_str().unwrap()
+            let schema = unsafe { direct_function_call(pg_sys::current_schema, &[]) };
+            let schema: &CStr = schema.expect("error reading schema");
+            schema.to_str().expect("error reading schema")
         },
         |m| m.as_str(),
     );
@@ -116,8 +115,7 @@ fn uri_encode(input: &str) -> String {
 }
 
 fn create_mooncake_table(dst: &str, dst_uri: &str, src: &str, src_uri: &str) -> u32 {
-    let mut client = Client::connect(src_uri, NoTls)
-        .unwrap_or_else(|_| panic!("error connecting to server: {src_uri}"));
+    let mut client = Client::connect(src_uri, NoTls).expect("error connecting to server");
 
     let get_columns_query = format!(
         "SELECT string_agg(
@@ -135,22 +133,21 @@ fn create_mooncake_table(dst: &str, dst_uri: &str, src: &str, src_uri: &str) -> 
     );
     let columns: String = client
         .query_one(&get_columns_query, &[])
-        .unwrap_or_else(|_| panic!("relation does not exist: {src}"))
+        .expect("relation does not exist")
         .get(0);
 
     if dst_uri != src_uri {
-        client = Client::connect(dst_uri, NoTls)
-            .unwrap_or_else(|_| panic!("error connecting to server: {dst_uri}"));
+        client = Client::connect(dst_uri, NoTls).expect("error connecting to server");
     }
 
     let create_table_query = format!("CREATE TABLE {dst} ({columns}) USING mooncake");
     client
         .simple_query(&create_table_query)
-        .unwrap_or_else(|_| panic!("error creating table: {dst}"));
+        .expect("error creating table");
 
     let get_table_id_query = format!("SELECT '{}'::regclass::oid", dst.replace("'", "''"));
     client
         .query_one(&get_table_id_query, &[])
-        .unwrap_or_else(|_| panic!("relation does not exist: {dst}"))
+        .expect("relation does not exist")
         .get(0)
 }

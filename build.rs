@@ -15,7 +15,7 @@ fn main() {
     println!("cargo::rustc-link-lib=dylib=ssl");
     println!("cargo::rustc-link-lib=dylib=stdc++");
 
-    if std::env::var("CARGO_CFG_TARGET_OS").unwrap() == "macos" {
+    if std::env::var("CARGO_CFG_TARGET_OS").expect("error reading CARGO_CFG_TARGET_OS") == "macos" {
         println!("cargo::rustc-link-arg-cdylib=-Wl,-undefined,dynamic_lookup");
     }
 }

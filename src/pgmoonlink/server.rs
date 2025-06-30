@@ -10,12 +10,14 @@ use tokio::signal::unix::{signal, SignalKind};
 
 #[tokio::main]
 pub(super) async fn start() {
-    let mut sigterm = signal(SignalKind::terminate()).unwrap();
+    let mut sigterm = signal(SignalKind::terminate()).expect("error setting SIGTERM handler");
     let backend = Arc::new(MoonlinkBackend::new("./pg_mooncake".to_owned()));
     if fs::metadata(SOCKET_PATH).await.is_ok() {
-        fs::remove_file(SOCKET_PATH).await.unwrap();
+        fs::remove_file(SOCKET_PATH)
+            .await
+            .expect("error removing socket");
     }
-    let listener = UnixListener::bind(SOCKET_PATH).unwrap();
+    let listener = UnixListener::bind(SOCKET_PATH).expect("error binding socket");
     loop {
         tokio::select! {
             _ = sigterm.recv() => break,
@@ -89,8 +91,8 @@ async fn handle_stream(
 }
 
 async fn write<E: Encode>(stream: &mut UnixStream, data: &E) -> Result<(), Eof> {
-    let bytes = bincode::encode_to_vec(data, BINCODE_CONFIG).unwrap();
-    let len = u32::try_from(bytes.len()).unwrap();
+    let bytes = bincode::encode_to_vec(data, BINCODE_CONFIG).expect("error encoding packet");
+    let len = u32::try_from(bytes.len()).expect("packet too long");
     check_eof(stream.write_all(&len.to_ne_bytes()).await)?;
     check_eof(stream.write_all(&bytes).await)
 }
@@ -101,7 +103,8 @@ async fn read<D: Decode<()>>(stream: &mut UnixStream) -> Result<D, Eof> {
     let len = u32::from_ne_bytes(buf);
     let mut bytes = vec![0; len as usize];
     check_eof(stream.read_exact(&mut bytes).await)?;
-    let (data, _) = bincode::decode_from_slice(&bytes, BINCODE_CONFIG).unwrap();
+    let (data, _) =
+        bincode::decode_from_slice(&bytes, BINCODE_CONFIG).expect("error decoding packet");
     Ok(data)
 }
 
@@ -109,11 +112,10 @@ struct Eof;
 
 fn check_eof<T>(r: std::io::Result<T>) -> Result<T, Eof> {
     use std::io::ErrorKind::*;
-    match r {
-        Ok(t) => Ok(t),
-        Err(e) => match e.kind() {
-            BrokenPipe | ConnectionReset | UnexpectedEof => Err(Eof),
-            _ => panic!("IO error: {e}"),
-        },
+    if let Err(ref e) = r {
+        if matches!(e.kind(), BrokenPipe | ConnectionReset | UnexpectedEof) {
+            return Err(Eof);
+        }
     }
+    Ok(r.expect("IO error"))
 }

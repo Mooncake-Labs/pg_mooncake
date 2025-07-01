@@ -1,5 +1,6 @@
 mod pgmoonlink;
 mod table;
+mod utils;
 
 use pgrx::prelude::*;
 

@@ -1,13 +1,15 @@
 use super::server;
+use crate::utils::get_loopback_uri;
 use pgrx::bgworkers::{BackgroundWorker, BackgroundWorkerBuilder, SignalWakeFlags};
 use pgrx::prelude::*;
+use postgres::{Client, NoTls};
 use std::time::Duration;
 
 pub(crate) fn init() {
     BackgroundWorkerBuilder::new("pg_moonlink")
         .set_library("pg_mooncake")
         .set_function("pgmoonlink_main")
-        .enable_shmem_access(None)
+        .enable_spi_access()
         .set_restart_time(Some(Duration::from_secs(15)))
         .load();
 }
@@ -17,5 +19,17 @@ pub(crate) fn init() {
 extern "C-unwind" fn pgmoonlink_main(_arg: pg_sys::Datum) {
     std::env::set_var("RUST_BACKTRACE", "1");
     BackgroundWorker::attach_signal_handlers(SignalWakeFlags::SIGTERM);
-    server::start();
+    BackgroundWorker::connect_worker_to_spi(None, None);
+    let uris = BackgroundWorker::transaction(|| {
+        let uri = get_loopback_uri("template1");
+        let mut client = Client::connect(&uri, NoTls).expect("error connecting to server");
+        let get_databases_query = "SELECT datname FROM pg_database WHERE NOT datistemplate";
+        client
+            .query(get_databases_query, &[])
+            .expect("error reading databases")
+            .into_iter()
+            .map(|row| get_loopback_uri(row.get(0)))
+            .collect()
+    });
+    server::start(uris);
 }

@@ -9,9 +9,13 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::signal::unix::{signal, SignalKind};
 
 #[tokio::main]
-pub(super) async fn start() {
+pub(super) async fn start(uris: Vec<String>) {
     let mut sigterm = signal(SignalKind::terminate()).unwrap();
-    let backend = Arc::new(MoonlinkBackend::new("./pg_mooncake".to_owned()));
+    let backend = Arc::new(
+        MoonlinkBackend::new("./pg_mooncake".to_owned(), uris)
+            .await
+            .unwrap(),
+    );
     if fs::metadata(SOCKET_PATH).await.is_ok() {
         fs::remove_file(SOCKET_PATH).await.unwrap();
     }

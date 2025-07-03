@@ -1,4 +1,5 @@
 use super::common::*;
+use anyhow::Result;
 use bincode::{Decode, Encode};
 use moonlink_backend::MoonlinkBackend;
 use std::collections::HashMap;
@@ -9,13 +10,13 @@ use tokio::net::{UnixListener, UnixStream};
 use tokio::signal::unix::{signal, SignalKind};
 
 #[tokio::main]
-pub(super) async fn start() {
-    let mut sigterm = signal(SignalKind::terminate()).unwrap();
+pub(super) async fn start() -> Result<()> {
+    let mut sigterm = signal(SignalKind::terminate())?;
     let backend = Arc::new(MoonlinkBackend::new("./pg_mooncake".to_owned()));
     if fs::metadata(SOCKET_PATH).await.is_ok() {
-        fs::remove_file(SOCKET_PATH).await.unwrap();
+        fs::remove_file(SOCKET_PATH).await?;
     }
-    let listener = UnixListener::bind(SOCKET_PATH).unwrap();
+    let listener = UnixListener::bind(SOCKET_PATH)?;
     loop {
         tokio::select! {
             _ = sigterm.recv() => break,
@@ -25,12 +26,13 @@ pub(super) async fn start() {
             }
         }
     }
+    Ok(())
 }
 
 async fn handle_stream(
     backend: Arc<MoonlinkBackend<u32, u32>>,
     mut stream: UnixStream,
-) -> Result<(), Eof> {
+) -> Result<()> {
     let mut map = HashMap::new();
     loop {
         match read(&mut stream).await? {
@@ -88,32 +90,19 @@ async fn handle_stream(
     }
 }
 
-async fn write<E: Encode>(stream: &mut UnixStream, data: &E) -> Result<(), Eof> {
-    let bytes = bincode::encode_to_vec(data, BINCODE_CONFIG).unwrap();
-    let len = u32::try_from(bytes.len()).unwrap();
-    check_eof(stream.write_all(&len.to_ne_bytes()).await)?;
-    check_eof(stream.write_all(&bytes).await)
+async fn write<E: Encode>(stream: &mut UnixStream, data: &E) -> Result<()> {
+    let bytes = bincode::encode_to_vec(data, BINCODE_CONFIG)?;
+    let len = u32::try_from(bytes.len())?;
+    stream.write_all(&len.to_ne_bytes()).await?;
+    stream.write_all(&bytes).await?;
+    Ok(())
 }
 
-async fn read<D: Decode<()>>(stream: &mut UnixStream) -> Result<D, Eof> {
+async fn read<D: Decode<()>>(stream: &mut UnixStream) -> Result<D> {
     let mut buf = [0; 4];
-    check_eof(stream.read_exact(&mut buf).await)?;
+    stream.read_exact(&mut buf).await?;
     let len = u32::from_ne_bytes(buf);
     let mut bytes = vec![0; len as usize];
-    check_eof(stream.read_exact(&mut bytes).await)?;
-    let (data, _) = bincode::decode_from_slice(&bytes, BINCODE_CONFIG).unwrap();
-    Ok(data)
-}
-
-struct Eof;
-
-fn check_eof<T>(r: std::io::Result<T>) -> Result<T, Eof> {
-    use std::io::ErrorKind::*;
-    match r {
-        Ok(t) => Ok(t),
-        Err(e) => match e.kind() {
-            BrokenPipe | ConnectionReset | UnexpectedEof => Err(Eof),
-            _ => panic!("IO error: {e}"),
-        },
-    }
+    stream.read_exact(&mut bytes).await?;
+    Ok(bincode::decode_from_slice(&bytes, BINCODE_CONFIG)?.0)
 }

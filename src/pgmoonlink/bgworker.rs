@@ -17,5 +17,5 @@ pub(crate) fn init() {
 extern "C-unwind" fn pgmoonlink_main(_arg: pg_sys::Datum) {
     std::env::set_var("RUST_BACKTRACE", "1");
     BackgroundWorker::attach_signal_handlers(SignalWakeFlags::SIGTERM);
-    server::start();
+    server::start().unwrap_or_else(|e| panic!("{e:?}"));
 }

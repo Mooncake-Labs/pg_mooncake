@@ -18,6 +18,7 @@ pg16 = ["pgrx/pg16"]
 pg17 = ["pgrx/pg17"]
 
 [dependencies]
+anyhow = "1"
 bincode = "2"
 moonlink_backend.path = "moonlink/src/moonlink_backend"
 pgrx = "0.14.3"

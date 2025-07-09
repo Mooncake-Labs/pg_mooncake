@@ -13,7 +13,7 @@ RUN apt update \
 
 USER vscode
 
-RUN cargo install --locked cargo-pgrx@0.14.3 \
+RUN cargo install --locked cargo-pgrx@0.15.0 \
  && cargo pgrx init
 
 RUN wget -P ~ https://raw.githubusercontent.com/cmrschwarz/rust-prettifier-for-lldb/refs/heads/main/rust_prettifier_for_lldb.py

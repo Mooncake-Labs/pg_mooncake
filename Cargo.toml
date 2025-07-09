@@ -11,7 +11,8 @@ name = "pgrx_embed_pg_mooncake"
 path = "./src/bin/pgrx_embed.rs"
 
 [features]
-default = ["pg17"]
+default = ["bgworker", "pg17"]
+bgworker = ["moonlink_service"]
 pg14 = ["pgrx/pg14"]
 pg15 = ["pgrx/pg15"]
 pg16 = ["pgrx/pg16"]
@@ -19,11 +20,12 @@ pg17 = ["pgrx/pg17"]
 
 [dependencies]
 bincode = "2"
-moonlink_backend.path = "moonlink/src/moonlink_backend"
-pgrx = "0.14.3"
+moonlink_rpc.path = "moonlink/src/moonlink_rpc"
+moonlink_service = { path = "moonlink/src/moonlink_service", optional = true }
+pgrx = "0.15.0"
 postgres.git = "https://github.com/Mooncake-Labs/rust-postgres.git"
 regex = "1"
-tokio = { version = "1.45", features = ["fs", "io-util", "macros", "net", "rt-multi-thread", "signal"] }
+tokio = "1.46"
 
 [profile.release]
 codegen-units = 1

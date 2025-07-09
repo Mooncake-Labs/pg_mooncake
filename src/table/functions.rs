@@ -1,4 +1,4 @@
-use crate::{pgmoonlink, utils::get_loopback_uri};
+use crate::utils::{block_on, get_database_id, get_loopback_uri, get_stream};
 use core::ffi::CStr;
 use pgrx::{direct_function_call, prelude::*};
 use postgres::{Client, NoTls};
@@ -17,7 +17,15 @@ fn create_table(dst: &str, src: &str, src_uri: Option<&str>) {
     let dst_uri = get_loopback_uri(get_database());
     let src_uri = src_uri.unwrap_or(&dst_uri).to_owned();
     let table_id = create_mooncake_table(&dst, &dst_uri, &src, &src_uri);
-    pgmoonlink::create_table(table_id, dst_uri, src, src_uri);
+    block_on(moonlink_rpc::create_table(
+        &mut *get_stream(),
+        get_database_id(),
+        table_id,
+        dst_uri,
+        src,
+        src_uri,
+    ))
+    .expect("create_table failed");
 }
 
 #[pg_extern(sql = "
@@ -37,7 +45,14 @@ fn drop_trigger() {
                 .expect("error reading dropped object")
                 .expect("error reading dropped object")
                 .to_u32();
-            let callback = move || pgmoonlink::drop_table(table_id);
+            let callback = move || {
+                block_on(moonlink_rpc::drop_table(
+                    &mut *get_stream(),
+                    get_database_id(),
+                    table_id,
+                ))
+                .expect("drop_table failed");
+            };
             pgrx::register_xact_callback(pgrx::PgXactCallbackEvent::PreCommit, callback);
             pgrx::register_xact_callback(pgrx::PgXactCallbackEvent::ParallelPreCommit, callback);
         }
@@ -58,7 +73,13 @@ fn create_snapshot(dst: &str) {
         .unwrap_or_else(|_| panic!("relation does not exist: {dst}"))
         .get(0);
     let lsn = unsafe { GetActiveLsn() };
-    pgmoonlink::create_snapshot(table_id, lsn);
+    block_on(moonlink_rpc::create_snapshot(
+        &mut *get_stream(),
+        get_database_id(),
+        table_id,
+        lsn,
+    ))
+    .expect("create_snapshot failed");
 }
 
 fn parse_table(table: &str) -> String {

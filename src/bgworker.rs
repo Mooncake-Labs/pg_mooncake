@@ -1,4 +1,3 @@
-use super::server;
 use crate::utils::get_loopback_uri;
 use pgrx::bgworkers::{BackgroundWorker, BackgroundWorkerBuilder, SignalWakeFlags};
 use pgrx::prelude::*;
@@ -6,9 +5,9 @@ use postgres::{Client, NoTls};
 use std::time::Duration;
 
 pub(crate) fn init() {
-    BackgroundWorkerBuilder::new("pg_moonlink")
+    BackgroundWorkerBuilder::new("moonlink")
         .set_library("pg_mooncake")
-        .set_function("pgmoonlink_main")
+        .set_function("moonlink_main")
         .enable_spi_access()
         .set_restart_time(Some(Duration::from_secs(15)))
         .load();
@@ -16,7 +15,7 @@ pub(crate) fn init() {
 
 #[pg_guard]
 #[no_mangle]
-extern "C-unwind" fn pgmoonlink_main(_arg: pg_sys::Datum) {
+extern "C-unwind" fn moonlink_main(_arg: pg_sys::Datum) {
     std::env::set_var("RUST_BACKTRACE", "1");
     BackgroundWorker::attach_signal_handlers(SignalWakeFlags::SIGTERM);
     BackgroundWorker::connect_worker_to_spi(None, None);
@@ -31,5 +30,12 @@ extern "C-unwind" fn pgmoonlink_main(_arg: pg_sys::Datum) {
             .map(|row| get_loopback_uri(row.get(0)))
             .collect()
     });
-    server::start(uris);
+    start(uris);
+}
+
+#[tokio::main]
+pub async fn start(uris: Vec<String>) {
+    moonlink_service::start("pg_mooncake".to_owned(), uris)
+        .await
+        .unwrap();
 }

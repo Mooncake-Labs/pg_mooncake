@@ -1,4 +1,6 @@
-mod pgmoonlink;
+#[cfg(feature = "bgworker")]
+mod bgworker;
+mod ffi;
 mod table;
 mod utils;
 
@@ -14,5 +16,6 @@ extern "C" {
 #[pg_guard]
 extern "C-unwind" fn _PG_init() {
     unsafe { pgduckdb_init() };
-    pgmoonlink::init();
+    #[cfg(feature = "bgworker")]
+    bgworker::init();
 }

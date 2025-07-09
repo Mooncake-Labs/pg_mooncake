@@ -2,13 +2,14 @@ PG_VERSION ?= pg17
 export PG_CONFIG := $(shell cargo pgrx info pg-config $(PG_VERSION))
 MAKEFLAGS += --no-print-directory
 
-.PHONY: help clean format package pgduckdb run test
+.PHONY: help clean dev format package pgduckdb run test
 
 help:
 	@echo "Usage: make <COMMAND> [OPTIONS]"
 	@echo ""
 	@echo "Commands:"
-	@echo "  run           Build and run pg_mooncake for development"
+	@echo "  dev           Build and run pg_mooncake for development (without bgworker)"
+	@echo "  run           Build and run pg_mooncake for development (with bgworker)"
 	@echo "  format        Format the codebase"
 	@echo "  test          Run all tests"
 	@echo "  package       Build an installation package for release"
@@ -21,6 +22,9 @@ help:
 clean:
 	@$(MAKE) -C pg_duckdb clean-all
 	@cargo clean
+
+dev: pgduckdb
+	@cargo pgrx run --no-default-features --features pg17
 
 format:
 	@$(MAKE) -C pg_duckdb format-all

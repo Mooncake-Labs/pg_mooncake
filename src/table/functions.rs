@@ -82,6 +82,28 @@ fn create_snapshot(dst: &str) {
     .expect("create_snapshot failed");
 }
 
+#[pg_extern(sql = "
+CREATE PROCEDURE mooncake.optimize_table(dst TEXT, mode TEXT) LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
+")]
+fn optimize_table(dst: &str, mode: &str) {
+    let dst = parse_table(dst);
+    let dst_uri = get_loopback_uri(get_database());
+    let mut client = Client::connect(&dst_uri, NoTls)
+        .unwrap_or_else(|_| panic!("error connecting to server: {dst_uri}"));
+    let get_table_id_query = format!("SELECT '{}'::regclass::oid", dst.replace("'", "''"));
+    let table_id: u32 = client
+        .query_one(&get_table_id_query, &[])
+        .unwrap_or_else(|_| panic!("relation does not exist: {dst}"))
+        .get(0);
+    block_on(moonlink_rpc::optimize_table(
+        &mut *get_stream(),
+        get_database_id(),
+        table_id,
+        mode.to_owned(),
+    ))
+    .expect("optimize_table failed");
+}
+
 fn parse_table(table: &str) -> String {
     // https://www.postgresql.org/docs/current/sql-syntax-lexical.html#SQL-SYNTAX-IDENTIFIERS
     let ident = r#"([\w$]+|"([^"]|"")+")"#;

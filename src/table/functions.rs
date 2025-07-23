@@ -1,6 +1,6 @@
 use crate::utils::{block_on, get_database_id, get_stream};
 use core::ffi::CStr;
-use pgrx::{direct_function_call, prelude::*};
+use pgrx::{direct_function_call, pg_sys::Oid, prelude::*};
 use postgres::{Client, NoTls};
 use regex::Regex;
 
@@ -9,7 +9,30 @@ extern "C" {
 }
 
 #[pg_extern(sql = "
-CREATE PROCEDURE mooncake.create_table(dst TEXT, src TEXT, src_uri TEXT DEFAULT NULL) LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
+CREATE PROCEDURE mooncake.create_snapshot(dst text) LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
+")]
+fn create_snapshot(dst: &str) {
+    let dst = parse_table(dst);
+    let dst_uri = get_loopback_uri();
+    let mut client = Client::connect(&dst_uri, NoTls)
+        .unwrap_or_else(|_| panic!("error connecting to server: {dst_uri}"));
+    let get_table_id_query = format!("SELECT '{}'::regclass::oid", dst.replace("'", "''"));
+    let table_id: u32 = client
+        .query_one(&get_table_id_query, &[])
+        .unwrap_or_else(|_| panic!("relation does not exist: {dst}"))
+        .get(0);
+    let lsn = unsafe { GetActiveLsn() };
+    block_on(moonlink_rpc::create_snapshot(
+        &mut *get_stream(),
+        get_database_id(),
+        table_id,
+        lsn,
+    ))
+    .expect("create_snapshot failed");
+}
+
+#[pg_extern(sql = "
+CREATE PROCEDURE mooncake.create_table(dst text, src text, src_uri text DEFAULT NULL) LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
 ")]
 fn create_table(dst: &str, src: &str, src_uri: Option<&str>) {
     let dst = parse_table(dst);
@@ -59,30 +82,39 @@ fn drop_trigger() {
 }
 
 #[pg_extern(sql = "
-CREATE PROCEDURE mooncake.create_snapshot(dst TEXT) LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
+CREATE FUNCTION mooncake.list_tables() RETURNS TABLE (
+    database_id oid,
+    table_id oid,
+    commit_lsn pg_lsn,
+    flush_lsn pg_lsn,
+    iceberg_warehouse_location text
+) LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
 ")]
-fn create_snapshot(dst: &str) {
-    let dst = parse_table(dst);
-    let dst_uri = get_loopback_uri();
-    let mut client = Client::connect(&dst_uri, NoTls)
-        .unwrap_or_else(|_| panic!("error connecting to server: {dst_uri}"));
-    let get_table_id_query = format!("SELECT '{}'::regclass::oid", dst.replace("'", "''"));
-    let table_id: u32 = client
-        .query_one(&get_table_id_query, &[])
-        .unwrap_or_else(|_| panic!("relation does not exist: {dst}"))
-        .get(0);
-    let lsn = unsafe { GetActiveLsn() };
-    block_on(moonlink_rpc::create_snapshot(
-        &mut *get_stream(),
-        get_database_id(),
-        table_id,
-        lsn,
-    ))
-    .expect("create_snapshot failed");
+fn list_tables() -> TableIterator<
+    'static,
+    (
+        name!(database_id, Oid),
+        name!(table_id, Oid),
+        name!(commit_lsn, i64),
+        name!(flush_lsn, Option<i64>),
+        name!(iceberg_warehouse_location, String),
+    ),
+> {
+    let tables =
+        block_on(moonlink_rpc::list_tables(&mut *get_stream())).expect("list_tables failed");
+    TableIterator::new(tables.into_iter().map(|table| {
+        (
+            Oid::from_u32(table.database_id),
+            Oid::from_u32(table.table_id),
+            table.commit_lsn as i64,
+            table.flush_lsn.map(|lsn| lsn as i64),
+            table.iceberg_warehouse_location,
+        )
+    }))
 }
 
 #[pg_extern(sql = "
-CREATE PROCEDURE mooncake.optimize_table(dst TEXT, mode TEXT) LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
+CREATE PROCEDURE mooncake.optimize_table(dst text, mode text) LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
 ")]
 fn optimize_table(dst: &str, mode: &str) {
     let dst = parse_table(dst);
@@ -122,7 +154,7 @@ fn parse_table(table: &str) -> String {
     spi::quote_qualified_identifier(schema, &caps["table"])
 }
 
-pub(crate) fn get_loopback_uri() -> String {
+fn get_loopback_uri() -> String {
     let hosts = unsafe { CStr::from_ptr(pg_sys::Unix_socket_directories) };
     let host = hosts.to_str().unwrap().split(",").next().unwrap().trim();
     let port: i32 = unsafe { pg_sys::PostPortNumber };

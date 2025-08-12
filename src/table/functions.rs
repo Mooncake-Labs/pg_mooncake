@@ -32,20 +32,22 @@ fn create_snapshot(dst: &str) {
 }
 
 #[pg_extern(sql = "
-CREATE PROCEDURE mooncake.create_table(dst text, src text, src_uri text DEFAULT NULL) LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
+CREATE PROCEDURE mooncake.create_table(dst text, src text, src_uri text DEFAULT NULL, table_config json DEFAULT NULL) LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
 ")]
-fn create_table(dst: &str, src: &str, src_uri: Option<&str>) {
+fn create_table(dst: &str, src: &str, src_uri: Option<&str>, table_config: Option<&str>) {
     let dst = parse_table(dst);
     let src = parse_table(src);
     let dst_uri = get_loopback_uri();
     let src_uri = src_uri.unwrap_or(&dst_uri).to_owned();
     let table_id = create_mooncake_table(&dst, &dst_uri, &src, &src_uri);
+    let table_config = table_config.unwrap_or("{}").to_owned();
     block_on(moonlink_rpc::create_table(
         &mut *get_stream(),
         get_database_id(),
         table_id,
         src,
         src_uri,
+        table_config,
     ))
     .expect("create_table failed");
 }

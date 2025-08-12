@@ -1,3 +1,4 @@
+use moonlink_service::{start_with_config, ServiceConfig};
 use pgrx::bgworkers::{BackgroundWorker, BackgroundWorkerBuilder, SignalWakeFlags};
 use pgrx::prelude::*;
 use std::time::Duration;
@@ -21,7 +22,11 @@ extern "C-unwind" fn moonlink_main(_arg: pg_sys::Datum) {
 
 #[tokio::main]
 pub async fn start() {
-    moonlink_service::start("pg_mooncake".to_owned())
-        .await
-        .unwrap();
+    let config = ServiceConfig {
+        base_path: "pg_mooncake".to_owned(),
+        data_server_uri: None,
+        rest_api_port: None,
+        tcp_port: None,
+    };
+    start_with_config(config).await.unwrap();
 }

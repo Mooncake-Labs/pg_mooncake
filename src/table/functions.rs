@@ -7,6 +7,8 @@ use regex::Regex;
 extern "C" {
     fn GetActiveLsn() -> u64;
 }
+// conn stirng: postgresql://postgres:password@localhost:5432/postgres
+// CALL mooncake.create_table('c8', 'r8', 'postgresql://postgres:password@34.187.201.2:5432/postgres');
 
 #[pg_extern(sql = "
 CREATE PROCEDURE mooncake.create_snapshot(dst text) LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
@@ -220,11 +222,11 @@ fn create_mooncake_table(dst: &str, dst_uri: &str, src: &str, src_uri: &str) -> 
     let create_table_query = format!("CREATE TABLE {dst} ({columns}) USING mooncake");
     client
         .simple_query(&create_table_query)
-        .unwrap_or_else(|_| panic!("error creating table: {dst}"));
+        .unwrap_or_else(|e| panic!("error creating table {dst} because {e:?}"));
 
     let get_table_id_query = format!("SELECT '{}'::regclass::oid", dst.replace("'", "''"));
     client
         .query_one(&get_table_id_query, &[])
-        .unwrap_or_else(|_| panic!("relation does not exist: {dst}"))
+        .unwrap_or_else(|e| panic!("relation does not exist: {dst}"))
         .get(0)
 }

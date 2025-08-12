@@ -1,6 +1,7 @@
 use std::future::Future;
+use std::net::SocketAddr;
 use std::sync::{LazyLock, Mutex, MutexGuard};
-use tokio::net::UnixStream;
+use tokio::net::TcpStream;
 use tokio::runtime::{Builder, Runtime};
 
 pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
@@ -13,11 +14,14 @@ pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
     RUNTIME.block_on(future)
 }
 
-pub(crate) fn get_stream() -> MutexGuard<'static, UnixStream> {
-    static STREAM: LazyLock<Mutex<UnixStream>> = LazyLock::new(|| {
+pub(crate) fn get_stream() -> MutexGuard<'static, TcpStream> {
+    static STREAM: LazyLock<Mutex<TcpStream>> = LazyLock::new(|| {
+        let addr: SocketAddr = "34.19.1.175:3031"
+            .parse()
+            .expect("Failed to parse IP address");
+        // TODO(hjiang): Need to reuse the same connection.
         Mutex::new(
-            block_on(UnixStream::connect("pg_mooncake/moonlink.sock"))
-                .expect("Failed to connect to moonlink"),
+            block_on(TcpStream::connect(addr)).expect("Failed to connect to moonlink"),
         )
     });
     STREAM.lock().unwrap()

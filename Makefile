@@ -2,7 +2,7 @@ PG_VERSION ?= pg17
 export PG_CONFIG := $(shell cargo pgrx info pg-config $(PG_VERSION))
 MAKEFLAGS += --no-print-directory
 
-.PHONY: help clean dev format package pgduckdb run test
+.PHONY: help clean dev duckdb_mooncake format package pg_duckdb run test
 
 help:
 	@echo "Usage: make <COMMAND> [OPTIONS]"
@@ -23,7 +23,7 @@ clean:
 	@$(MAKE) -C pg_duckdb clean-all
 	@cargo clean
 
-dev: pgduckdb
+dev:
 	@cargo pgrx run --no-default-features --features pg17
 
 format:
@@ -37,15 +37,18 @@ install: pgduckdb
 package: pgduckdb
 	@cargo pgrx package
 
-pgduckdb:
+duckdb_mooncake:
+	@$(MAKE) -C duckdb_mooncake GEN=ninja release
+
+pg_duckdb:
 	@if [ ! -f target/.pg_version ] || [ $$(cat target/.pg_version) != $(PG_VERSION) ]; then \
 		$(MAKE) -C pg_duckdb clean;  \
 		mkdir -p target; \
 		echo $(PG_VERSION) > target/.pg_version; \
 	fi
-	@$(MAKE) -C pg_duckdb all-static-lib duckdb DUCKDB_BUILD=ReleaseStatic DUCKDB_GEN=make
+	@$(MAKE) -C pg_duckdb install DUCKDB_BUILD=Release
 
-run: pgduckdb
+run:
 	@cargo pgrx run
 
 test: pgduckdb

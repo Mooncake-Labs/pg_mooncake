@@ -1,3 +1,6 @@
+[submodule "duckdb_mooncake"]
+	path = duckdb_mooncake
+	url = https://github.com/Mooncake-Labs/duckdb-mooncake.git
 [submodule "moonlink"]
 	path = moonlink
 	url = https://github.com/Mooncake-Labs/moonlink.git

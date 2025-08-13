@@ -1,1 +1,2 @@
+CREATE EXTENSION pg_duckdb;
 CREATE EXTENSION pg_mooncake;

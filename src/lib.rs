@@ -1,6 +1,7 @@
 #[cfg(feature = "bgworker")]
 mod bgworker;
 mod ffi;
+mod functions;
 mod table;
 mod utils;
 

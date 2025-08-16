@@ -1,7 +1,14 @@
+use pgrx::pg_sys;
+use std::ffi::CStr;
 use std::future::Future;
 use std::sync::{LazyLock, Mutex, MutexGuard};
 use tokio::net::UnixStream;
 use tokio::runtime::{Builder, Runtime};
+
+pub(crate) static DATABASE: LazyLock<String> = LazyLock::new(|| {
+    let database = unsafe { CStr::from_ptr(pg_sys::get_database_name(pg_sys::MyDatabaseId)) };
+    database.to_str().unwrap().to_owned()
+});
 
 pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
     static RUNTIME: LazyLock<Runtime> = LazyLock::new(|| {
@@ -21,8 +28,4 @@ pub(crate) fn get_stream() -> MutexGuard<'static, UnixStream> {
         )
     });
     STREAM.lock().unwrap()
-}
-
-pub(crate) fn get_database_id() -> u32 {
-    unsafe { pgrx::pg_sys::MyDatabaseId.to_u32() }
 }

@@ -1,5 +1,7 @@
 use moonlink_service::{start_with_config, ServiceConfig};
-use pgrx::bgworkers::{BackgroundWorker, BackgroundWorkerBuilder, SignalWakeFlags};
+use pgrx::bgworkers::{
+    BackgroundWorker, BackgroundWorkerBuilder, BgWorkerStartTime, SignalWakeFlags,
+};
 use pgrx::prelude::*;
 use std::time::Duration;
 
@@ -8,6 +10,7 @@ pub(crate) fn init() {
         .set_library("pg_mooncake")
         .set_function("moonlink_main")
         .enable_shmem_access(None)
+        .set_start_time(BgWorkerStartTime::ConsistentState)
         .set_restart_time(Some(Duration::from_secs(15)))
         .load();
 }

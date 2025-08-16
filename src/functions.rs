@@ -1,31 +1,19 @@
-use crate::utils::{block_on, get_database_id, get_stream};
+use crate::utils::{block_on, get_stream, DATABASE};
 use core::ffi::CStr;
-use pgrx::{direct_function_call, pg_sys::Oid, prelude::*};
+use pgrx::{direct_function_call, prelude::*};
 use postgres::{Client, NoTls};
 use regex::Regex;
-
-extern "C" {
-    fn GetActiveLsn() -> u64;
-}
 
 #[pg_extern(sql = "
 CREATE PROCEDURE mooncake.create_snapshot(dst text) LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
 ")]
 fn create_snapshot(dst: &str) {
     let dst = parse_table(dst);
-    let dst_uri = get_loopback_uri();
-    let mut client = Client::connect(&dst_uri, NoTls)
-        .unwrap_or_else(|_| panic!("error connecting to server: {dst_uri}"));
-    let get_table_id_query = format!("SELECT '{}'::regclass::oid", dst.replace("'", "''"));
-    let table_id: u32 = client
-        .query_one(&get_table_id_query, &[])
-        .unwrap_or_else(|_| panic!("relation does not exist: {dst}"))
-        .get(0);
-    let lsn = unsafe { GetActiveLsn() };
+    let lsn = unsafe { pgrx::pg_sys::XactLastCommitEnd };
     block_on(moonlink_rpc::create_snapshot(
         &mut *get_stream(),
-        get_database_id(),
-        table_id,
+        DATABASE.clone(),
+        dst,
         lsn,
     ))
     .expect("create_snapshot failed");
@@ -39,12 +27,12 @@ fn create_table(dst: &str, src: &str, src_uri: Option<&str>, table_config: Optio
     let src = parse_table(src);
     let dst_uri = get_loopback_uri();
     let src_uri = src_uri.unwrap_or(&dst_uri).to_owned();
-    let table_id = create_mooncake_table(&dst, &dst_uri, &src, &src_uri);
+    create_mooncake_table(&dst, &dst_uri, &src, &src_uri);
     let table_config = table_config.unwrap_or("{}").to_owned();
     block_on(moonlink_rpc::create_table(
         &mut *get_stream(),
-        get_database_id(),
-        table_id,
+        DATABASE.clone(),
+        dst,
         src,
         src_uri,
         table_config,
@@ -59,34 +47,41 @@ CREATE EVENT TRIGGER mooncake_drop_trigger ON sql_drop EXECUTE FUNCTION mooncake
 fn drop_trigger() {
     Spi::connect(|client| {
         let get_dropped_tables_query =
-            "SELECT objid FROM pg_event_trigger_dropped_objects() WHERE object_type = 'table'";
+            "SELECT quote_ident(schema_name) || '.' || quote_ident(object_name) FROM pg_event_trigger_dropped_objects() WHERE object_type = 'table'";
         let dropped_tables = client
             .select(get_dropped_tables_query, None, &[])
             .expect("error reading dropped objects");
         for dropped_table in dropped_tables {
-            let table_id = dropped_table
-                .get::<pg_sys::Oid>(1)
-                .expect("error reading dropped object")
-                .expect("error reading dropped object")
-                .to_u32();
-            let callback = move || {
+            let table: String = dropped_table
+                .get(1)
+                .expect("error reading dropped table")
+                .expect("error reading dropped table");
+            {
+                let table = table.clone();
+                pgrx::register_xact_callback(pgrx::PgXactCallbackEvent::PreCommit, move || {
+                    block_on(moonlink_rpc::drop_table(
+                        &mut *get_stream(),
+                        DATABASE.clone(),
+                        table,
+                    ))
+                    .expect("drop_table failed");
+                });
+            }
+            pgrx::register_xact_callback(pgrx::PgXactCallbackEvent::ParallelPreCommit, move || {
                 block_on(moonlink_rpc::drop_table(
                     &mut *get_stream(),
-                    get_database_id(),
-                    table_id,
+                    DATABASE.clone(),
+                    table,
                 ))
                 .expect("drop_table failed");
-            };
-            pgrx::register_xact_callback(pgrx::PgXactCallbackEvent::PreCommit, callback);
-            pgrx::register_xact_callback(pgrx::PgXactCallbackEvent::ParallelPreCommit, callback);
+            });
         }
     });
 }
 
 #[pg_extern(sql = "
 CREATE FUNCTION mooncake.list_tables() RETURNS TABLE (
-    database_id oid,
-    table_id oid,
+    \"table\" text,
     commit_lsn pg_lsn,
     flush_lsn pg_lsn,
     iceberg_warehouse_location text
@@ -95,8 +90,7 @@ CREATE FUNCTION mooncake.list_tables() RETURNS TABLE (
 fn list_tables() -> TableIterator<
     'static,
     (
-        name!(database_id, Oid),
-        name!(table_id, Oid),
+        name!(table, String),
         name!(commit_lsn, i64),
         name!(flush_lsn, Option<i64>),
         name!(iceberg_warehouse_location, String),
@@ -104,15 +98,19 @@ fn list_tables() -> TableIterator<
 > {
     let tables =
         block_on(moonlink_rpc::list_tables(&mut *get_stream())).expect("list_tables failed");
-    TableIterator::new(tables.into_iter().map(|table| {
-        (
-            Oid::from_u32(table.database_id),
-            Oid::from_u32(table.table_id),
-            table.commit_lsn as i64,
-            table.flush_lsn.map(|lsn| lsn as i64),
-            table.iceberg_warehouse_location,
-        )
-    }))
+    TableIterator::new(
+        tables
+            .into_iter()
+            .filter(|table| table.database == *DATABASE)
+            .map(|table| {
+                (
+                    table.table,
+                    table.commit_lsn as i64,
+                    table.flush_lsn.map(|lsn| lsn as i64),
+                    table.iceberg_warehouse_location,
+                )
+            }),
+    )
 }
 
 #[pg_extern(sql = "
@@ -120,18 +118,10 @@ CREATE PROCEDURE mooncake.optimize_table(dst text, mode text) LANGUAGE c AS 'MOD
 ")]
 fn optimize_table(dst: &str, mode: &str) {
     let dst = parse_table(dst);
-    let dst_uri = get_loopback_uri();
-    let mut client = Client::connect(&dst_uri, NoTls)
-        .unwrap_or_else(|_| panic!("error connecting to server: {dst_uri}"));
-    let get_table_id_query = format!("SELECT '{}'::regclass::oid", dst.replace("'", "''"));
-    let table_id: u32 = client
-        .query_one(&get_table_id_query, &[])
-        .unwrap_or_else(|_| panic!("relation does not exist: {dst}"))
-        .get(0);
     block_on(moonlink_rpc::optimize_table(
         &mut *get_stream(),
-        get_database_id(),
-        table_id,
+        DATABASE.clone(),
+        dst,
         mode.to_owned(),
     ))
     .expect("optimize_table failed");
@@ -160,13 +150,11 @@ fn get_loopback_uri() -> String {
     let hosts = unsafe { CStr::from_ptr(pg_sys::Unix_socket_directories) };
     let host = hosts.to_str().unwrap().split(",").next().unwrap().trim();
     let port: i32 = unsafe { pg_sys::PostPortNumber };
-    let database: &CStr = unsafe { direct_function_call(pg_sys::current_database, &[]).unwrap() };
-    let database = database.to_str().unwrap();
     let user = unsafe { CStr::from_ptr(pg_sys::GetUserNameFromId(pg_sys::GetUserId(), false)) };
     let user = user.to_str().unwrap();
     format!(
         "postgresql:///{}?host={}&port={port}&user={}",
-        uri_encode(database),
+        uri_encode(&DATABASE),
         uri_encode(host),
         uri_encode(user)
     )
@@ -191,7 +179,7 @@ fn uri_encode(input: &str) -> String {
     result
 }
 
-fn create_mooncake_table(dst: &str, dst_uri: &str, src: &str, src_uri: &str) -> u32 {
+fn create_mooncake_table(dst: &str, dst_uri: &str, src: &str, src_uri: &str) {
     let mut client = Client::connect(src_uri, NoTls)
         .unwrap_or_else(|_| panic!("error connecting to server: {src_uri}"));
 
@@ -223,10 +211,4 @@ fn create_mooncake_table(dst: &str, dst_uri: &str, src: &str, src_uri: &str) -> 
     client
         .simple_query(&create_table_query)
         .unwrap_or_else(|_| panic!("error creating table: {dst}"));
-
-    let get_table_id_query = format!("SELECT '{}'::regclass::oid", dst.replace("'", "''"));
-    client
-        .query_one(&get_table_id_query, &[])
-        .unwrap_or_else(|_| panic!("relation does not exist: {dst}"))
-        .get(0)
 }

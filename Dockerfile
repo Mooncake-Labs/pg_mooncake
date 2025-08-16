@@ -9,6 +9,7 @@ RUN apt update \
     git \
     g++ \
     liblz4-dev \
+    libicu-dev \
     pkg-config \
     postgresql-server-dev-17 \
  && rm -rf /var/lib/apt/lists/*
@@ -17,7 +18,7 @@ RUN curl https://sh.rustup.rs | sh -s -- -y
 
 ENV PATH="/root/.cargo/bin:$PATH"
 
-RUN cargo install --locked cargo-pgrx@0.15.0 \
+RUN cargo install --locked cargo-pgrx@0.16.0 \
  && cargo pgrx init --pg17=$(which pg_config)
 
 COPY . /pg_mooncake

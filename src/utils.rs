@@ -22,7 +22,3 @@ pub(crate) fn get_stream() -> MutexGuard<'static, UnixStream> {
     });
     STREAM.lock().unwrap()
 }
-
-pub(crate) fn get_database_id() -> u32 {
-    unsafe { pgrx::pg_sys::MyDatabaseId.to_u32() }
-}

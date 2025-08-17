@@ -1,4 +1,4 @@
-use crate::utils::{block_on, get_stream, DATABASE};
+use crate::utils::{block_on, get_stream, return_stream, DATABASE};
 use core::ffi::CStr;
 use pgrx::{direct_function_call, prelude::*};
 use postgres::{Client, NoTls};
@@ -10,13 +10,15 @@ CREATE PROCEDURE mooncake.create_snapshot(dst text) LANGUAGE c AS 'MODULE_PATHNA
 fn create_snapshot(dst: &str) {
     let dst = parse_table(dst);
     let lsn = unsafe { pgrx::pg_sys::XactLastCommitEnd };
+    let mut stream = get_stream();
     block_on(moonlink_rpc::create_snapshot(
-        &mut *get_stream(),
+        &mut stream,
         DATABASE.clone(),
         dst,
         lsn,
     ))
     .expect("create_snapshot failed");
+    return_stream(stream);
 }
 
 #[pg_extern(sql = "
@@ -29,8 +31,9 @@ fn create_table(dst: &str, src: &str, src_uri: Option<&str>, table_config: Optio
     let src_uri = src_uri.unwrap_or(&dst_uri).to_owned();
     create_mooncake_table(&dst, &dst_uri, &src, &src_uri);
     let table_config = table_config.unwrap_or("{}").to_owned();
+    let mut stream = get_stream();
     block_on(moonlink_rpc::create_table(
-        &mut *get_stream(),
+        &mut stream,
         DATABASE.clone(),
         dst,
         src,
@@ -38,6 +41,7 @@ fn create_table(dst: &str, src: &str, src_uri: Option<&str>, table_config: Optio
         table_config,
     ))
     .expect("create_table failed");
+    return_stream(stream);
 }
 
 #[pg_extern(sql = "
@@ -59,21 +63,25 @@ fn drop_trigger() {
             {
                 let table = table.clone();
                 pgrx::register_xact_callback(pgrx::PgXactCallbackEvent::PreCommit, move || {
+                    let mut stream = get_stream();
                     block_on(moonlink_rpc::drop_table(
-                        &mut *get_stream(),
+                        &mut stream,
                         DATABASE.clone(),
                         table,
                     ))
                     .expect("drop_table failed");
+                    return_stream(stream);
                 });
             }
             pgrx::register_xact_callback(pgrx::PgXactCallbackEvent::ParallelPreCommit, move || {
+                let mut stream = get_stream();
                 block_on(moonlink_rpc::drop_table(
-                    &mut *get_stream(),
+                    &mut stream,
                     DATABASE.clone(),
                     table,
                 ))
                 .expect("drop_table failed");
+                return_stream(stream);
             });
         }
     });
@@ -96,8 +104,9 @@ fn list_tables() -> TableIterator<
         name!(iceberg_warehouse_location, String),
     ),
 > {
-    let tables =
-        block_on(moonlink_rpc::list_tables(&mut *get_stream())).expect("list_tables failed");
+    let mut stream = get_stream();
+    let tables = block_on(moonlink_rpc::list_tables(&mut stream)).expect("list_tables failed");
+    return_stream(stream);
     TableIterator::new(
         tables
             .into_iter()
@@ -118,13 +127,15 @@ CREATE PROCEDURE mooncake.load_files(dst text, files text[]) LANGUAGE c AS 'MODU
 ")]
 fn load_files(dst: &str, files: Vec<String>) {
     let dst = parse_table(dst);
+    let mut stream = get_stream();
     block_on(moonlink_rpc::load_files(
-        &mut *get_stream(),
+        &mut stream,
         DATABASE.clone(),
         dst,
         files,
     ))
     .expect("load_files failed");
+    return_stream(stream);
 }
 
 #[pg_extern(sql = "
@@ -132,13 +143,15 @@ CREATE PROCEDURE mooncake.optimize_table(dst text, mode text) LANGUAGE c AS 'MOD
 ")]
 fn optimize_table(dst: &str, mode: &str) {
     let dst = parse_table(dst);
+    let mut stream = get_stream();
     block_on(moonlink_rpc::optimize_table(
-        &mut *get_stream(),
+        &mut stream,
         DATABASE.clone(),
         dst,
         mode.to_owned(),
     ))
     .expect("optimize_table failed");
+    return_stream(stream);
 }
 
 fn parse_table(table: &str) -> String {

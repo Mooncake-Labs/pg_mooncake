@@ -11,7 +11,7 @@ name = "pgrx_embed_pg_mooncake"
 path = "./src/bin/pgrx_embed.rs"
 
 [features]
-default = ["bgworker", "pg17"]
+default = ["pg17"]
 bgworker = ["moonlink_service"]
 pg14 = ["pgrx/pg14"]
 pg15 = ["pgrx/pg15"]

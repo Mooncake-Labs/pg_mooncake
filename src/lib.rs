@@ -2,6 +2,7 @@
 mod bgworker;
 mod ffi;
 mod functions;
+mod gucs;
 mod table;
 mod utils;
 
@@ -19,4 +20,5 @@ extern "C-unwind" fn _PG_init() {
     unsafe { pgduckdb_init() };
     #[cfg(feature = "bgworker")]
     bgworker::init();
+    gucs::init();
 }

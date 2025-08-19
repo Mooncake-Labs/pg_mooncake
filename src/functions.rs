@@ -114,6 +114,20 @@ fn list_tables() -> TableIterator<
 }
 
 #[pg_extern(sql = "
+CREATE PROCEDURE mooncake.load_files(dst text, files text[]) LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
+")]
+fn load_files(dst: &str, files: Vec<String>) {
+    let dst = parse_table(dst);
+    block_on(moonlink_rpc::load_files(
+        &mut *get_stream(),
+        DATABASE.clone(),
+        dst,
+        files,
+    ))
+    .expect("load_files failed");
+}
+
+#[pg_extern(sql = "
 CREATE PROCEDURE mooncake.optimize_table(dst text, mode text) LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
 ")]
 fn optimize_table(dst: &str, mode: &str) {

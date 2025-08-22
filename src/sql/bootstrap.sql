@@ -1,1 +1,2 @@
+CREATE SCHEMA duckdb;
 CREATE SCHEMA mooncake;

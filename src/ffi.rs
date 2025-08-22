@@ -1,7 +1,36 @@
 use crate::utils::{block_on, get_stream, return_stream, DATABASE};
 use moonlink_rpc::{scan_table_begin, scan_table_end};
 use pgrx::prelude::*;
+use std::collections::HashMap;
 use std::ffi::{c_char, CStr};
+use std::sync::Mutex;
+use std::time::{Duration, Instant};
+
+#[pg_guard]
+#[no_mangle]
+extern "C-unwind" fn mooncake_get_table_cardinality(
+    schema: *const c_char,
+    table: *const c_char,
+) -> u64 {
+    static CARDINALITIES: Mutex<Option<(Instant, HashMap<String, u64>)>> = Mutex::new(None);
+    let table = format!("{}.{}", ptr_to_str(schema), ptr_to_str(table));
+    if let Some((t, cardinalities)) = CARDINALITIES.lock().unwrap().as_ref() {
+        if t.elapsed() < Duration::from_secs(300) {
+            return *cardinalities.get(&table).unwrap_or(&0);
+        }
+    }
+    let mut stream = get_stream();
+    let tables = block_on(moonlink_rpc::list_tables(&mut stream)).expect("list_tables failed");
+    return_stream(stream);
+    let cardinalities: HashMap<String, u64> = tables
+        .into_iter()
+        .filter(|table| table.database == *DATABASE)
+        .map(|table| (table.table, table.cardinality))
+        .collect();
+    let cardinality = *cardinalities.get(&table).unwrap_or(&0);
+    *CARDINALITIES.lock().unwrap() = Some((Instant::now(), cardinalities));
+    cardinality
+}
 
 #[pg_guard]
 #[no_mangle]

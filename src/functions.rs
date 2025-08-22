@@ -90,6 +90,7 @@ fn drop_trigger() {
 #[pg_extern(sql = "
 CREATE FUNCTION mooncake.list_tables() RETURNS TABLE (
     \"table\" text,
+    cardinality bigint,
     commit_lsn pg_lsn,
     flush_lsn pg_lsn,
     iceberg_warehouse_location text
@@ -99,6 +100,7 @@ fn list_tables() -> TableIterator<
     'static,
     (
         name!(table, String),
+        name!(cardinality, i64),
         name!(commit_lsn, i64),
         name!(flush_lsn, Option<i64>),
         name!(iceberg_warehouse_location, String),
@@ -114,6 +116,7 @@ fn list_tables() -> TableIterator<
             .map(|table| {
                 (
                     table.table,
+                    table.cardinality as i64,
                     table.commit_lsn as i64,
                     table.flush_lsn.map(|lsn| lsn as i64),
                     table.iceberg_warehouse_location,

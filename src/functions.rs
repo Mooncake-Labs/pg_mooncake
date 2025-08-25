@@ -1,7 +1,9 @@
 use crate::utils::{block_on, get_stream, DATABASE};
 use core::ffi::CStr;
+use native_tls::TlsConnector;
 use pgrx::{direct_function_call, prelude::*};
-use postgres::{Client, NoTls};
+use postgres::Client;
+use postgres_native_tls::MakeTlsConnector;
 use regex::Regex;
 
 #[pg_extern(sql = "
@@ -194,7 +196,9 @@ fn uri_encode(input: &str) -> String {
 }
 
 fn create_mooncake_table(dst: &str, dst_uri: &str, src: &str, src_uri: &str) {
-    let mut client = Client::connect(src_uri, NoTls)
+    let tls_connector = TlsConnector::builder().build().unwrap();
+    let make_tls_connector = MakeTlsConnector::new(tls_connector);
+    let mut client = Client::connect(src_uri, make_tls_connector.clone())
         .unwrap_or_else(|_| panic!("error connecting to server: {src_uri}"));
 
     let get_columns_query = format!(
@@ -217,7 +221,7 @@ fn create_mooncake_table(dst: &str, dst_uri: &str, src: &str, src_uri: &str) {
         .get(0);
 
     if dst_uri != src_uri {
-        client = Client::connect(dst_uri, NoTls)
+        client = Client::connect(dst_uri, make_tls_connector)
             .unwrap_or_else(|_| panic!("error connecting to server: {dst_uri}"));
     }
 

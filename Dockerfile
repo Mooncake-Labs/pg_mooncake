@@ -6,10 +6,10 @@ RUN apt update \
  && apt install -y \
     cmake \
     curl \
-    git \
     g++ \
-    liblz4-dev \
+    git \
     libicu-dev \
+    liblz4-dev \
     pkg-config \
     postgresql-server-dev-17 \
  && rm -rf /var/lib/apt/lists/*
@@ -30,11 +30,13 @@ RUN cd /pg_mooncake \
 
 FROM base
 
+RUN apt update \
+ && apt install -y ca-certificates \
+ && rm -rf /var/lib/apt/lists/*
+
 COPY --from=build /pg_mooncake/target/release/pg_mooncake-pg17/ /
 
 RUN cat >> /usr/share/postgresql/postgresql.conf.sample <<EOF
 shared_preload_libraries = 'pg_mooncake'
 wal_level = logical
 EOF
-
-ENV RUST_BACKTRACE="1"

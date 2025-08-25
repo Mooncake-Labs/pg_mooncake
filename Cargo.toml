@@ -22,8 +22,10 @@ pg17 = ["pgrx/pg17"]
 bincode = "2"
 moonlink_rpc.path = "moonlink/src/moonlink_rpc"
 moonlink_service = { path = "moonlink/src/moonlink_service", optional = true }
+native-tls = "0.2"
 pgrx = "0.16.0"
 postgres.git = "https://github.com/Mooncake-Labs/rust-postgres.git"
+postgres-native-tls.git = "https://github.com/Mooncake-Labs/rust-postgres.git"
 regex = "1"
 tokio = "1.47"
 

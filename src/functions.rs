@@ -47,46 +47,18 @@ fn create_table(dst: &str, src: &str, src_uri: Option<&str>, table_config: Optio
 }
 
 #[pg_extern(sql = "
-CREATE FUNCTION mooncake_drop_trigger() RETURNS event_trigger LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
-CREATE EVENT TRIGGER mooncake_drop_trigger ON sql_drop EXECUTE FUNCTION mooncake_drop_trigger();
+CREATE PROCEDURE mooncake.drop_table(dst text) LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
 ")]
-fn drop_trigger() {
-    Spi::connect(|client| {
-        let get_dropped_tables_query =
-            "SELECT quote_ident(schema_name) || '.' || quote_ident(object_name) FROM pg_event_trigger_dropped_objects() WHERE object_type = 'table'";
-        let dropped_tables = client
-            .select(get_dropped_tables_query, None, &[])
-            .expect("error reading dropped objects");
-        for dropped_table in dropped_tables {
-            let table: String = dropped_table
-                .get(1)
-                .expect("error reading dropped table")
-                .expect("error reading dropped table");
-            {
-                let table = table.clone();
-                pgrx::register_xact_callback(pgrx::PgXactCallbackEvent::PreCommit, move || {
-                    let mut stream = get_stream();
-                    block_on(moonlink_rpc::drop_table(
-                        &mut stream,
-                        DATABASE.clone(),
-                        table,
-                    ))
-                    .expect("drop_table failed");
-                    return_stream(stream);
-                });
-            }
-            pgrx::register_xact_callback(pgrx::PgXactCallbackEvent::ParallelPreCommit, move || {
-                let mut stream = get_stream();
-                block_on(moonlink_rpc::drop_table(
-                    &mut stream,
-                    DATABASE.clone(),
-                    table,
-                ))
-                .expect("drop_table failed");
-                return_stream(stream);
-            });
-        }
-    });
+fn drop_table(dst: &str) {
+    let dst = parse_table(dst);
+    let mut stream = get_stream();
+    block_on(moonlink_rpc::drop_table(
+        &mut stream,
+        DATABASE.clone(),
+        dst,
+    ))
+    .expect("drop_table failed");
+    return_stream(stream);
 }
 
 #[pg_extern(sql = "

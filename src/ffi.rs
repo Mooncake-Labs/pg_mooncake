@@ -1,10 +1,33 @@
 use crate::utils::{block_on, get_stream, return_stream, DATABASE};
-use moonlink_rpc::{scan_table_begin, scan_table_end};
+use moonlink_rpc::{get_parquet_metadata, list_tables, scan_table_begin, scan_table_end};
 use pgrx::prelude::*;
 use std::collections::HashMap;
 use std::ffi::{c_char, CStr};
 use std::sync::Mutex;
 use std::time::{Duration, Instant};
+
+#[pg_guard]
+#[no_mangle]
+extern "C-unwind" fn mooncake_drop_data(data: *mut u8, len: usize) {
+    unsafe { Vec::from_raw_parts(data, len, len) };
+}
+
+#[pg_guard]
+#[no_mangle]
+extern "C-unwind" fn mooncake_get_parquet_metadata(
+    data_file: *const c_char,
+    data: *mut *mut u8,
+    len: *mut usize,
+) {
+    let data_file = ptr_to_str(data_file).to_owned();
+    let mut stream = get_stream();
+    let mut bytes = block_on(get_parquet_metadata(&mut stream, data_file))
+        .expect("get_parquet_metadata failed");
+    return_stream(stream);
+    unsafe { *data = bytes.as_mut_ptr() };
+    unsafe { *len = bytes.len() };
+    std::mem::forget(bytes);
+}
 
 #[pg_guard]
 #[no_mangle]
@@ -20,7 +43,7 @@ extern "C-unwind" fn mooncake_get_table_cardinality(
         }
     }
     let mut stream = get_stream();
-    let tables = block_on(moonlink_rpc::list_tables(&mut stream)).expect("list_tables failed");
+    let tables = block_on(list_tables(&mut stream)).expect("list_tables failed");
     return_stream(stream);
     let cardinalities: HashMap<String, u64> = tables
         .into_iter()

@@ -1,7 +1,28 @@
 use crate::utils::{block_on, get_stream, DATABASE};
-use moonlink_rpc::{scan_table_begin, scan_table_end};
+use moonlink_rpc::{get_parquet_metadata, scan_table_begin, scan_table_end};
 use pgrx::prelude::*;
 use std::ffi::{c_char, CStr};
+
+#[pg_guard]
+#[no_mangle]
+extern "C-unwind" fn mooncake_drop_data(data: *mut u8, len: usize) {
+    unsafe { Vec::from_raw_parts(data, len, len) };
+}
+
+#[pg_guard]
+#[no_mangle]
+extern "C-unwind" fn mooncake_get_parquet_metadata(
+    data_file: *const c_char,
+    data: *mut *mut u8,
+    len: *mut usize,
+) {
+    let data_file = ptr_to_str(data_file).to_owned();
+    let mut bytes = block_on(get_parquet_metadata(&mut *get_stream(), data_file))
+        .expect("get_parquet_metadata failed");
+    unsafe { *data = bytes.as_mut_ptr() };
+    unsafe { *len = bytes.len() };
+    std::mem::forget(bytes);
+}
 
 #[pg_guard]
 #[no_mangle]

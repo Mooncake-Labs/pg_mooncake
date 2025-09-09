@@ -52,12 +52,8 @@ CREATE PROCEDURE mooncake.drop_table(dst text) LANGUAGE c AS 'MODULE_PATHNAME', 
 fn drop_table(dst: &str) {
     let dst = parse_table(dst);
     let mut stream = get_stream();
-    block_on(moonlink_rpc::drop_table(
-        &mut stream,
-        DATABASE.clone(),
-        dst,
-    ))
-    .expect("drop_table failed");
+    block_on(moonlink_rpc::drop_table(&mut stream, DATABASE.clone(), dst))
+        .expect("drop_table failed");
     return_stream(stream);
 }
 

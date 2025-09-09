@@ -1,9 +1,8 @@
-use crate::gucs::MOONLINK_URI;
 use pgrx::pg_sys;
 use std::ffi::CStr;
 use std::future::Future;
 use std::sync::{LazyLock, Mutex};
-use tokio::net::TcpStream;
+use tokio::net::UnixStream;
 use tokio::runtime::{Builder, Runtime};
 
 pub(crate) static DATABASE: LazyLock<String> = LazyLock::new(|| {
@@ -21,18 +20,17 @@ pub(crate) fn block_on<F: Future>(future: F) -> F::Output {
     RUNTIME.block_on(future)
 }
 
-static POOL: Mutex<Vec<TcpStream>> = Mutex::new(Vec::new());
+static POOL: Mutex<Vec<UnixStream>> = Mutex::new(Vec::new());
 
-pub(crate) fn get_stream() -> TcpStream {
+pub(crate) fn get_stream() -> UnixStream {
     if let Some(stream) = POOL.lock().unwrap().pop() {
         return stream;
     }
-    let uri = MOONLINK_URI.get().expect("mooncake.moonlink_uri not set");
-    let uri = uri.to_str().expect("moonlink_uri should be valid UTF-8");
-    block_on(TcpStream::connect(uri)).expect("Failed to connect to moonlink")
+    block_on(UnixStream::connect("pg_mooncake/moonlink.sock"))
+        .expect("Failed to connect to moonlink")
 }
 
-pub(crate) fn return_stream(stream: TcpStream) {
+pub(crate) fn return_stream(stream: UnixStream) {
     let mut pool = POOL.lock().unwrap();
     pool.push(stream);
 }

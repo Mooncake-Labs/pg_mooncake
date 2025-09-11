@@ -30,6 +30,8 @@ pub async fn start() {
         data_server_uri: None,
         rest_api_port: None,
         tcp_port: None,
+        otel_api_port: None,
+        log_directory: None,
     };
     start_with_config(config).await.unwrap();
 }

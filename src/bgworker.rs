@@ -29,7 +29,9 @@ pub async fn start() {
         base_path: "pg_mooncake".to_owned(),
         data_server_uri: None,
         rest_api_port: None,
+        otel_api_port: None,
         tcp_port: None,
+        log_directory: None,
     };
     start_with_config(config).await.unwrap();
 }

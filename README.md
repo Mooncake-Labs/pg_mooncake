@@ -41,14 +41,15 @@ git clone --recurse-submodules https://github.com/Mooncake-Labs/pg_mooncake.git
 
 To build and install for Postgres versions 14-17, run:
 ```bash
-# Replace with your Postgres version
-cargo pgrx init --pg17=$(which pg_config)
+cargo pgrx init --pg17=$(which pg_config)   # Replace with your Postgres version
+make pg_duckdb                              # Skip if pg_duckdb is already installed
 make install PG_VERSION=pg17
 ```
 
 Finally, add pg_mooncake to `shared_preload_libraries` in your `postgresql.conf` file and enable logical replication:
 ```ini
-shared_preload_libraries = 'pg_mooncake'
+duckdb.allow_community_extensions = true
+shared_preload_libraries = 'pg_duckdb,pg_mooncake'
 wal_level = logical
 ```
 
@@ -58,7 +59,7 @@ For a complete walkthrough, refer to our [Dockerfile][dockerfile-link].
 
 First, create the pg_mooncake extension:
 ```sql
-CREATE EXTENSION pg_mooncake;
+CREATE EXTENSION pg_mooncake CASCADE;
 ```
 
 Next, create a regular Postgres table `trades`:

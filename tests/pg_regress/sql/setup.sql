@@ -1,1 +1,1 @@
-CREATE EXTENSION pg_mooncake;
+CREATE EXTENSION pg_mooncake CASCADE;

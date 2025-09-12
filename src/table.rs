@@ -1,5 +1,10 @@
 use core::ffi::{c_char, c_int, c_void};
 use pgrx::prelude::*;
+use std::ffi::CString;
+
+extern "C" {
+    fn RegisterDuckdbTableAm(name: *const c_char, am: *const pg_sys::TableAmRoutine) -> bool;
+}
 
 #[no_mangle]
 static mut MOONCAKE_AM: pg_sys::TableAmRoutine = pg_sys::TableAmRoutine {
@@ -53,6 +58,12 @@ static mut MOONCAKE_AM: pg_sys::TableAmRoutine = pg_sys::TableAmRoutine {
     scan_sample_next_block: Some(mooncake_scan_sample_next_block),
     scan_sample_next_tuple: Some(mooncake_scan_sample_next_tuple),
 };
+
+pub(crate) fn init() {
+    let name = CString::new("mooncake").expect("name should not contain an internal 0 byte");
+    let res = unsafe { RegisterDuckdbTableAm(name.as_ptr(), std::ptr::addr_of!(MOONCAKE_AM)) };
+    assert!(res, "error registering mooncake table AM");
+}
 
 #[pg_extern(sql = "
 CREATE FUNCTION mooncake_am_handler(internal) RETURNS table_am_handler LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';

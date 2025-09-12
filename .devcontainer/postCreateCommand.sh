@@ -5,7 +5,8 @@ EOF
 
 for version in 14 15 16 17; do
 cat >> ~/.pgrx/data-${version}/postgresql.conf <<EOF
-shared_preload_libraries = 'pg_mooncake'
+duckdb.allow_community_extensions = true
+shared_preload_libraries = 'pg_duckdb,pg_mooncake'
 wal_level = logical
 EOF
 done

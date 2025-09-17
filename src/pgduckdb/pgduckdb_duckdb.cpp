@@ -2,6 +2,7 @@
 #include "columnstore/columnstore.hpp"
 #include "duckdb.hpp"
 #include "duckdb/common/exception.hpp"
+#include "duckdb/common/local_file_system.hpp"
 #include "duckdb/parser/parsed_data/create_table_function_info.hpp"
 #include "pgduckdb/pgduckdb_guc.h"
 #include "pgmooncake_guc.hpp"
@@ -55,6 +56,20 @@ LoadPgNextval(ClientContext &context) {
 	CreateScalarFunctionInfo info(std::move(pg_nextval));
 	context.RegisterFunction(info);
 }
+
+class LocalCacheFileSystem : public LocalFileSystem {
+public:
+	bool
+	CanHandleFile(const string &fpath) override {
+		return (StringUtil::StartsWith(fpath, x_mooncake_local_cache) && !StringUtil::Contains(fpath, "..")) ||
+		       fpath == "/dev/null";
+	}
+
+	string
+	GetName() const override {
+		return "LocalCacheFileSystem";
+	}
+};
 
 } // namespace duckdb
 
@@ -223,6 +238,8 @@ DuckDBManager::Initialize() {
 	pgduckdb::DuckDBQueryOrThrow(context, "ATTACH DATABASE 'pgmooncake' (TYPE pgduckdb)");
 	pgduckdb::DuckDBQueryOrThrow(context, "ATTACH DATABASE ':memory:' AS pg_temp;");
 
+	duckdb::FileSystem::GetFileSystem(context).RegisterSubSystem(duckdb::make_uniq<duckdb::LocalCacheFileSystem>());
+
 	if (pgduckdb::IsMotherDuckEnabled()) {
 		/*
 		 * Workaround for MotherDuck catalog sync that turns off automatically,
@@ -379,6 +396,10 @@ DuckDBManager::RefreshConnectionState(duckdb::ClientContext &context) {
 	// 	pgduckdb::DuckDBQueryOrThrow(context,
 	// 	                             "SET disabled_filesystems='" + std::string(duckdb_disabled_filesystems) + "'");
 	// }
+
+	if (!mooncake_allow_local_tables) {
+		pgduckdb::DuckDBQueryOrThrow(context, "SET disabled_filesystems=LocalFileSystem");
+	}
 }
 
 /*

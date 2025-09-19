@@ -9,6 +9,8 @@
 </div>
 
 ## Overview
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2FMooncake-Labs%2Fpg_mooncake.svg?type=shield)](https://app.fossa.com/projects/git%2Bgithub.com%2FMooncake-Labs%2Fpg_mooncake?ref=badge_shield)
+
 
 **pg_mooncake** is a Postgres extension that creates a columnstore mirror of your Postgres tables in [Iceberg][iceberg-link], enabling fast analytics queries with sub-second freshness:
 - **Real-time ingestion** powered by [moonlink][moonlink-link] for streaming and batched INSERT/UPDATE/DELETE.
@@ -114,3 +116,7 @@ pg_mooncake is an open-source project maintained by [Mooncake Labs][mooncake-lin
 [slack-shield]: https://img.shields.io/badge/Mooncake%20Devs-purple?logo=slack
 [x-link]: https://x.com/mooncakelabs
 [x-shield]: https://img.shields.io/twitter/url?label=%40mooncakelabs&url=https%3A%2F%2Fx.com%2Fmooncakelabs
+
+
+## License
+[![FOSSA Status](https://app.fossa.com/api/projects/git%2Bgithub.com%2FMooncake-Labs%2Fpg_mooncake.svg?type=large)](https://app.fossa.com/projects/git%2Bgithub.com%2FMooncake-Labs%2Fpg_mooncake?ref=badge_large)

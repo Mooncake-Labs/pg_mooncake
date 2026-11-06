@@ -6,7 +6,8 @@ DUCKDB_VERSION := v2.0.0
 MOONCAKE_BUILD ?= duckdb_mooncake/build/release
 MOONCAKE_REPOSITORY ?= $(shell $(PG_CONFIG) --sharedir)/extension/pg_mooncake
 PACKAGE_DIR ?= $(CURDIR)/target/release/pg_mooncake-$(PG_VERSION)
-PGRX_FLAGS = --no-default-features --features $(PG_VERSION),bgworker --pg-config $(PG_CONFIG)
+PGRX_FEATURES = --no-default-features --features $(PG_VERSION),bgworker
+PGRX_FLAGS = $(PGRX_FEATURES) --pg-config $(PG_CONFIG)
 REGRESS_DB ?= mooncake_regress
 MAKEFLAGS += --no-print-directory
 
@@ -61,7 +62,7 @@ pg_duckdb:
 	@$(MAKE) -C pg_duckdb install -j$(JOBS)
 
 run: pg_duckdb install-duckdb-mooncake
-	@cargo pgrx run $(PGRX_FLAGS)
+	@cargo pgrx run $(PG_VERSION) $(PGRX_FEATURES)
 
 test:
 	mkdir -p target/regress

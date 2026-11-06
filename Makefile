@@ -53,7 +53,7 @@ install: install-duckdb-mooncake
 	@cargo pgrx install --release $(PGRX_FLAGS)
 
 package: duckdb_mooncake
-	@cargo pgrx package --release $(PGRX_FLAGS) --out-dir "$(PACKAGE_DIR)"
+	@cargo pgrx package $(PGRX_FLAGS) --out-dir "$(PACKAGE_DIR)"
 	install -d "$(PACKAGE_DIR)$(MOONCAKE_REPOSITORY)/$(DUCKDB_VERSION)/$$(cat $(MOONCAKE_BUILD)/duckdb_platform_out)"
 	install -m 644 $(MOONCAKE_BUILD)/extension/mooncake/mooncake.duckdb_extension \
 		"$(PACKAGE_DIR)$(MOONCAKE_REPOSITORY)/$(DUCKDB_VERSION)/$$(cat $(MOONCAKE_BUILD)/duckdb_platform_out)/"
@@ -67,5 +67,5 @@ run: pg_duckdb install-duckdb-mooncake
 test:
 	mkdir -p target/regress
 	$(shell $(PG_CONFIG) --pkglibdir)/pgxs/src/test/regress/pg_regress \
-		--inputdir=tests/pg_regress --outputdir=target/regress \
+		--encoding=UTF8 --inputdir=tests/pg_regress --outputdir=target/regress \
 		--load-extension=pg_duckdb --dbname=$(REGRESS_DB) setup sanity partitioned_table

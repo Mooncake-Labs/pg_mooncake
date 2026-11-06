@@ -1,4 +1,3 @@
-/Cargo.lock
 /target/
 /tests/pg_regress/regression.diffs
 /tests/pg_regress/regression.out

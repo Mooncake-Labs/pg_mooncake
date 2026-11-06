@@ -20,9 +20,11 @@
 
 ### Option 1: Docker
 
-For new users, we recommend using the Docker image to get started quickly:
+To build an image containing the dependency versions in this checkout, initialize the submodules and build locally:
 ```bash
-docker run --name mooncake --rm -e POSTGRES_PASSWORD=password mooncakelabs/pg_mooncake
+git submodule update --init --recursive
+docker build -t pg_mooncake .
+docker run --name mooncake --rm -e POSTGRES_PASSWORD=password pg_mooncake
 ```
 
 This will start Postgres with pg_mooncake preinstalled. You can then connect to it using `psql` with the default user `postgres`:
@@ -39,19 +41,29 @@ Then, clone the repository:
 git clone --recurse-submodules https://github.com/Mooncake-Labs/pg_mooncake.git
 ```
 
-To build and install for Postgres versions 14-18, run:
+This source revision uses pg_duckdb 1.2.0, DuckDB 2.0.0, and pgrx/cargo-pgrx 0.16.1. CMake, Ninja, a C++ compiler, libclang and OpenSSL development headers are also required. The checked-in Cargo.lock fixes the Rust dependencies for the declared toolchain.
+
+To build and install for PostgreSQL 18, run:
 ```bash
+cd pg_mooncake
+cargo install --locked cargo-pgrx --version 0.16.1
 cargo pgrx init --pg18=$(which pg_config)   # Replace with your Postgres version
-make pg_duckdb                              # Skip if pg_duckdb is already installed
-make install PG_VERSION=pg18
+make pg_duckdb PG_CONFIG=$(which pg_config) # Skip only if pg_duckdb 1.2.0 is installed
+make install PG_VERSION=pg18 PG_CONFIG=$(which pg_config)
 ```
 
-Finally, add pg_mooncake to `shared_preload_libraries` in your `postgresql.conf` file and enable logical replication:
+The build also installs the matching Mooncake DuckDB extension into `$(pg_config --sharedir)/extension/pg_mooncake`. Configure that local repository, preload the PostgreSQL extensions, and enable logical replication before creating the extension:
 ```ini
 duckdb.allow_community_extensions = true
+duckdb.allow_unsigned_extensions = true
+mooncake.extension_repository = '/path/from/pg_config/sharedir/extension/pg_mooncake'
 shared_preload_libraries = 'pg_duckdb,pg_mooncake'
 wal_level = logical
 ```
+
+Replace the repository path with the absolute path for your PostgreSQL installation. Locally built DuckDB extensions are unsigned. If `mooncake.extension_repository` is unset, installation uses `community` and requires a compatible signed binary to have been published there.
+
+`make package` stages both extensions. `make test` runs the SQL regressions against a configured test server. The `tests/integration.py` script requires psycopg 3 and a disposable database; run it with `--pg-major 18`, restart the test server, then run it again with `--after-restart`.
 
 For a complete walkthrough, refer to our [Dockerfile][dockerfile-link].
 

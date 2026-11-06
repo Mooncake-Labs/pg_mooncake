@@ -24,9 +24,9 @@ bincode = "2"
 moonlink_rpc.path = "moonlink/src/moonlink_rpc"
 moonlink_service = { path = "moonlink/src/moonlink_service", optional = true }
 native-tls = "0.2"
-pgrx = "0.16.1"
-postgres.git = "https://github.com/Mooncake-Labs/rust-postgres.git"
-postgres-native-tls.git = "https://github.com/Mooncake-Labs/rust-postgres.git"
+pgrx = "=0.16.1"
+postgres = { git = "https://github.com/Mooncake-Labs/rust-postgres.git", rev = "14c8e599f5551a8caa96ff5023685a6f537a1455" }
+postgres-native-tls = { git = "https://github.com/Mooncake-Labs/rust-postgres.git", rev = "14c8e599f5551a8caa96ff5023685a6f537a1455" }
 regex = "1"
 tokio = "1.48"
 

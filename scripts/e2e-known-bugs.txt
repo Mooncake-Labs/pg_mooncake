@@ -118,6 +118,31 @@ requires source_drop_restart.drop_orphaned_mirror dropped-source-crash-loop sour
 check source_drop_restart.orphaned_mirror_unlisted dropped-source-crash-loop ^after [0-9]+s, list_tables: .*[Ff]ailed to connect to moonlink
 requires source_drop_restart.orphaned_mirror_unlisted dropped-source-crash-loop source_drop_restart.no_worker_errors_after_restart dropped-source-crash-loop
 
+# ---- sessions that crash the backend (pg_duckdb 7daa8e5) ------------------------------------------
+bug pgduckdb-timezone-hook-crash class=blocking After any DuckDB query in a session, a config reload or a TimeZone reset at transaction end (SET LOCAL ... COMMIT, SET ... ROLLBACK) runs pg_duckdb's TimeZone hook outside a transaction and crashes the backend (crash recovery for the whole server)
+bug mirror-write-multiassign-crash class=blocking UPDATE or INSERT ... ON CONFLICT DO UPDATE of a mirror with SET (...) = (SELECT ...) crashes the backend in pg_duckdb's deparser instead of failing (crash recovery for the whole server)
+
+check config_reload.reload_after_mirror_read pgduckdb-timezone-hook-crash ^backend crashed \(signal 6\); TRAP: failed Assert\("IsTransactionState\(\)"\), File: "relcache\.c", Line: 2052$
+check config_reload.reload_after_mirror_read pgduckdb-timezone-hook-crash ^backend crashed \(signal 11\); TRAP: none$
+check config_reload.set_local_time_zone_commit pgduckdb-timezone-hook-crash ^backend crashed \(signal 6\); TRAP: failed Assert\("IsTransactionState\(\)"\), File: "relcache\.c", Line: 2052$
+check config_reload.set_local_time_zone_commit pgduckdb-timezone-hook-crash ^backend crashed \(signal 11\); TRAP: none$
+check config_reload.set_time_zone_rollback pgduckdb-timezone-hook-crash ^backend crashed \(signal 6\); TRAP: failed Assert\("IsTransactionState\(\)"\), File: "relcache\.c", Line: 2052$
+check config_reload.set_time_zone_rollback pgduckdb-timezone-hook-crash ^backend crashed \(signal 11\); TRAP: none$
+check config_reload.no_postgres_crash_restarts pgduckdb-timezone-hook-crash ^(server process terminated by signal (6|11)|reinitializing) x[0-9]+$
+requires config_reload.no_postgres_crash_restarts pgduckdb-timezone-hook-crash config_reload.reload_after_mirror_read pgduckdb-timezone-hook-crash
+check mirror_writes.update_multiassign_rejected mirror-write-multiassign-crash ^backend crashed \(signal 6\); TRAP: failed Assert\("\(\(Param \*\) expr\)->paramid == \(\(cur_ma_sublink->subLinkId << 16\) \| 1\)"\), File: "src/vendor/pg_ruleutils_17\.c", Line: 7053$
+check mirror_writes.upsert_multiassign_rejected mirror-write-multiassign-crash ^backend crashed \(signal 6\); TRAP: failed Assert\("\(\(Param \*\) expr\)->paramid == \(\(cur_ma_sublink->subLinkId << 16\) \| 1\)"\), File: "src/vendor/pg_ruleutils_17\.c", Line: 7053$
+check mirror_writes.no_postgres_crash_restarts mirror-write-multiassign-crash ^(server process terminated by signal 6|reinitializing) x[0-9]+$
+requires mirror_writes.no_postgres_crash_restarts mirror-write-multiassign-crash mirror_writes.update_multiassign_rejected mirror-write-multiassign-crash
+
+# ---- roles and privileges -------------------------------------------------------------------------
+bug mirror-read-needs-server-file-roles class=limitation A role with duckdb.postgres_role but without pg_read_server_files cannot read mirrors (DuckDB's local file system is disabled for it); documented in the release notes
+bug mirror-privileges-not-enforced class=blocking Postgres privileges are not checked on mirrors: a role that can read mirrors reads every mirror, without a grant and after REVOKE ALL
+
+check roles.postgres_role_reads_granted_mirror mirror-read-needs-server-file-roles ^unexpected output: ERROR: +\(PGDuckDB/Duckdb_ExecCustomScan_Cpp\) Permission Error: File system LocalFileSystem has been disabled by configuration SELECT count\(\*\) FROM t_mc;$
+check roles.mirror_without_grant_denied mirror-privileges-not-enforced ^unexpected output: SELECT \* FROM secret_mc; 42$
+check roles.mirror_after_revoke_all_denied mirror-privileges-not-enforced ^unexpected output: SELECT \* FROM secret_mc; 42$
+
 # ---- any scenario -------------------------------------------------------------------------------
 bug sigterm-handler-off-main-thread class=blocking Intermittent: SIGTERM delivered to a tokio thread of the moonlink bgworker panics in pgrx's signal handler (postgres FFI from another thread); a run without it does not prove it FIXED
 check build.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x

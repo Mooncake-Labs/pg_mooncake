@@ -10,15 +10,18 @@ section 4 for the build and cluster setup.
 `scripts/e2e-smoke.sh` drives an installed pg_mooncake, pg_duckdb and duckdb_mooncake through mirrors on throwaway
 clusters: CDC bursts, every supported column type, unchanged TOAST values, identifiers, persistence after a snapshot
 and after a restart, moonlink being down or hung (and re-creating a mirror whose DROP only warned), source DDL and
-TRUNCATE, a clean restart after a mirror's source table was dropped, a clean restart after a large transaction, and a
-crash (`pg_ctl stop -m immediate`). After the crash, the moonlink background worker must come back without a
+TRUNCATE, a clean restart after a mirror's source table was dropped, sessions that must survive a config reload and
+TimeZone resets after a mirror read, writes to mirrors (which must fail with `cannot modify mirror`), who can read
+mirrors (`duckdb.postgres_role`, the server-file roles, GRANT and REVOKE ALL), a clean restart after a large
+transaction, and a crash (`pg_ctl stop -m immediate`). A statement that crashes a backend (and so restarts every
+Postgres process) fails its check. After the crash, the moonlink background worker must come back without a
 crash loop, `mooncake.list_tables()` must answer, and dropping and re-creating the mirror must give the heap contents.
 It also checks that the duckdb_mooncake that DuckDB loads is built from the submodule commit that the DuckDB
 community extension for DuckDB v1.4.1 uses, with the same moonlink wire protocol.
 
 Requirements: Linux, bash 4 or later, GNU coreutils, procps, and a PostgreSQL install (tested with 17; 18 has not
 been run with this script yet) with pg_duckdb and pg_mooncake installed and the submodules checked out. The script
-checks its tool requirements before it starts. It runs 20 to 35 minutes, creates clusters under `$E2E_DIR` on
+checks its tool requirements before it starts. It runs 25 to 40 minutes, creates clusters under `$E2E_DIR` on
 `$PGPORT`, and stops them when done.
 
 ```bash

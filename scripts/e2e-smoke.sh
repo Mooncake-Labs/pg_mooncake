@@ -3,7 +3,7 @@
 #
 # Usage: scripts/e2e-smoke.sh <pg_major> [scenario ...]
 #   scenarios: build main schema restart_after_drop persist moonlink_down ddl ddl_drop truncate
-#              source_drop_restart big_txn_restart crash
+#              source_drop_restart config_reload mirror_writes roles big_txn_restart crash
 #              (default: all; each on a fresh cluster)
 # Requires Linux, bash >= 4, GNU coreutils (timeout, date), procps (pgrep), diff and find; checked
 # before anything else runs.
@@ -70,7 +70,7 @@ unset LANGUAGE
 
 MAJOR=${1:?pg major}; shift
 ALL_SCENARIOS=(build main schema restart_after_drop persist moonlink_down ddl ddl_drop truncate source_drop_restart
-  big_txn_restart crash)
+  config_reload mirror_writes roles big_txn_restart crash)
 SCENARIOS=("$@"); [[ ${#SCENARIOS[@]} -eq 0 ]] && SCENARIOS=("${ALL_SCENARIOS[@]}")
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 if [[ -z ${PG_PREFIX:-} ]] && command -v pg_config > /dev/null; then PG_PREFIX=$(dirname "$(pg_config --bindir)"); fi
@@ -1109,6 +1109,121 @@ SQL
   if poll_until 30 sql_is "SELECT count(*) FROM pg_replication_slots" 0; then result last_mirror_slot_released 0
   else result last_mirror_slot_released 1 "slots: $(psqlq -c "SELECT string_agg(slot_name || ' active=' || active, ',') FROM pg_replication_slots" 2>&1 | one_line 120)"; fi
 
+  end_cluster
+}
+
+# ================================================================================================
+# Sessions that must survive: a backend crash restarts every Postgres process (crash recovery), so
+# it is never an acceptable outcome of a statement.
+
+# session_case <check> <expected output regex> [psql user] < sql: run the SQL in one session (errors
+# don't stop it). PASS iff no backend crashed and the session's output, stderr included, matches the
+# regex. A crash is reported as "backend crashed (signal <n>); TRAP: <assertion or none>", and the
+# case waits for crash recovery so the next one starts on a running server.
+session_case() {
+  local check=$1 want=$2 user=${3:-$DB_USER} mark crash trap o=$OUT/$1
+  mark=$(wc -l < "$OUT/postgres.log")
+  raw_psql 60 "$o.out" "$o.err" -U "$user" -a
+  crash=$(tail -n +"$((mark + 1))" "$OUT/postgres.log" | sed -nE 's/.*\(PID [0-9]+\) was terminated by signal ([0-9]+).*/\1/p' | head -1)
+  if [[ -n $crash ]]; then
+    trap=$(tail -n +"$((mark + 1))" "$OUT/postgres.log" | grep -m1 '^TRAP: ' | sed -E 's/^TRAP: //; s/, PID: [0-9]+//')
+    wait_ready > /dev/null
+    result "$check" 1 "backend crashed (signal $crash); TRAP: ${trap:-none}"
+  elif cat "$o.out" "$o.err" | tr '\n' ' ' | grep -qE -- "$want"; then
+    result "$check" 0
+  else result "$check" 1 "unexpected output: $(cat "$o.err" "$o.out" | grep -v '^ *$' | one_line 240)"; fi
+}
+
+# A config reload (SIGHUP) and SET LOCAL / SET ... ROLLBACK of TimeZone in a session that has run a
+# DuckDB query (any mirror read): pg_duckdb's TimeZone assign hook then runs outside a transaction.
+scenario_config_reload() {
+  new_cluster config_reload || return
+  run setup <<'SQL'
+CREATE TABLE t (id int PRIMARY KEY);
+INSERT INTO t VALUES (1);
+CALL mooncake.create_table('t_mc', 't');
+SQL
+  fence_wait "$CONVERGE_SECS" > /dev/null
+  session_case reload_after_mirror_read "session survived" <<SQL
+SELECT count(*) FROM t_mc;
+\! "$BIN/pg_ctl" -D "$DATA" reload > /dev/null; sleep 2
+SELECT 1;
+SELECT 'session ' || 'survived';
+SQL
+  session_case set_local_time_zone_commit "session survived" <<'SQL'
+SELECT count(*) FROM t_mc;
+BEGIN;
+SET LOCAL TIME ZONE 'Europe/Paris';
+COMMIT;
+SELECT 'session ' || 'survived';
+SQL
+  session_case set_time_zone_rollback "session survived" <<'SQL'
+SELECT count(*) FROM t_mc;
+BEGIN;
+SET TIME ZONE 'UTC';
+ROLLBACK;
+SELECT 'session ' || 'survived';
+SQL
+  end_cluster
+}
+
+# Writes to a mirror must fail with pg_mooncake's error and leave the server running, including
+# the multiple-assignment forms that pg_duckdb's deparser can't handle.
+scenario_mirror_writes() {
+  new_cluster mirror_writes || return
+  run setup <<'SQL'
+CREATE TABLE ups (a int PRIMARY KEY, b text);
+INSERT INTO ups VALUES (1, 'Foo');
+CALL mooncake.create_table('ups_mc', 'ups');
+SQL
+  session_case update_multiassign_rejected "ERROR: +cannot modify mirror" <<'SQL'
+UPDATE ups_mc SET (b, a) = (SELECT 'z', 1);
+SQL
+  session_case upsert_multiassign_rejected "ERROR: +cannot modify mirror" <<'SQL'
+INSERT INTO ups_mc VALUES (1, 'Bar') ON CONFLICT (a) DO UPDATE SET (b, a) = (SELECT 'q', 1);
+SQL
+  compare source_unchanged ups ups_mc
+  end_cluster
+}
+
+# Who can read mirrors. A role with only duckdb.postgres_role should read the mirrors it was
+# granted; with pg_read_server_files and pg_write_server_files it can. Postgres privileges must
+# hold for mirrors as for tables: no read without a grant, none after REVOKE ALL.
+scenario_roles() {
+  new_cluster roles || return
+  run setup <<'SQL'
+CREATE ROLE e2e_app LOGIN;
+CREATE ROLE e2e_readers;
+GRANT e2e_readers TO e2e_app;
+CREATE TABLE t (id int PRIMARY KEY);
+INSERT INTO t VALUES (1), (2);
+CALL mooncake.create_table('t_mc', 't');
+GRANT SELECT ON t_mc TO e2e_app;
+CREATE TABLE secret (id int PRIMARY KEY);
+INSERT INTO secret VALUES (42);
+CALL mooncake.create_table('secret_mc', 'secret');
+SQL
+  fence_wait "$CONVERGE_SECS" > /dev/null
+  echo "duckdb.postgres_role = 'e2e_readers'" >> "$DATA/postgresql.conf"
+  stop fast clean_stop_before_restart; start
+  if wait_ready; then result restart_ready 0; else result restart_ready 1 "mooncake.list_tables() not answering within 60s"; fi
+  session_case postgres_role_reads_granted_mirror "^ *SELECT count\(\*\) FROM t_mc; +2 " e2e_app <<'SQL'
+SELECT count(*) FROM t_mc;
+SQL
+  run grant_server_file_roles -c "GRANT pg_read_server_files, pg_write_server_files TO e2e_app"
+  session_case server_file_roles_read_granted_mirror "^ *SELECT count\(\*\) FROM t_mc; +2 " e2e_app <<'SQL'
+SELECT count(*) FROM t_mc;
+SQL
+  session_case heap_without_grant_denied "ERROR: +permission denied for table secret" e2e_app <<'SQL'
+SELECT * FROM secret;
+SQL
+  session_case mirror_without_grant_denied "ERROR: +permission denied for table secret_mc" e2e_app <<'SQL'
+SELECT * FROM secret_mc;
+SQL
+  run revoke_all -c "REVOKE ALL ON secret_mc FROM PUBLIC" -c "REVOKE ALL ON secret_mc FROM e2e_app"
+  session_case mirror_after_revoke_all_denied "ERROR: +permission denied for table secret_mc" e2e_app <<'SQL'
+SELECT * FROM secret_mc;
+SQL
   end_cluster
 }
 

@@ -135,7 +135,12 @@ load_known_bugs() {
         if (( rc == 2 )); then echo "$KNOWN_BUGS:$n: invalid regex: $rest" >&2; exit 2; fi
         # A regex that matches the empty string, or arbitrary short text, matches every signature.
         if (( rc == 0 )); then echo "$KNOWN_BUGS:$n: regex matches the empty string: $rest" >&2; exit 2; fi
-        if [[ x =~ $rest || "a b" =~ $rest ]]; then echo "$KNOWN_BUGS:$n: regex matches arbitrary text: $rest" >&2; exit 2; fi
+        # ... and so does one that matches these: canaries shaped like signatures, and plain text.
+        if [[ x =~ $rest || "a b" =~ $rest || "zq canary x1" =~ $rest || "zq/canary.rs:1 x1" =~ $rest ||
+              "x[0-9]: /a/b.rs:1 q9 [z]" =~ $rest ||
+              "the quick brown fox jumps over the lazy dog 0123456789" =~ $rest ]]; then
+          echo "$KNOWN_BUGS:$n: regex matches arbitrary text: $rest" >&2; exit 2
+        fi
         KNOWN_RULES[$a]+="$b"$'\t'"$rest"$'\n' ;;
       requires)
         read -r kind a b other other_bug extra <<< "$line"
@@ -425,13 +430,29 @@ worker_exits() {
       print how
     }' "$OUT/postgres.log" 2>/dev/null | sort | uniq -c | awk '{c = $1; $1 = ""; print substr($0, 2) " x" c}'
 }
-# crash_restarts: one "<process kind> terminated by signal <n> x<count>" per kind of Postgres process
-# crash, plus "reinitializing x<count>" for each crash-restart of the whole server.
+# A crash of a Postgres process other than a background worker, as the postmaster logs it: "<kind>
+# (PID n) was terminated by signal n" or "<kind> (PID n) exited with exit code n". PostgreSQL 17 and
+# older call every backend "server process" (and aux processes "<name> process"); 18 names the
+# backend type ("client backend", "walsender", "autovacuum worker", ...). Background workers
+# ('background worker "<name>"') have their own checks.
+CRASH_RE='LOG: +[a-zA-Z][a-zA-Z ]* \(PID [0-9]+\) (was terminated by signal [0-9]+|exited with exit code [0-9]+)'
+# CRASH_KIND_SED: the process kind at the start of a line, in PostgreSQL 17 terms, so signatures are
+# the same on every major: PG18 backend types become "server process", and aux process names lose
+# their " process" suffix ("checkpointer process" and "checkpointer" both become "checkpointer").
+CRASH_KIND_SED='
+  s/^(client backend|walsender|autovacuum worker|slotsync worker|standalone backend) /server process /
+  /^server process /!s/^([a-zA-Z ]+) process /\1 /'
+# crash_restarts: one "<process kind> terminated by signal <n> x<count>" (background workers
+# included) or "<process kind> exited with exit code <n> x<count>" (not background workers, whose
+# exits bgworker_no_abnormal_exits checks) per kind of crash, "reinitializing
+# x<count>" for each crash-restart of the whole server, and "abnormal shutdown x<count>" when a crash
+# during a stop ends it without a restart (pg_ctl stop then still returns 0).
 crash_restarts() {
   sed -nE 's/.*LOG: +(.*) \(PID [0-9]+\) was terminated by signal ([0-9]+).*/\1 terminated by signal \2/p;
-           s/.*LOG: +server process \(PID [0-9]+\) exited with exit code ([0-9]+).*/server process exited with exit code \1/p;
-           s/.*all server processes terminated; reinitializing.*/reinitializing/p' "$OUT/postgres.log" 2>/dev/null |
-    sort | uniq -c | awk '{c = $1; $1 = ""; print substr($0, 2) " x" c}'
+           s/.*LOG: +([a-zA-Z][a-zA-Z ]*) \(PID [0-9]+\) exited with exit code ([0-9]+).*/\1 exited with exit code \2/p;
+           s/.*all server processes terminated; reinitializing.*/reinitializing/p;
+           s/.*LOG: +abnormal database system shutdown.*/abnormal shutdown/p' "$OUT/postgres.log" 2>/dev/null |
+    sed -E "$CRASH_KIND_SED" | sort | uniq -c | awk '{c = $1; $1 = ""; print substr($0, 2) " x" c}'
 }
 
 # no_crash_loop <check> [panic mark] [log line mark]: over a 20s window the bgworker pid is stable and
@@ -478,10 +499,14 @@ still_running() {
   pm=$(head -1 "$DATA/postmaster.pid" 2>/dev/null)
   [[ $pm =~ ^[0-9]+$ ]] || { echo "unknown (no postmaster.pid)"; return; }
   local titles ws
-  titles=$(ps -o args= --ppid "$pm" 2>/dev/null | sed -E 's/^postgres: ([^ ]+: )?//; s/^(moonlink)( .*)?$/\1/')
-  ws=$(grep -cE '^walsender( |$)' <<< "$titles")
-  r=$(grep -vE '^(checkpointer|background writer|walwriter|logger|archiver|startup|walsummarizer|io worker|walsender)( |$)' <<< "$titles" |
-    grep -v '^$' | sort -u | paste -sd, -)
+  titles=$(ps -o args= --ppid "$pm" 2>/dev/null | sed -E 's/ +$//; s/^postgres: ([^ ]+: )?//; s/^(moonlink)( .*)?$/\1/')
+  # A walsender's title is "walsender <role> <db> <address> ..." and auxiliary processes have fixed
+  # titles; a client backend's is "<role> <db> <address> ...", so a role named like one of them
+  # still shows up.
+  local wal_re='^walsender [^ ]+ [^ ]+ (\[local\]|[^ ]*\([0-9]+\)|[0-9a-fA-F.:]+)( |$)'
+  local aux_re='^(checkpointer|background writer|walwriter|logger|archiver|startup( .*)?|walsummarizer|io worker [0-9]+|autovacuum launcher)$'
+  ws=$(grep -cE "$wal_re" <<< "$titles")
+  r=$(grep -vE "$wal_re" <<< "$titles" | grep -vE "$aux_re" | grep -v '^$' | sort -u | paste -sd, -)
   echo "${r:-none}; walsenders: $ws"
 }
 # moonlink_saw_sigterm <log line>: yes if the moonlink service logged that it got SIGTERM after that
@@ -571,9 +596,10 @@ end_cluster() {
   else result bgworker_no_abnormal_exits 0; fi
   # A crashed backend makes the postmaster restart every process; it then stays up, so check the log.
   crashes=$(crash_restarts)
-  # Crashes of server processes that no session case reported (the session checks count theirs).
+  # Crashes (of any kind but background workers) that no session case reported; the session checks
+  # count theirs.
   if [[ -n $crashes ]]; then
-    local total; total=$(grep -acE "$SERVER_CRASH_RE" "$OUT/postgres.log")
+    local total; total=$(grep -acE "$CRASH_RE" "$OUT/postgres.log")
     crashes+=$'\n'"server process crashes not reported by a session check x$((total - SESSION_CRASHES))"
   fi
   if [[ -n $crashes ]]; then
@@ -1174,28 +1200,28 @@ SQL
 # Sessions that must survive: a backend crash restarts every Postgres process (crash recovery), so
 # it is never an acceptable outcome of a statement.
 
-# session_case <check> <stdout regex> <stderr regex> [psql user] < sql: run the SQL in one session
-# (errors don't stop it; statements are echoed). PASS iff no backend crashed and the session's stdout
-# and stderr (each on one line) match the regexes (an empty stderr regex means stderr must be empty). A crash (a "server process ... was terminated by signal" line, or the session losing its
-# connection) is reported as
-#   backend crashed (server process, signal <n>, cassert=<yes|no>) running [<statement>]; TRAP: <...>
-# with the statement Postgres names as running and the assertion of a cassert build (or "none").
-# After a lost connection the case waits for crash recovery, so the next case starts on a running
-# server.
-# A server process crash, as the postmaster logs it before it restarts every process.
-SERVER_CRASH_RE='LOG: +server process \(PID [0-9]+\) (was terminated by signal [0-9]+|exited with exit code [0-9]+)'
-# crash_detail <log line>: the first server process crash after that line, as "backend crashed
-# (server process, <signal n | exit code n>, cassert=<yes|no|unknown>) running [<statement>]; TRAP:
-# <assertion or none>", or nothing.
+# crash_detail <log line>: the first crash (CRASH_RE) after that line, as session_case below reports
+# it, or nothing.
 crash_detail() {
-  local log how trap stmt
+  local log line kind how trap stmt
   log=$(tail -n +"$(( $1 + 1 ))" "$OUT/postgres.log")
-  how=$(grep -aE -m1 "$SERVER_CRASH_RE" <<< "$log" | sed -E 's/.*(was terminated by signal|exited with exit code) ([0-9]+).*/\1 \2/; s/^was terminated by //; s/^exited with //')
-  [[ -n $how ]] || return 0
+  line=$(grep -aE -m1 "$CRASH_RE" <<< "$log")
+  [[ -n $line ]] || return 0
+  kind=$(sed -E 's/.*LOG: +([a-zA-Z][a-zA-Z ]*) \(PID .*/\1 /' <<< "$line" | sed -E "$CRASH_KIND_SED" | sed 's/ $//')
+  how=$(sed -E 's/.*(was terminated by signal|exited with exit code) ([0-9]+).*/\1 \2/; s/^was terminated by //; s/^exited with //' <<< "$line")
   trap=$(grep -a -m1 '^TRAP: ' <<< "$log" | sed -E 's/^TRAP: //; s/, PID: [0-9]+//')
   stmt=$(grep -aE -m1 'DETAIL: +Failed process was running: ' <<< "$log" | sed -E 's/.*Failed process was running: +//; s/[; ]+$//')
-  echo "backend crashed (server process, $how, cassert=$(pg_cassert)) running [${stmt:-unknown}]; TRAP: ${trap:-none}"
+  echo "backend crashed ($kind, $how, cassert=$(pg_cassert)) running [${stmt:-unknown}]; TRAP: ${trap:-none}"
 }
+# session_case <check> <stdout regex> <stderr regex> [psql user] < sql: run the SQL in one session
+# (errors don't stop it; statements are echoed). PASS iff no backend crashed and the session's
+# stdout and stderr (each on one line) match the regexes (an empty stderr regex means stderr must be
+# empty). A crash (a CRASH_RE line, or the session losing its connection) is reported as
+#   backend crashed (<kind>, <signal n | exit code n>, cassert=<yes|no|unknown>) running [<statement>];
+#   TRAP: <assertion or none>
+# with the process kind in PostgreSQL 17 terms ("server process" for a backend), the statement
+# Postgres names as running and the assertion of a cassert build. After a lost connection the case
+# waits for crash recovery, so the next case starts on a running server.
 SESSION_CRASHES=0
 session_case() {
   local check=$1 want_out=$2 want_err=$3 user=${4:-$DB_USER} mark detail t0 out err o=$OUT/$1 lost=""
@@ -1213,7 +1239,7 @@ session_case() {
     if [[ -n $detail ]]; then
       SESSION_CRASHES=$((SESSION_CRASHES + 1))
       result "$check" 1 "$detail"
-    else result "$check" 1 "session lost its connection, but no server process crash was logged: $(one_line 200 < "$o.err")"; fi
+    else result "$check" 1 "session lost its connection, but no crash was logged: $(one_line 200 < "$o.err")"; fi
     return
   fi
   out=$(tr '\n' ' ' < "$o.out" | sed -E 's/ +$//'); err=$(tr '\n' ' ' < "$o.err" | sed -E 's/ +$//')

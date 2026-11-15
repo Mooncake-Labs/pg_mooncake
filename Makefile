@@ -22,8 +22,12 @@ help:
 clean:
 	@cargo clean
 
+# DuckDB version duckdb_mooncake is built for; it must equal pg_duckdb's (DUCKDB_VERSION in pg_duckdb/Makefile), which
+# CI checks.
+DUCKDB_VERSION := v1.4.1
+
 duckdb_mooncake:
-	@$(MAKE) -C duckdb_mooncake GEN=ninja OVERRIDE_GIT_DESCRIBE=v1.4.1
+	@$(MAKE) -C duckdb_mooncake GEN=ninja OVERRIDE_GIT_DESCRIBE=$(DUCKDB_VERSION)
 
 format:
 	@cargo fmt

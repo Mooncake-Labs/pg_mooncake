@@ -27,7 +27,8 @@ libc = "0.2"
 moonlink_rpc.path = "moonlink/src/moonlink_rpc"
 moonlink_service = { path = "moonlink/src/moonlink_service", optional = true }
 native-tls = "0.2"
-pgrx = "0.16.1"
+# Exact: cargo-pgrx (installed at this version by CI and the README) must match the pgrx crate.
+pgrx = "=0.16.1"
 postgres.git = "https://github.com/Mooncake-Labs/rust-postgres.git"
 postgres-native-tls.git = "https://github.com/Mooncake-Labs/rust-postgres.git"
 tokio = "1.48"

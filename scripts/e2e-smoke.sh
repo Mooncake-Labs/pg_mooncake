@@ -12,12 +12,14 @@
 #   BUILD <key>=<value>                        what is under test (binaries, hashes, commits)
 #   RESULT <scenario.check> <status> [detail]  status: PASS | FAIL | XFAIL(<bugs>) | XPASS(<bugs>) | SKIP
 #   INFO <scenario.check> ...                  reported only, never part of the gate
-#   KNOWN <bug> FIXED|OPEN|UNKNOWN|NOT-RUN|NOT-SEEN <check>=<status>,... [ids=<ids>]
+#   KNOWN <bug> FIXED|OPEN|UNKNOWN|NOT-RUN|NOT-SEEN <check>=<status>,... class=blocking|limitation [ids=<ids>]
 #   SUMMARY e2e-smoke pg<major> scenarios=<a,b,...> pass=N xpass=N fail=N xfail=N skip=N
-#   GATE e2e-smoke PASS|FAIL|INCOMPLETE        (last line)
-# Every RESULT line is a gate check. GATE is FAIL (exit 1) if any RESULT is FAIL, XFAIL or SKIP,
-# INCOMPLETE (exit 3) if everything else passed but not every scenario ran, and PASS (exit 0)
-# otherwise. SKIP means a check could not run, e.g. because postgres died.
+#   BLOCKING e2e-smoke <n> [<bug>,...]          blocking known bugs listed (whether or not seen)
+#   GATE e2e-smoke PASS|FAIL|BLOCKED|INCOMPLETE  (last line)
+# Every RESULT line is a gate check. GATE is FAIL (exit 1) if any RESULT is FAIL, XFAIL or SKIP;
+# otherwise BLOCKED (exit 4) while the known-bugs file lists any bug of class blocking, even one
+# this run did not hit; otherwise INCOMPLETE (exit 3) if not every scenario ran, and PASS (exit 0).
+# SKIP means a check could not run, e.g. because postgres died.
 #
 # Known bugs are an optional overlay (KNOWN_BUGS=<file>, default scripts/e2e-known-bugs.txt if it
 # exists) that lists, per check, a bug and a regex for that bug's failure signature. A listed check
@@ -96,7 +98,7 @@ pg_major_found=$("$BIN/pg_config" --version | sed -E 's/^PostgreSQL ([0-9]+).*/\
 # reports several (panic locations, process exits). A "requires" line makes the check's rule for
 # <bug> count only if the earlier check failed with <bug2>, for failures whose text alone doesn't
 # identify the cause (a hung DROP, a missing fence mirror).
-declare -A BUG_DESC=() KNOWN_RULES=() BUG_IDS=() RULE_REQUIRES=()
+declare -A BUG_DESC=() BUG_CLASS=() KNOWN_RULES=() BUG_IDS=() RULE_REQUIRES=()
 load_known_bugs() {
   local line kind a b rest other other_bug extra n=0
   if [[ -f $KNOWN_BUGS ]]; then
@@ -105,7 +107,11 @@ load_known_bugs() {
       [[ $line =~ ^[[:space:]]*(#|$) ]] && continue
       read -r kind a b rest <<< "$line"
       case $kind in
-        bug) BUG_DESC[$a]="$b${rest:+ $rest}" ;;
+        bug)
+          if [[ $b != blocking && $b != limitation || -z $rest ]]; then
+            echo "$KNOWN_BUGS:$n: expected 'bug <name> blocking|limitation <description>'" >&2; exit 2
+          fi
+          BUG_CLASS[$a]=$b; BUG_DESC[$a]=$rest ;;
         check)
           if [[ -z $rest || -z ${BUG_DESC[$b]:-} ]]; then
             echo "$KNOWN_BUGS:$n: expected 'check <check> <declared bug> <regex>'" >&2; exit 2
@@ -1274,7 +1280,7 @@ known_summary() {
       if [[ ${BUG_DESC[$bug]:-} == Intermittent:* ]]; then verdict=NOT-SEEN; else verdict=FIXED; fi
     elif (( n_notrun == n_all )); then verdict=NOT-RUN
     else verdict=UNKNOWN; fi
-    echo "KNOWN $bug $verdict $list${BUG_IDS[$bug]:+ ids=${BUG_IDS[$bug]}}"
+    echo "KNOWN $bug $verdict $list class=${BUG_CLASS[$bug]}${BUG_IDS[$bug]:+ ids=${BUG_IDS[$bug]}}"
   done
 }
 
@@ -1289,9 +1295,14 @@ main() {
   scen_list=$(IFS=,; echo "${SCENARIOS[*]}")
   counts="pass=${COUNT[pass]} xpass=${COUNT[xpass]} fail=${COUNT[fail]} xfail=${COUNT[xfail]} skip=${COUNT[skip]}"
   echo "SUMMARY e2e-smoke pg$MAJOR scenarios=$scen_list $counts"
+  local blocking
+  blocking=$(for s in "${!BUG_CLASS[@]}"; do [[ ${BUG_CLASS[$s]} == blocking ]] && echo "$s"; done | sort | paste -sd, -)
+  echo "BLOCKING e2e-smoke $( [[ -z $blocking ]] && echo 0 || echo "$(tr ',' '\n' <<< "$blocking" | wc -l) $blocking")"
   if (( COUNT[fail] + COUNT[xfail] + COUNT[skip] > 0 || COUNT[pass] + COUNT[xpass] == 0 )); then
     echo "GATE e2e-smoke FAIL"; return 1
   fi
+  # Release policy: a listed blocking bug must be fixed, even if this run did not hit it.
+  if [[ -n $blocking ]]; then echo "GATE e2e-smoke BLOCKED"; return 4; fi
   if (( ! complete )); then echo "GATE e2e-smoke INCOMPLETE"; return 3; fi
   echo "GATE e2e-smoke PASS"
 }

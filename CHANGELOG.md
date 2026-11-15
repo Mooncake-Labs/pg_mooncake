@@ -37,6 +37,8 @@ upgrading**; see [Upgrading from 0.2](README.md#upgrading-from-02).
   works and reads the new source: `mooncake.create_table` first removes the table moonlink kept under that name.
   Before, it failed, and the new mirror table returned the old mirror's rows.
 - A `mooncake.create_table` that moonlink rejects no longer leaves the empty mirror table behind.
+- Building from source with the Rust toolchain pinned in `rust-toolchain.toml` works again: Cargo now prefers
+  dependency versions that support it.
 - Dropping a mirror created by 0.2 whose name needs quoting (mixed case, `$`) also removes it from moonlink.
 <!-- RC: add the final moonlink fix list (replication, recovery, data-type and read-path fixes) with upstream PR links. -->
 

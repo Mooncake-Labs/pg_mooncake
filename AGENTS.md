@@ -152,7 +152,9 @@ and set `duckdb.allow_unsigned_extensions = true` and `duckdb.autoinstall_known_
 4. **Replication connections are keyed by `src_uri`** (`moonlink_connectors/src/replication_manager.rs`). The slot
    `moonlink_slot_<db>` and publication `moonlink_pub` are dropped when the last mirror of that `src_uri` is dropped.
 5. **No committed `Cargo.lock`** (`/Cargo.lock` is gitignored): the moonlink dependency graph resolves fresh, and
-   `postgres`/`postgres-native-tls` track the HEAD of a git branch.
+   `postgres`/`postgres-native-tls` track the HEAD of a git branch. `.cargo/config.toml` makes the resolver prefer
+   versions that support `rust-version` in `Cargo.toml`; keep that equal to the `rust-toolchain.toml` channel, or a fresh
+   resolution picks crates the pinned compiler cannot build.
 6. **New regress test without an expected file:** `cargo pgrx regress` prompts "Accept [Y, n]?" and panics without a
    terminal. `--auto` accepts new output **and overwrites failing expected files**. Prefer: create an empty
    `expected/<name>.out`, run `make test`, review `tests/pg_regress/results/<name>.out`, then copy it.

@@ -2,6 +2,8 @@
 name = "pg_mooncake"
 version = "0.3.0"
 edition = "2021"
+# Keep in sync with rust-toolchain.toml; .cargo/config.toml makes Cargo resolve dependencies that build with it.
+rust-version = "1.88"
 
 [lib]
 crate-type = ["cdylib", "lib"]

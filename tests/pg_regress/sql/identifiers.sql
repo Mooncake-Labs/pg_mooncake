@@ -1,0 +1,15 @@
+CREATE SCHEMA "Mixed Schema";
+CREATE TABLE "Mixed Schema"."Src Table" (id int PRIMARY KEY, "Val" text);
+CALL mooncake.create_table('"Mixed Schema"."Mirror ""Q"""', '"Mixed Schema"."Src Table"');
+INSERT INTO "Mixed Schema"."Src Table" VALUES (1, 'a'), (2, 'b');
+DELETE FROM "Mixed Schema"."Src Table" WHERE id = 1;
+SELECT * FROM "Mixed Schema"."Mirror ""Q""";
+SELECT "table" FROM mooncake.list_tables() WHERE "table" LIKE 'Mixed Schema.%';
+CREATE TABLE src$1 (id int PRIMARY KEY);
+CALL mooncake.create_table('Mc$1', 'SRC$1');
+INSERT INTO src$1 VALUES (1);
+SELECT * FROM mc$1;
+DROP TABLE "Mixed Schema"."Mirror ""Q""", mc$1;
+SELECT count(*) FROM mooncake.list_tables();
+DROP TABLE "Mixed Schema"."Src Table", src$1;
+DROP SCHEMA "Mixed Schema";

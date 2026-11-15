@@ -1,4 +1,5 @@
-use crate::utils::{block_on, get_stream, DATABASE};
+use crate::drop_tracking::take_dropped_mirror;
+use crate::utils::{rpc, DATABASE};
 use core::ffi::CStr;
 use native_tls::TlsConnector;
 use pgrx::{direct_function_call, prelude::*};
@@ -10,15 +11,10 @@ use regex::Regex;
 CREATE PROCEDURE mooncake.create_snapshot(dst text) LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
 ")]
 fn create_snapshot(dst: &str) {
-    let dst = parse_table(dst);
+    let dst = parse_table(dst).moonlink_name();
     let lsn = unsafe { pgrx::pg_sys::XactLastCommitEnd };
-    block_on(moonlink_rpc::create_snapshot(
-        &mut *get_stream(),
-        DATABASE.clone(),
-        dst,
-        lsn,
-    ))
-    .expect("create_snapshot failed");
+    rpc!(moonlink_rpc::create_snapshot, DATABASE.clone(), dst, lsn)
+        .unwrap_or_else(|e| error!("mooncake.create_snapshot failed: {e}"));
 }
 
 #[pg_extern(sql = "
@@ -29,17 +25,18 @@ fn create_table(dst: &str, src: &str, src_uri: Option<&str>, table_config: Optio
     let src = parse_table(src);
     let dst_uri = get_loopback_uri();
     let src_uri = src_uri.unwrap_or(&dst_uri).to_owned();
-    create_mooncake_table(&dst, &dst_uri, &src, &src_uri);
+    create_mooncake_table(&dst.quoted(), &dst_uri, &src.quoted(), &src_uri);
+    let (dst, src) = (dst.moonlink_name(), src.moonlink_name());
     let table_config = table_config.unwrap_or("{}").to_owned();
-    block_on(moonlink_rpc::create_table(
-        &mut *get_stream(),
+    rpc!(
+        moonlink_rpc::create_table,
         DATABASE.clone(),
         dst,
         src,
         src_uri,
-        table_config,
-    ))
-    .expect("create_table failed");
+        table_config
+    )
+    .unwrap_or_else(|e| error!("mooncake.create_table failed: {e}"));
 }
 
 #[pg_extern(sql = "
@@ -48,37 +45,49 @@ CREATE EVENT TRIGGER mooncake_drop_trigger ON sql_drop EXECUTE FUNCTION mooncake
 ")]
 fn drop_trigger() {
     Spi::connect(|client| {
-        let get_dropped_tables_query =
-            "SELECT quote_ident(schema_name) || '.' || quote_ident(object_name) FROM pg_event_trigger_dropped_objects() WHERE object_type = 'table'";
+        let get_dropped_tables_query = "SELECT objid::int8 FROM pg_event_trigger_dropped_objects() WHERE object_type = 'table'";
         let dropped_tables = client
             .select(get_dropped_tables_query, None, &[])
             .expect("error reading dropped objects");
         for dropped_table in dropped_tables {
-            let table: String = dropped_table
+            let relid: i64 = dropped_table
                 .get(1)
                 .expect("error reading dropped table")
                 .expect("error reading dropped table");
+            // Only mirrors: dropping other tables must never depend on moonlink being reachable.
+            let Some(table) = take_dropped_mirror(relid as u32) else {
+                continue;
+            };
             {
                 let table = table.clone();
                 pgrx::register_xact_callback(pgrx::PgXactCallbackEvent::PreCommit, move || {
-                    block_on(moonlink_rpc::drop_table(
-                        &mut *get_stream(),
-                        DATABASE.clone(),
-                        table,
-                    ))
-                    .expect("drop_table failed");
+                    drop_moonlink_table(table)
                 });
             }
             pgrx::register_xact_callback(pgrx::PgXactCallbackEvent::ParallelPreCommit, move || {
-                block_on(moonlink_rpc::drop_table(
-                    &mut *get_stream(),
-                    DATABASE.clone(),
-                    table,
-                ))
-                .expect("drop_table failed");
+                drop_moonlink_table(table)
             });
         }
     });
+}
+
+/// Bounded so that a hung moonlink cannot block DROP (the dropping transaction holds its locks meanwhile).
+const DROP_TABLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+
+/// Dropping a mirror always succeeds in Postgres, so "drop and re-create the mirror" keeps working while
+/// moonlink is down or the table is in an error state. A failure only leaves moonlink-side state behind.
+fn drop_moonlink_table(table: String) {
+    if let Err(e) = rpc!(
+        timeout = DROP_TABLE_TIMEOUT;
+        moonlink_rpc::drop_table, DATABASE.clone(), table.clone()
+    ) {
+        warning!(
+            "mirror {table} was dropped, but moonlink did not drop it: {e}\n\
+             HINT: moonlink may still hold the mirror's files and replication (see mooncake.list_tables()). \
+             Once moonlink is reachable, clean up with: CREATE TABLE <same name> (id int) USING mooncake; \
+             DROP TABLE <same name>;"
+        );
+    }
 }
 
 #[pg_extern(sql = "
@@ -98,8 +107,8 @@ fn list_tables() -> TableIterator<
         name!(iceberg_warehouse_location, String),
     ),
 > {
-    let tables =
-        block_on(moonlink_rpc::list_tables(&mut *get_stream())).expect("list_tables failed");
+    let tables = rpc!(moonlink_rpc::list_tables)
+        .unwrap_or_else(|e| error!("mooncake.list_tables failed: {e}"));
     TableIterator::new(
         tables
             .into_iter()
@@ -116,50 +125,67 @@ fn list_tables() -> TableIterator<
 }
 
 #[pg_extern(sql = "
-CREATE PROCEDURE mooncake.load_files(dst text, files text[]) LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
-")]
-fn load_files(dst: &str, files: Vec<String>) {
-    let dst = parse_table(dst);
-    block_on(moonlink_rpc::load_files(
-        &mut *get_stream(),
-        DATABASE.clone(),
-        dst,
-        files,
-    ))
-    .expect("load_files failed");
-}
-
-#[pg_extern(sql = "
 CREATE PROCEDURE mooncake.optimize_table(dst text, mode text) LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
 ")]
 fn optimize_table(dst: &str, mode: &str) {
-    let dst = parse_table(dst);
-    block_on(moonlink_rpc::optimize_table(
-        &mut *get_stream(),
+    let dst = parse_table(dst).moonlink_name();
+    rpc!(
+        moonlink_rpc::optimize_table,
         DATABASE.clone(),
         dst,
-        mode.to_owned(),
-    ))
-    .expect("optimize_table failed");
+        mode.to_owned()
+    )
+    .unwrap_or_else(|e| error!("mooncake.optimize_table failed: {e}"));
 }
 
-fn parse_table(table: &str) -> String {
+struct TableName {
+    schema: String,
+    table: String,
+}
+
+impl TableName {
+    /// Unquoted `schema.table`: the key moonlink registers the table under. duckdb_mooncake looks tables up
+    /// by unquoted `schema.table` too, and moonlink's Postgres connector splits source names on '.'.
+    fn moonlink_name(&self) -> String {
+        format!("{}.{}", self.schema, self.table)
+    }
+
+    /// Quoted form for SQL that pg_mooncake runs itself.
+    fn quoted(&self) -> String {
+        spi::quote_qualified_identifier(&self.schema, &self.table)
+    }
+}
+
+fn parse_table(input: &str) -> TableName {
     // https://www.postgresql.org/docs/current/sql-syntax-lexical.html#SQL-SYNTAX-IDENTIFIERS
     let ident = r#"([\w$]+|"([^"]|"")+")"#;
     let pattern = format!(r#"^((?<schema>{ident})\.)?(?<table>{ident})$"#);
     let re = Regex::new(&pattern).unwrap();
     let caps = re
-        .captures(table)
-        .unwrap_or_else(|| panic!("invalid input: {table}"));
+        .captures(input)
+        .unwrap_or_else(|| panic!("invalid input: {input}"));
     let schema = caps.name("schema").map_or_else(
         || {
             let schema: &CStr =
                 unsafe { direct_function_call(pg_sys::current_schema, &[]).unwrap() };
-            schema.to_str().unwrap()
+            schema.to_str().unwrap().to_owned()
         },
-        |m| m.as_str(),
+        |m| normalize_identifier(m.as_str()),
     );
-    spi::quote_qualified_identifier(schema, &caps["table"])
+    let table = normalize_identifier(&caps["table"]);
+    if schema.contains('.') || table.contains('.') {
+        panic!("identifiers containing '.' are not supported: {input}");
+    }
+    TableName { schema, table }
+}
+
+/// Postgres identifier semantics: quoted identifiers keep their case (with `""` unescaped), unquoted
+/// identifiers are folded to lower case.
+fn normalize_identifier(ident: &str) -> String {
+    match ident.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
+        Some(quoted) => quoted.replace("\"\"", "\""),
+        None => ident.to_lowercase(),
+    }
 }
 
 fn get_loopback_uri() -> String {

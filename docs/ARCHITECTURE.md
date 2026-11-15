@@ -41,8 +41,9 @@ DuckDB v1.4.1. Statements tagged **[pins]** must be re-verified when a submodule
    applies the deletion vectors and positional deletes, and finally sends `ScanTableEnd`. Rows not yet flushed are
    materialized as temp parquet files for the duration of the scan.
 6. **Dropping a mirror**: an `object_access_hook` notes that the dropped relation is a mirror, then the `sql_drop`
-   event trigger sends RPC `DropTable` at pre-commit (30 s timeout). A failure becomes a WARNING and the DROP still commits. moonlink removes the table's
-   files, its sqlite row, and the source's publication membership. Replication connections are keyed by `src_uri`: once
+   event trigger queues it, and a pre-commit transaction callback sends RPC `DropTable` if the drop is still in effect
+   (one 30 s deadline for all drops of the transaction). A failure becomes a WARNING and the DROP still commits.
+   moonlink removes the table's files, its sqlite row, and the source's publication membership. Replication connections are keyed by `src_uri`: once
    the last mirror of a `src_uri` is gone, moonlink drops that slot and publication.
 
 The mirror's own PG table (`USING mooncake`) holds no data. Its AM callbacks are `unimplemented!()` except the ones
@@ -57,7 +58,7 @@ on the wire). Response = `Result<T, moonlink_error::ErrorStruct>`.
 |---|---|---|---|---|
 | 0 | CreateSnapshot | database, table, lsn: u64 | () | pg_mooncake |
 | 1 | CreateTable | database, table, src, src_uri, table_config (JSON string) | () | pg_mooncake |
-| 2 | DropTable | database, table | () | pg_mooncake (event trigger) |
+| 2 | DropTable | database, table | () | pg_mooncake (pre-commit callback) |
 | 3 | GetParquetMetadatas | data_files | Vec<Vec<u8>> | nobody |
 | 4 | GetTableSchema | database, table | Arrow IPC stream (schema only) | duckdb_mooncake |
 | 5 | ListTables | – | Vec<Table{database, table, cardinality, commit_lsn, flush_lsn: Option, iceberg_warehouse_location}> | pg_mooncake |

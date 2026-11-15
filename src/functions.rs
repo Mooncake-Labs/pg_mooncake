@@ -1,11 +1,10 @@
-use crate::drop_tracking::take_dropped_mirror;
+use crate::drop_tracking::queue_drop;
 use crate::utils::{rpc, DATABASE};
 use core::ffi::CStr;
 use native_tls::TlsConnector;
 use pgrx::{direct_function_call, prelude::*};
 use postgres::Client;
 use postgres_native_tls::MakeTlsConnector;
-use regex::Regex;
 
 #[pg_extern(sql = "
 CREATE PROCEDURE mooncake.create_snapshot(dst text) LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
@@ -54,40 +53,9 @@ fn drop_trigger() {
                 .get(1)
                 .expect("error reading dropped table")
                 .expect("error reading dropped table");
-            // Only mirrors: dropping other tables must never depend on moonlink being reachable.
-            let Some(table) = take_dropped_mirror(relid as u32) else {
-                continue;
-            };
-            {
-                let table = table.clone();
-                pgrx::register_xact_callback(pgrx::PgXactCallbackEvent::PreCommit, move || {
-                    drop_moonlink_table(table)
-                });
-            }
-            pgrx::register_xact_callback(pgrx::PgXactCallbackEvent::ParallelPreCommit, move || {
-                drop_moonlink_table(table)
-            });
+            queue_drop(pg_sys::Oid::from(relid as u32));
         }
     });
-}
-
-/// Bounded so that a hung moonlink cannot block DROP (the dropping transaction holds its locks meanwhile).
-const DROP_TABLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-
-/// Dropping a mirror always succeeds in Postgres, so "drop and re-create the mirror" keeps working while
-/// moonlink is down or the table is in an error state. A failure only leaves moonlink-side state behind.
-fn drop_moonlink_table(table: String) {
-    if let Err(e) = rpc!(
-        timeout = DROP_TABLE_TIMEOUT;
-        moonlink_rpc::drop_table, DATABASE.clone(), table.clone()
-    ) {
-        warning!(
-            "mirror {table} was dropped, but moonlink did not drop it: {e}\n\
-             HINT: moonlink may still hold the mirror's files and replication (see mooncake.list_tables()). \
-             Once moonlink is reachable, clean up with: CREATE TABLE <same name> (id int) USING mooncake; \
-             DROP TABLE <same name>;"
-        );
-    }
 }
 
 #[pg_extern(sql = "
@@ -156,36 +124,45 @@ impl TableName {
     }
 }
 
+/// Parses a possibly qualified table name with Postgres' identifier rules: unquoted names are downcased (ASCII
+/// only, as Postgres does in multibyte encodings), quoted ones keep their case, and each part is truncated to
+/// NAMEDATALEN - 1 bytes. An unqualified name gets the current schema.
 fn parse_table(input: &str) -> TableName {
-    // https://www.postgresql.org/docs/current/sql-syntax-lexical.html#SQL-SYNTAX-IDENTIFIERS
-    let ident = r#"([\w$]+|"([^"]|"")+")"#;
-    let pattern = format!(r#"^((?<schema>{ident})\.)?(?<table>{ident})$"#);
-    let re = Regex::new(&pattern).unwrap();
-    let caps = re
-        .captures(input)
-        .unwrap_or_else(|| panic!("invalid input: {input}"));
-    let schema = caps.name("schema").map_or_else(
-        || {
+    let parts: Vec<String> = unsafe {
+        direct_function_call(
+            pg_sys::parse_ident,
+            &[input.into_datum(), true.into_datum()],
+        )
+    }
+    .unwrap_or_else(|| error!("invalid table name: {input}"));
+    let mut parts = parts.into_iter().map(truncate_identifier);
+    let (schema, table) = match (parts.next(), parts.next(), parts.next()) {
+        (Some(table), None, None) => {
             let schema: &CStr =
                 unsafe { direct_function_call(pg_sys::current_schema, &[]).unwrap() };
-            schema.to_str().unwrap().to_owned()
-        },
-        |m| normalize_identifier(m.as_str()),
-    );
-    let table = normalize_identifier(&caps["table"]);
+            (schema.to_str().unwrap().to_owned(), table)
+        }
+        (Some(schema), Some(table), None) => (schema, table),
+        _ => error!("invalid table name, expected [schema.]table: {input}"),
+    };
+    // moonlink splits source names on '.'.
     if schema.contains('.') || table.contains('.') {
-        panic!("identifiers containing '.' are not supported: {input}");
+        error!("identifiers containing '.' are not supported: {input}");
     }
     TableName { schema, table }
 }
 
-/// Postgres identifier semantics: quoted identifiers keep their case (with `""` unescaped), unquoted
-/// identifiers are folded to lower case.
-fn normalize_identifier(ident: &str) -> String {
-    match ident.strip_prefix('"').and_then(|s| s.strip_suffix('"')) {
-        Some(quoted) => quoted.replace("\"\"", "\""),
-        None => ident.to_lowercase(),
+/// Same as Postgres' truncate_identifier(): clip to NAMEDATALEN - 1 bytes on a character boundary.
+fn truncate_identifier(ident: String) -> String {
+    let max = pg_sys::NAMEDATALEN as usize - 1;
+    if ident.len() <= max {
+        return ident;
     }
+    let len =
+        unsafe { pg_sys::pg_mbcliplen(ident.as_ptr().cast(), ident.len() as i32, max as i32) };
+    let truncated = ident[..len as usize].to_owned();
+    notice!("identifier \"{ident}\" will be truncated to \"{truncated}\"");
+    truncated
 }
 
 fn get_loopback_uri() -> String {

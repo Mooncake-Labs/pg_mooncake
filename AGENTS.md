@@ -51,14 +51,18 @@ when your local tests (with a locally built extension) pass.
 4. **User-level recovery is "drop and re-create the mirror"** (`DROP TABLE <mirror>; CALL mooncake.create_table(...)`).
    DROP must succeed no matter what state moonlink is in:
    - An `object_access_hook` (`src/drop_tracking.rs`) records which dropped relations are mooncake mirrors (by
-     `relam`, before the catalog rows go away; this covers cascades and `DROP SCHEMA`). The `sql_drop` trigger sends
-     `DropTable` only for those. Dropping any other table never talks to moonlink.
-   - If `DropTable` fails (moonlink down, erroring, or silent for 30 s), the DROP still commits and emits a WARNING.
-     moonlink may then still hold the mirror (it shows up in `mooncake.list_tables()`). Clean up once moonlink is
+     `relam`, before the catalog rows go away; this covers cascades and `DROP SCHEMA`). The `sql_drop` trigger queues
+     those, and a pre-commit transaction callback sends `DropTable` for each one that is still gone at top-level
+     commit, so a drop undone by `ROLLBACK TO SAVEPOINT` or an exception block keeps the mirror. `PREPARE TRANSACTION`
+     after dropping a mirror is an error. Dropping any other table never talks to moonlink.
+   - If `DropTable` fails (moonlink down, erroring, or silent), the DROP still commits and emits a WARNING per mirror.
+     All drops of a transaction share one 30 s deadline, and once moonlink is unreachable the remaining ones are not
+     attempted. moonlink may then still hold the mirror (it shows up in `mooncake.list_tables()`). Clean up once moonlink is
      reachable: `CREATE TABLE <same name> (id int) USING mooncake; DROP TABLE <same name>;`.
    - RPC errors become normal Postgres ERRORs raised after the connection lock is released (`rpc!` in `src/utils.rs`).
-     The lock is poison-tolerant, and a connection that saw an IO or decode error is discarded and reconnected on the
-     next call. Never `.expect()`/`.unwrap()` an RPC result.
+     The lock is poison-tolerant. A connection that saw an IO or decode error is discarded, and a cached connection is
+     probed (`MSG_PEEK`) before reuse, so the first call after a moonlink restart reconnects instead of failing.
+     Never `.expect()`/`.unwrap()` an RPC result.
 
 ## 3. Components and where things live
 
@@ -87,7 +91,10 @@ when your local tests (with a locally built extension) pass.
 
 ## 4. Setup, build, test (standard toolchain)
 
-There is no CI in this repo (`.github/` only has issue templates). `make test` plus a manual end-to-end check are the gates.
+There is no CI in this repo (`.github/` only has issue templates). `make test` is the only automated check; it does not
+cover moonlink restarts or moonlink being down. Before changing the worker, the RPC client or DROP handling, also check by
+hand: with the moonlink worker stopped, `DROP TABLE` of a heap table and of a mirror both succeed (the mirror with a
+WARNING); after a Postgres restart, `mooncake.list_tables()` works and mirrors return the same rows as their sources.
 
 ```bash
 git clone --recurse-submodules https://github.com/Mooncake-Labs/pg_mooncake.git && cd pg_mooncake
@@ -171,10 +178,6 @@ Product behavior (fix with a test; don't paper over it):
   `CALL mooncake.create_snapshot(...)` on the remaining mirrors after dropping one.
 - Calls other than `DropTable` have no timeout: a hung moonlink blocks them until it answers.
 - Identifiers containing `.` are rejected (moonlink splits source names on `.`).
-
-End-to-end checks (`scripts/e2e-smoke.sh`): one `RESULT <scenario>.<check> PASS|FAIL|XFAIL(<ids>)|XPASS(<ids>)|SKIP`
-line per check, then `SUMMARY` and `GATE` lines. Expected failures are listed in `scripts/e2e-known-bugs.txt`, so read
-results from that file rather than from hand-kept counts. `XPASS` means a known bug no longer reproduces: remove its line.
 
 ## 8. Conventions
 

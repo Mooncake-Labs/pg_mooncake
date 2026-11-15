@@ -13,3 +13,20 @@ DROP TABLE "Mixed Schema"."Mirror ""Q""", mc$1;
 SELECT count(*) FROM mooncake.list_tables();
 DROP TABLE "Mixed Schema"."Src Table", src$1;
 DROP SCHEMA "Mixed Schema";
+-- Long names are truncated, as Postgres does.
+SET client_min_messages = notice;
+CREATE TABLE r268 (id int PRIMARY KEY);
+CALL mooncake.create_table(repeat('m', 70), 'r268');
+INSERT INTO r268 VALUES (1);
+SELECT * FROM mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm;
+SELECT "table" FROM mooncake.list_tables() WHERE "table" LIKE 'public.mmm%';
+RESET client_min_messages;
+-- Postgres downcases only ASCII letters of unquoted names.
+CREATE TABLE r268b (id int PRIMARY KEY);
+CALL mooncake.create_table('Ämirror', 'r268b');
+INSERT INTO r268b VALUES (2);
+SELECT * FROM Ämirror;
+SELECT "table" FROM mooncake.list_tables() WHERE "table" LIKE 'public.%mirror';
+DROP TABLE mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm, Ämirror;
+SELECT count(*) FROM mooncake.list_tables();
+DROP TABLE r268, r268b;

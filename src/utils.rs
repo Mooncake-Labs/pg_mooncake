@@ -1,7 +1,9 @@
 use pgrx::pg_sys;
 use std::ffi::CStr;
 use std::future::Future;
+use std::os::fd::AsRawFd;
 use std::sync::{LazyLock, Mutex, MutexGuard, PoisonError};
+use std::time::Duration;
 use tokio::net::UnixStream;
 use tokio::runtime::{Builder, Runtime};
 
@@ -29,25 +31,79 @@ pub(crate) fn lock_stream() -> MutexGuard<'static, Option<UnixStream>> {
     STREAM.lock().unwrap_or_else(PoisonError::into_inner)
 }
 
-pub(crate) fn connect(slot: &mut Option<UnixStream>) -> Result<&mut UnixStream, String> {
+/// Why a moonlink call failed.
+pub(crate) enum RpcError {
+    Connect(std::io::Error),
+    Timeout(Duration),
+    Transport(moonlink_rpc::Error),
+    Server(moonlink_rpc::Error),
+}
+
+impl RpcError {
+    /// moonlink is not accepting connections or not answering, so later calls would fail the same way. A
+    /// transport error only breaks this connection (the next call reconnects).
+    pub(crate) fn is_unreachable(&self) -> bool {
+        matches!(self, RpcError::Connect(_) | RpcError::Timeout(_))
+    }
+}
+
+impl std::fmt::Display for RpcError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            RpcError::Connect(e) => write!(f, "failed to connect to moonlink: {e}"),
+            RpcError::Timeout(timeout) => write!(f, "no response from moonlink within {timeout:?}"),
+            RpcError::Transport(e) | RpcError::Server(e) => write!(f, "{e}"),
+        }
+    }
+}
+
+pub(crate) fn connect(slot: &mut Option<UnixStream>) -> Result<&mut UnixStream, RpcError> {
+    if slot.as_ref().is_some_and(|stream| !is_open(stream)) {
+        *slot = None;
+    }
     if slot.is_none() {
         let stream = block_on(UnixStream::connect("pg_mooncake/moonlink.sock"))
-            .map_err(|e| format!("failed to connect to moonlink: {e}"))?;
+            .map_err(RpcError::Connect)?;
         *slot = Some(stream);
     }
     Ok(slot.as_mut().unwrap())
 }
 
-/// Whether the connection must be discarded after `error`. Server-side errors (`Rpc`) leave the stream in
-/// sync, and encode errors and oversized packets fail before anything is written.
-pub(crate) fn is_transport_error(error: &moonlink_rpc::Error) -> bool {
-    matches!(
-        error,
-        moonlink_rpc::Error::Io(_) | moonlink_rpc::Error::Decode(_)
-    )
+/// Whether an idle cached stream can still be used. RPCs are strict request/response, so a healthy idle stream
+/// has nothing to read. EOF or a reset means moonlink went away (e.g. the worker restarted), and unread bytes mean
+/// the stream is out of sync; either way, reconnect instead of failing the next call.
+fn is_open(stream: &UnixStream) -> bool {
+    let mut byte = 0u8;
+    let n = unsafe {
+        libc::recv(
+            stream.as_raw_fd(),
+            std::ptr::addr_of_mut!(byte).cast(),
+            1,
+            libc::MSG_PEEK | libc::MSG_DONTWAIT,
+        )
+    };
+    n < 0
+        && matches!(
+            std::io::Error::last_os_error().kind(),
+            std::io::ErrorKind::WouldBlock | std::io::ErrorKind::Interrupted
+        )
 }
 
-/// Calls a `moonlink_rpc` function on this backend's connection, yielding `Result<T, String>`. The lock is
+/// Classifies a failed call. Transport errors discard the connection; server-side errors (`Rpc`) leave the
+/// stream in sync, and encode errors and oversized packets fail before anything is written.
+pub(crate) fn classify(slot: &mut Option<UnixStream>, error: moonlink_rpc::Error) -> RpcError {
+    if matches!(
+        error,
+        moonlink_rpc::Error::Io(_) | moonlink_rpc::Error::Decode(_)
+    ) {
+        *slot = None;
+        RpcError::Transport(error)
+    } else {
+        RpcError::Server(error)
+    }
+}
+
+/// Calls a `moonlink_rpc` function on this backend's connection, yielding `Result<T, RpcError>`. The lock is
 /// released before the result is returned, so callers may raise a Postgres ERROR with it.
 /// `rpc!(timeout = <Duration>; func, args..)` bounds the call; on timeout the connection is discarded.
 macro_rules! rpc {
@@ -62,16 +118,9 @@ macro_rules! rpc {
                 match $crate::utils::block_on(async move { tokio::time::timeout(timeout, call).await }) {
                     Err(_) => {
                         *slot = None;
-                        Err(format!("no response from moonlink within {timeout:?}"))
+                        Err($crate::utils::RpcError::Timeout(timeout))
                     }
-                    Ok(result) => {
-                        if let Err(e) = &result {
-                            if $crate::utils::is_transport_error(e) {
-                                *slot = None;
-                            }
-                        }
-                        result.map_err(|e| e.to_string())
-                    }
+                    Ok(result) => result.map_err(|e| $crate::utils::classify(&mut slot, e)),
                 }
             }
         }
@@ -82,12 +131,7 @@ macro_rules! rpc {
             Err(e) => Err(e),
             Ok(stream) => {
                 let result = $crate::utils::block_on($func(stream $(, $arg)*));
-                if let Err(e) = &result {
-                    if $crate::utils::is_transport_error(e) {
-                        *slot = None;
-                    }
-                }
-                result.map_err(|e| e.to_string())
+                result.map_err(|e| $crate::utils::classify(&mut slot, e))
             }
         }
     }};

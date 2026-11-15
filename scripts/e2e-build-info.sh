@@ -7,7 +7,8 @@
 # (default: the duckdb_mooncake submodule of this repository). It writes
 # <extension>.build-info with the keys e2e-smoke.sh checks: sha256 of the file, the
 # duckdb_mooncake commit, whether that checkout had uncommitted changes, and the moonlink_rpc
-# source from moonlink_ffi/Cargo.lock.
+# source from moonlink_ffi/Cargo.lock. The record attests that checkout as it is when the script
+# runs, not the build itself.
 set -euo pipefail
 
 ext=${1:?usage: $0 <mooncake.duckdb_extension> [duckdb_mooncake checkout]}

@@ -5,6 +5,19 @@
 `make test PG_VERSION=pg18` (and `pg17`, ...) runs `cargo pgrx regress` on the pgrx cluster. See `AGENTS.md`
 section 4 for the build and cluster setup.
 
+## CI
+
+`.github/workflows/ci.yml` runs on pull requests and pushes to `main` and `v0.3-dev`, with PostgreSQL from the
+PostgreSQL apt repository and the Rust toolchain from `rust-toolchain.toml`:
+
+- `duckdb_mooncake` builds `mooncake.duckdb_extension` from the submodule (cached per submodule commit) for the other jobs.
+- `test` builds pg_duckdb and runs `make test` on PostgreSQL 14 to 18, with that extension in `duckdb.extension_directory`
+  as described below. The PostgreSQL 18 job also runs `cargo fmt --check`.
+- `e2e` runs `scripts/e2e-build-info.sh` for the downloaded extension and then `scripts/e2e-smoke.sh` on PostgreSQL 17
+  and 18, on pushes and manual runs only (about 35 minutes each). It fails only on unexpected failures (`fail=` > 0 in
+  `SUMMARY`), not on known bugs (so `GATE BLOCKED` alone does not fail it), and does not block the workflow. The run
+  summary lists the failures and fixed bugs; logs are attached as artifacts.
+
 ## End-to-end gate (`scripts/e2e-smoke.sh`)
 
 `scripts/e2e-smoke.sh` drives an installed pg_mooncake, pg_duckdb and duckdb_mooncake through mirrors on throwaway

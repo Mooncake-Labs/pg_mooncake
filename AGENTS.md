@@ -99,10 +99,10 @@ when your local tests (with a locally built extension) pass.
 
 ## 4. Setup, build, test (standard toolchain)
 
-There is no CI in this repo (`.github/` only has issue templates). The checks are `make test` (pg_regress) and the
-end-to-end gate `scripts/e2e-smoke.sh`, which covers what pg_regress cannot: moonlink down or hung, restarts, crashes,
-DDL and TRUNCATE on sources. See TESTING.md for both. Run the gate before changing the worker, the RPC client or DROP
-handling.
+The checks are `make test` (pg_regress) and the end-to-end gate `scripts/e2e-smoke.sh`, which covers what pg_regress
+cannot: moonlink down or hung, restarts, crashes, DDL and TRUNCATE on sources. See TESTING.md for both and for CI
+(`.github/workflows/ci.yml`: `make test` on PostgreSQL 14-18 for pull requests, plus the gate on PostgreSQL 17 and 18 for
+pushes). Run the gate yourself before changing the worker, the RPC client or DROP handling.
 
 ```bash
 git clone --recurse-submodules https://github.com/Mooncake-Labs/pg_mooncake.git && cd pg_mooncake

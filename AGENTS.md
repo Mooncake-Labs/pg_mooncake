@@ -57,8 +57,15 @@ when your local tests (with a locally built extension) pass.
      after dropping a mirror is an error. Dropping any other table never talks to moonlink.
    - If `DropTable` fails (moonlink down, erroring, or silent), the DROP still commits and emits a WARNING per mirror.
      All drops of a transaction share one 30 s deadline, and once moonlink is unreachable the remaining ones are not
-     attempted. moonlink may then still hold the mirror (it shows up in `mooncake.list_tables()`). Clean up once moonlink is
-     reachable: `CREATE TABLE <same name> (id int) USING mooncake; DROP TABLE <same name>;`.
+     attempted. moonlink may then still hold the mirror (it shows up in `mooncake.list_tables()`).
+   - moonlink also keeps a mirror whose table was dropped without the `sql_drop` trigger firing: by
+     `DROP EXTENSION pg_mooncake CASCADE` (the trigger is dropped by the same command) or with
+     `session_replication_role = replica` (event triggers don't fire). `mooncake.create_table` therefore drops whatever
+     moonlink holds under the new mirror's name before registering it (the name was free in Postgres, so that table is
+     an orphan), and drops the new Postgres table again if moonlink refuses it. So re-creating a mirror cleans up its
+     orphan; to clean one up without re-creating: `CREATE TABLE <same name> (id int) USING mooncake; DROP TABLE <same name>;`.
+   - pg_mooncake 0.2 registered mirrors under the quoted name (`public."Mc$1"`, `quote_ident` of each part). DROP and the
+     create_table cleanup also send that key when it differs from the unquoted one (`TableName::moonlink_keys`).
    - RPC errors become normal Postgres ERRORs raised after the connection lock is released (`rpc!` in `src/utils.rs`).
      The lock is poison-tolerant. A connection that saw an IO or decode error is discarded, and a cached connection is
      probed (`MSG_PEEK`) before reuse, so the first call after a moonlink restart reconnects instead of failing.
@@ -91,10 +98,10 @@ when your local tests (with a locally built extension) pass.
 
 ## 4. Setup, build, test (standard toolchain)
 
-There is no CI in this repo (`.github/` only has issue templates). `make test` is the only automated check; it does not
-cover moonlink restarts or moonlink being down. Before changing the worker, the RPC client or DROP handling, also check by
-hand: with the moonlink worker stopped, `DROP TABLE` of a heap table and of a mirror both succeed (the mirror with a
-WARNING); after a Postgres restart, `mooncake.list_tables()` works and mirrors return the same rows as their sources.
+There is no CI in this repo (`.github/` only has issue templates). The checks are `make test` (pg_regress) and the
+end-to-end gate `scripts/e2e-smoke.sh`, which covers what pg_regress cannot: moonlink down or hung, restarts, crashes,
+DDL and TRUNCATE on sources. See TESTING.md for both. Run the gate before changing the worker, the RPC client or DROP
+handling.
 
 ```bash
 git clone --recurse-submodules https://github.com/Mooncake-Labs/pg_mooncake.git && cd pg_mooncake
@@ -137,10 +144,10 @@ and set `duckdb.allow_unsigned_extensions = true` and `duckdb.autoinstall_known_
 1. **`cargo pgrx install` uses the first `pg_config` on `PATH`**, not the `PG_CONFIG` the Makefile exports. With another
    Postgres on `PATH` it compiles for the right major but installs into the wrong prefix.
 2. **The `bgworker` cargo feature** (default) is what starts moonlink. A `--no-default-features` build has no worker, and
-   every call fails with `Failed to connect to moonlink`.
+   every call fails with `mooncake.<procedure> failed: failed to connect to moonlink: ...`.
 3. **`mooncake.create_table` creates the mirror table on a separate, autocommitted libpq connection** (loopback by default,
-   or `src_uri`). It is not part of the caller's transaction. A `ROLLBACK`, or a failed `CreateTable` RPC, leaves the
-   empty mirror table behind; drop it before retrying.
+   or `src_uri`). It is not part of the caller's transaction, so a `ROLLBACK` does not undo a create_table that
+   returned. If the `CreateTable` RPC fails, create_table drops the new table again on that connection.
 4. **Replication connections are keyed by `src_uri`** (`moonlink_connectors/src/replication_manager.rs`). The slot
    `moonlink_slot_<db>` and publication `moonlink_pub` are dropped when the last mirror of that `src_uri` is dropped.
 5. **No committed `Cargo.lock`** (`/Cargo.lock` is gitignored): the moonlink dependency graph resolves fresh, and
@@ -167,11 +174,14 @@ and set `duckdb.allow_unsigned_extensions = true` and `duckdb.autoinstall_known_
 
 ## 7. Known bugs at the current pins **[pins]**
 
-Product behavior (fix with a test; don't paper over it):
+`scripts/e2e-known-bugs.txt` is the complete list, with a failure signature per check; keep it current rather than this
+summary. Product behavior (fix with a test; don't paper over it):
 - Restart after a large, logically streamed transaction: moonlink WAL monotonic-LSN assert, crash loop.
-- `ALTER TABLE <source> ADD COLUMN` panics replication for every mirror in the database.
-- Wrong data: unconstrained `numeric` (digits shifted), array columns (come back `{}`), `char(n)` (padding lost).
-  `interval` and `inet` columns are rejected at `create_table`.
+- Wrong data without an error: unconstrained `numeric` (digits shifted), array columns (come back `{}`), `char(n)`
+  (padding lost), an UPDATE that leaves a TOASTed column unchanged empties it in the mirror, and `TRUNCATE` of a source
+  is ignored. `interval` and `inet` columns are rejected at `create_table`.
+- `ALTER TABLE <source> ADD COLUMN` panics moonlink and that mirror stops ingesting; after `DROP COLUMN`, every mirror
+  of the database stops.
 - The worker is not restarted after a clean exit (section 2, item 1).
 - Dropping any mirror deletes the moonlink WAL of every mirror (`WalManager::drop_wal` removes the shared `_wal`
   directory). Rows of other mirrors that are not yet in an Iceberg snapshot are lost at the next restart; run

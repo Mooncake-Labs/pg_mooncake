@@ -5,6 +5,7 @@ use native_tls::TlsConnector;
 use pgrx::{direct_function_call, prelude::*};
 use postgres::Client;
 use postgres_native_tls::MakeTlsConnector;
+use std::ffi::CString;
 
 #[pg_extern(sql = "
 CREATE PROCEDURE mooncake.create_snapshot(dst text) LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
@@ -24,18 +25,51 @@ fn create_table(dst: &str, src: &str, src_uri: Option<&str>, table_config: Optio
     let src = parse_table(src);
     let dst_uri = get_loopback_uri();
     let src_uri = src_uri.unwrap_or(&dst_uri).to_owned();
-    create_mooncake_table(&dst.quoted(), &dst_uri, &src.quoted(), &src_uri);
-    let (dst, src) = (dst.moonlink_name(), src.moonlink_name());
+    let mut client = create_mooncake_table(&dst.quoted(), &dst_uri, &src.quoted(), &src_uri);
     let table_config = table_config.unwrap_or("{}").to_owned();
-    rpc!(
-        moonlink_rpc::create_table,
-        DATABASE.clone(),
-        dst,
-        src,
-        src_uri,
-        table_config
-    )
-    .unwrap_or_else(|e| error!("mooncake.create_table failed: {e}"));
+    let result = remove_orphans(&dst).and_then(|cleanup_error| {
+        rpc!(
+            moonlink_rpc::create_table,
+            DATABASE.clone(),
+            dst.moonlink_name(),
+            src.moonlink_name(),
+            src_uri,
+            table_config
+        )
+        .map_err(|e| match cleanup_error {
+            Some(cleanup_error) => format!("{e} (removing it first failed: {cleanup_error})"),
+            None => e.to_string(),
+        })
+    });
+    if let Err(e) = result {
+        // Otherwise the new mirror table stays readable while moonlink has no table, or a stale one, behind it.
+        if let Err(drop_error) = client.simple_query(&format!("DROP TABLE {}", dst.quoted())) {
+            warning!(
+                "could not drop {} after the failed create_table: {drop_error}",
+                dst.quoted()
+            );
+        }
+        error!("mooncake.create_table failed: {e}");
+    }
+}
+
+/// The Postgres mirror table was just created, so its name was free: anything moonlink still has registered under
+/// it was left behind by a DROP that moonlink never saw (moonlink was down, `DROP EXTENSION ... CASCADE`, or
+/// `session_replication_role = replica`). Re-registering would fail, or leave the new table reading the old one.
+///
+/// Fails only when moonlink is unreachable. A server-side error is returned as `Ok(Some(error))` for the caller to
+/// mention if `CreateTable` fails too: moonlink refuses to register a key that is still taken, so `CreateTable` then
+/// decides, and an orphan can never end up behind the new table.
+fn remove_orphans(dst: &TableName) -> Result<Option<String>, String> {
+    let mut cleanup_error = None;
+    for key in dst.moonlink_keys() {
+        match rpc!(moonlink_rpc::drop_table, DATABASE.clone(), key.clone()) {
+            Ok(_) => {}
+            Err(e) if e.is_unreachable() => return Err(e.to_string()),
+            Err(e) => cleanup_error = Some(format!("{key}: {e}")),
+        }
+    }
+    Ok(cleanup_error)
 }
 
 #[pg_extern(sql = "
@@ -106,9 +140,9 @@ fn optimize_table(dst: &str, mode: &str) {
     .unwrap_or_else(|e| error!("mooncake.optimize_table failed: {e}"));
 }
 
-struct TableName {
-    schema: String,
-    table: String,
+pub(crate) struct TableName {
+    pub(crate) schema: String,
+    pub(crate) table: String,
 }
 
 impl TableName {
@@ -116,6 +150,34 @@ impl TableName {
     /// by unquoted `schema.table` too, and moonlink's Postgres connector splits source names on '.'.
     fn moonlink_name(&self) -> String {
         format!("{}.{}", self.schema, self.table)
+    }
+
+    /// Every key moonlink may hold this mirror under. pg_mooncake 0.2 registered mirrors under the quoted name
+    /// (`public."Mc$1"`), so a mirror created by 0.2 is also dropped under that key.
+    pub(crate) fn moonlink_keys(&self) -> Vec<String> {
+        let mut keys = vec![self.moonlink_name()];
+        keys.extend(self.legacy_moonlink_name());
+        keys
+    }
+
+    fn legacy_moonlink_name(&self) -> Option<String> {
+        let schema = spi::quote_identifier(&self.schema);
+        let table = spi::quote_identifier(&self.table);
+        if schema == self.schema && table == self.table {
+            return None;
+        }
+        // A relation literally named like the quoted form owns that key as its current, unquoted key.
+        let (Ok(schema_c), Ok(table_c)) =
+            (CString::new(schema.as_str()), CString::new(table.as_str()))
+        else {
+            return None;
+        };
+        let owned = unsafe {
+            let namespace = pg_sys::get_namespace_oid(schema_c.as_ptr(), true);
+            namespace != pg_sys::InvalidOid
+                && pg_sys::get_relname_relid(table_c.as_ptr(), namespace) != pg_sys::InvalidOid
+        };
+        (!owned).then(|| format!("{schema}.{table}"))
     }
 
     /// Quoted form for SQL that pg_mooncake runs itself.
@@ -198,7 +260,8 @@ fn uri_encode(input: &str) -> String {
     result
 }
 
-fn create_mooncake_table(dst: &str, dst_uri: &str, src: &str, src_uri: &str) {
+/// Creates the Postgres mirror table and returns the connection it was created on.
+fn create_mooncake_table(dst: &str, dst_uri: &str, src: &str, src_uri: &str) -> Client {
     let tls_connector = TlsConnector::new().expect("error creating tls connector");
     let make_tls_connector = MakeTlsConnector::new(tls_connector);
     let mut client = Client::connect(src_uri, make_tls_connector.clone())
@@ -232,4 +295,5 @@ fn create_mooncake_table(dst: &str, dst_uri: &str, src: &str, src_uri: &str) {
     client
         .simple_query(&create_table_query)
         .unwrap_or_else(|_| panic!("error creating table: {dst}"));
+    client
 }

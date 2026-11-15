@@ -5,6 +5,7 @@
 //! *before* deletion, while `pg_class.relam` is still readable. The trigger then queues the mirrors among the
 //! dropped objects, and the pre-commit transaction callback tells moonlink.
 
+use crate::functions::TableName;
 use crate::utils::{rpc, RpcError, DATABASE};
 use pgrx::prelude::*;
 use std::collections::{BTreeMap, HashMap};
@@ -18,10 +19,10 @@ const DROP_TABLE_TIMEOUT: Duration = Duration::from_secs(30);
 
 #[derive(Default)]
 struct Drops {
-    /// Mirrors seen by `object_access_hook` in this transaction: relation oid -> moonlink name (`schema.table`).
-    seen: HashMap<u32, String>,
+    /// Mirrors seen by `object_access_hook` in this transaction, by relation oid.
+    seen: HashMap<u32, TableName>,
     /// Mirrors the `sql_drop` trigger reported dropped, in oid order.
-    queued: BTreeMap<u32, String>,
+    queued: BTreeMap<u32, TableName>,
 }
 
 static DROPS: Mutex<Option<Drops>> = Mutex::new(None);
@@ -53,7 +54,7 @@ pub(crate) fn queue_drop(relid: pg_sys::Oid) {
 
 /// Queued mirrors whose drop is still in effect. A drop undone by ROLLBACK TO SAVEPOINT (or a PL/pgSQL
 /// exception block) leaves the relation visible again, so it must not be dropped in moonlink.
-fn take_effective_drops() -> Vec<String> {
+fn take_effective_drops() -> Vec<TableName> {
     let queued = with_drops(|drops| std::mem::take(&mut drops.queued));
     queued
         .into_iter()
@@ -100,18 +101,18 @@ unsafe extern "C-unwind" fn mooncake_xact_callback(
 
 /// Dropping a mirror always succeeds in Postgres, so "drop and re-create the mirror" keeps working while
 /// moonlink is down or the table is in an error state. A failure only leaves moonlink-side state behind.
-fn drop_in_moonlink(mirrors: Vec<String>) {
+fn drop_in_moonlink(mirrors: Vec<TableName>) {
     let deadline = Instant::now() + DROP_TABLE_TIMEOUT;
     // Set once moonlink is unreachable, so the remaining mirrors don't wait for it again.
     let mut unreachable: Option<String> = None;
-    for mirror in mirrors {
+    for key in mirrors.iter().flat_map(TableName::moonlink_keys) {
         let reason = match &unreachable {
             Some(reason) => reason.clone(),
             None => {
                 let remaining = deadline.saturating_duration_since(Instant::now());
                 let Err(e) = rpc!(
                     timeout = remaining;
-                    moonlink_rpc::drop_table, DATABASE.clone(), mirror.clone()
+                    moonlink_rpc::drop_table, DATABASE.clone(), key.clone()
                 ) else {
                     continue;
                 };
@@ -128,10 +129,10 @@ fn drop_in_moonlink(mirrors: Vec<String>) {
             }
         };
         warning!(
-            "mirror {mirror} was dropped, but moonlink did not drop it: {reason}\n\
+            "mirror {key} was dropped, but moonlink did not drop it: {reason}\n\
              HINT: moonlink may still hold the mirror's files and replication (see mooncake.list_tables()). \
-             Once moonlink is reachable, clean up with: CREATE TABLE <same name> (id int) USING mooncake; \
-             DROP TABLE <same name>;"
+             Once moonlink is reachable, clean up by re-creating the mirror with mooncake.create_table, or with: \
+             CREATE TABLE <same name> (id int) USING mooncake; DROP TABLE <same name>;"
         );
     }
 }
@@ -165,12 +166,9 @@ unsafe extern "C-unwind" fn mooncake_object_access(
     let name = if (*rd_rel).relam == mooncake_am {
         let schema = pg_sys::get_namespace_name((*rd_rel).relnamespace);
         let table = CStr::from_ptr((*rd_rel).relname.data.as_ptr());
-        (!schema.is_null()).then(|| {
-            format!(
-                "{}.{}",
-                CStr::from_ptr(schema).to_string_lossy(),
-                table.to_string_lossy()
-            )
+        (!schema.is_null()).then(|| TableName {
+            schema: CStr::from_ptr(schema).to_string_lossy().into_owned(),
+            table: table.to_string_lossy().into_owned(),
         })
     } else {
         None

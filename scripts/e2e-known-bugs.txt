@@ -101,6 +101,21 @@ requires source_drop_restart.drop_orphaned_mirror dropped-source-crash-loop sour
 check source_drop_restart.orphaned_mirror_unlisted dropped-source-crash-loop ^after [0-9]+s, list_tables: .*[Ff]ailed to connect to moonlink
 requires source_drop_restart.orphaned_mirror_unlisted dropped-source-crash-loop source_drop_restart.no_worker_errors_after_restart dropped-source-crash-loop
 
+# ---- any scenario -------------------------------------------------------------------------------
+bug sigterm-handler-off-main-thread Intermittent: SIGTERM delivered to a tokio thread of the moonlink bgworker panics in pgrx's signal handler (postgres FFI from another thread); a run without it does not prove it FIXED
+check build.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+check main.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+check schema.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+check restart_after_drop.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+check persist.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+check moonlink_down.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+check ddl.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+check ddl_drop.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+check truncate.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+check source_drop_restart.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+check big_txn_restart.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+check crash.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+
 # ---- restart and crash --------------------------------------------------------------------------
 bug restart-crash-loop After a restart that follows a large (streamed) transaction, moonlink panics while recovering and the bgworker restarts every 15s, so mooncake.* calls fail
 bug replay-regresses-flush-lsn After a restart, replayed transactions regress a table's flush LSN: the table stops applying changes and DROP of its mirror hangs

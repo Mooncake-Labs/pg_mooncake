@@ -12,7 +12,7 @@
 #   BUILD <key>=<value>                        what is under test (binaries, hashes, commits)
 #   RESULT <scenario.check> <status> [detail]  status: PASS | FAIL | XFAIL(<bugs>) | XPASS(<bugs>) | SKIP
 #   INFO <scenario.check> ...                  reported only, never part of the gate
-#   KNOWN <bug> FIXED|OPEN|UNKNOWN|NOT-RUN <check>=<status>,... [ids=<ids>]
+#   KNOWN <bug> FIXED|OPEN|UNKNOWN|NOT-RUN|NOT-SEEN <check>=<status>,... [ids=<ids>]
 #   SUMMARY e2e-smoke pg<major> scenarios=<a,b,...> pass=N xpass=N fail=N xfail=N skip=N
 #   GATE e2e-smoke PASS|FAIL|INCOMPLETE        (last line)
 # Every RESULT line is a gate check. GATE is FAIL (exit 1) if any RESULT is FAIL, XFAIL or SKIP,
@@ -23,7 +23,8 @@
 # exists) that lists, per check, a bug and a regex for that bug's failure signature. A listed check
 # whose failure signatures all match listed bugs reports XFAIL(<bugs>). Any other failure stays FAIL,
 # so a new problem in a check that is already known to fail is not hidden. A listed check that
-# passes reports XPASS(<bugs>), and KNOWN <bug> FIXED means every check listed for the bug passed.
+# passes reports XPASS(<bugs>), and KNOWN <bug> FIXED means every check listed for the bug passed
+# (NOT-SEEN instead for a bug whose description starts with "Intermittent:").
 # KNOWN_BUG_IDS=<file> (lines "<bug> <ids>") appends tracker ids to the KNOWN lines.
 #
 # Mirror comparisons wait for an LSN, not a fixed time: commit a row to a mirrored fence table, poll
@@ -1227,6 +1228,7 @@ scenario_truncate() {
 # ================================================================================================
 # Known-bug summary, per bug: FIXED only when every check listed for it passed (XPASS); OPEN when
 # one of them failed with the bug's signature; UNKNOWN otherwise (e.g. another bug masked it).
+# An "Intermittent:" bug reports NOT-SEEN where it would be FIXED.
 known_summary() {
   local check st bug re list verdict seen e entries n_all n_xpass n_xfail n_notrun
   declare -A by_bug=()
@@ -1248,7 +1250,9 @@ known_summary() {
       case ${e##*=} in XPASS) n_xpass=$((n_xpass + 1)) ;; XFAIL) n_xfail=$((n_xfail + 1)) ;; NOT-RUN) n_notrun=$((n_notrun + 1)) ;; esac
     done
     if (( n_xfail > 0 )); then verdict=OPEN
-    elif (( n_xpass == n_all )); then verdict=FIXED
+    elif (( n_xpass == n_all )); then
+      # One clean run doesn't show that an intermittent bug is gone.
+      if [[ ${BUG_DESC[$bug]:-} == Intermittent:* ]]; then verdict=NOT-SEEN; else verdict=FIXED; fi
     elif (( n_notrun == n_all )); then verdict=NOT-RUN
     else verdict=UNKNOWN; fi
     echo "KNOWN $bug $verdict $list${BUG_IDS[$bug]:+ ids=${BUG_IDS[$bug]}}"

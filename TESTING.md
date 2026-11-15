@@ -45,11 +45,12 @@ E2E_DIR=/tmp/pg_mooncake-e2e \
 - Other settings (port, timeouts) are listed at the top of the script.
 
 Output is one line per item: `RESULT <scenario>.<check> PASS|FAIL|XFAIL(<bug>)|XPASS(<bug>)|SKIP [detail]`, `INFO`
-and `BUILD` lines, `KNOWN <bug> FIXED|OPEN|UNKNOWN|NOT-RUN` per known bug, `SUMMARY`, and a last line
+and `BUILD` lines, `KNOWN <bug> FIXED|OPEN|UNKNOWN|NOT-RUN|NOT-SEEN` per known bug, `SUMMARY`, and a last line
 `GATE e2e-smoke PASS|FAIL|INCOMPLETE`. Exit status: 0 for PASS, 1 for FAIL, 3 for INCOMPLETE (a subset of scenarios ran
 and passed), 2 for a usage or setup error. Cluster logs and query outputs stay under `$E2E_DIR/out-<major>-<scenario>/`.
 
 `scripts/e2e-known-bugs.txt` lists the failures known on the current submodules, each with a regex for its failure
 signature. A check that fails that way reports `XFAIL(<bug>)`; one that fails in any other way is `FAIL`. XFAIL still
 fails the gate. When a fix makes a listed check pass, it reports `XPASS(<bug>)`, and `KNOWN <bug> FIXED` means every
-check listed for that bug passed: remove its lines in the same change.
+check listed for that bug passed: remove its lines in the same change. A bug whose description starts with
+`Intermittent:` reports `NOT-SEEN` instead, since one clean run doesn't show it is gone.

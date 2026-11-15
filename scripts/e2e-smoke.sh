@@ -494,7 +494,7 @@ build_info() {
     # DuckDB extension footer: zero-padded metadata fields (platform, DuckDB version, extension
     # version, ABI) ahead of the 256-byte signature.
     echo "BUILD duckdb_mooncake_footer=$(tail -c 512 "$f" | head -c 256 | tr -c '[:print:]' '\n' | grep -v '^$' | paste -sd, -)"
-    [[ -f $f.info ]] && echo "BUILD duckdb_mooncake_install_info=present (installed by DuckDB INSTALL)"
+    [[ -f $f.info ]] && echo "BUILD duckdb_mooncake_install_info=present (a DuckDB INSTALL record, not used as provenance)"
     [[ -f $f.build-info ]] && sed 's/^/BUILD duckdb_mooncake_/' "$f.build-info"
   done < <(find "$EXTDIR" -name mooncake.duckdb_extension 2>/dev/null | sort)
 }
@@ -541,6 +541,9 @@ scenario_build() {
     else result duckdb_mooncake_checkout_unmodified 1 "rc=$rc $(echo "$changes" | one_line 200)"; fi
   fi
   # The checks above see today's checkout; a build-info records the checkout the binary was built from.
+  # It vouches for the loaded file only if its sha256 matches, and the version embedded in the
+  # binary must name the recorded commit. A DuckDB .info file next to the binary proves nothing: a
+  # local build copied over an INSTALLed one keeps it.
   if [[ -n $path && -f $path.build-info ]]; then
     sha=$(sha256 "$path"); info=$(sed -n 's/^sha256=//p' "$path.build-info")
     if [[ $sha == "$info" ]]; then result duckdb_mooncake_build_info_current 0
@@ -549,14 +552,11 @@ scenario_build() {
     b_commit=$(sed -n 's/^duckdb_mooncake_commit=//p' "$path.build-info")
     b_dirty=$(sed -n 's/^duckdb_mooncake_dirty=//p' "$path.build-info")
     b_lock=$(sed -n 's/^moonlink_rpc_lock=//p' "$path.build-info")
-    if [[ $b_commit == "$pin" && $b_dirty == no && $b_lock == *"#$WIRE_MOONLINK_RPC_REV" ]]; then
+    if [[ $sha == "$info" && $b_commit == "$pin" && -n $ver && $b_commit == "$ver"* && $b_dirty == no && $b_lock == *"#$WIRE_MOONLINK_RPC_REV" ]]; then
       result duckdb_mooncake_built_from_pins 0
     else
-      result duckdb_mooncake_built_from_pins 1 "built from commit [$b_commit] (pin [$pin]), dirty [$b_dirty], moonlink_rpc [$b_lock] (expected #$WIRE_MOONLINK_RPC_REV)"
+      result duckdb_mooncake_built_from_pins 1 "built from commit [$b_commit] (pin [$pin], binary says [$ver]), dirty [$b_dirty], moonlink_rpc [$b_lock] (expected #$WIRE_MOONLINK_RPC_REV)$([[ $sha == "$info" ]] || echo ', build-info is for another file')"
     fi
-  elif [[ -n $path && -f $path.info ]]; then
-    # Installed by DuckDB from an extension repository: the loaded version is checked above.
-    info duckdb_mooncake_build_info "none; $path was installed by DuckDB INSTALL"
   else
     local hint="no $path.build-info, so the loaded binary's build provenance is unverified; after building, run: scripts/e2e-build-info.sh $path"
     [[ -n $path ]] || hint="no duckdb_mooncake loaded"

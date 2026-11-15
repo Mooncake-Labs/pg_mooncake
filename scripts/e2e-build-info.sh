@@ -16,11 +16,17 @@ dm=${2:-$(cd "$(dirname "$0")/.." && pwd)/duckdb_mooncake}
 [[ $(git -C "$dm" rev-parse --show-toplevel 2>/dev/null) == "$(cd "$dm" && pwd -P)" ]] ||
   { echo "$dm is not a duckdb_mooncake checkout (submodule not initialized?)" >&2; exit 2; }
 
+# A failing git status is "unknown", which e2e-smoke.sh does not accept as clean.
+if changes=$(git -C "$dm" status --porcelain --untracked-files=no); then
+  if [[ -n $changes ]]; then dirty=yes; else dirty=no; fi
+else dirty=unknown; fi
+lock=$(grep -A2 '^name = "moonlink_rpc"$' "$dm/moonlink_ffi/Cargo.lock" | sed -n 's/^source = "\(.*\)"$/\1/p') || lock=""
+
 {
   echo "source=local-build"
   echo "duckdb_mooncake_commit=$(git -C "$dm" rev-parse HEAD)"
-  echo "duckdb_mooncake_dirty=$(git -C "$dm" status --porcelain --untracked-files=no | grep -q . && echo yes || echo no)"
-  echo "moonlink_rpc_lock=$(grep -A2 '^name = "moonlink_rpc"$' "$dm/moonlink_ffi/Cargo.lock" | sed -n 's/^source = "\(.*\)"$/\1/p')"
+  echo "duckdb_mooncake_dirty=$dirty"
+  echo "moonlink_rpc_lock=${lock:-unknown}"
   echo "sha256=$(sha256sum "$ext" | cut -d' ' -f1)"
   echo "built_at=$(date -u -r "$ext" +%Y-%m-%dT%H:%M:%SZ)"
 } > "$ext.build-info"

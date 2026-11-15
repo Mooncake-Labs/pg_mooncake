@@ -39,7 +39,8 @@ E2E_DIR=/tmp/pg_mooncake-e2e \
   `scripts/e2e-build-info.sh <dir>/v1.4.1/linux_amd64/mooncake.duckdb_extension`. It writes
   `mooncake.duckdb_extension.build-info` (the file's sha256, the duckdb_mooncake commit, whether that checkout had
   local changes, and its moonlink_rpc source), which the `build` scenario checks against the submodule pins. Without
-  that file those two checks are SKIP, so the gate can't pass on a binary of unknown origin.
+  that file, or if its sha256 is not the loaded file's, those two checks are SKIP or FAIL, so the gate can't pass
+  on a binary of unknown origin. That includes an extension installed by DuckDB `INSTALL`.
 - `E2E_DIR` defaults to `${TMPDIR:-/tmp}/pg_mooncake-e2e`.
 - Other settings (port, timeouts) are listed at the top of the script.
 

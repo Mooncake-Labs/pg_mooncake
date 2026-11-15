@@ -4,7 +4,7 @@ INSERT INTO r VALUES (1, 'a'), (2, 'b'), (3, 'c');
 UPDATE r SET b = a + 1 WHERE a > 2;
 DELETE FROM r WHERE a < 2;
 SELECT * FROM c;
- a | b 
+ BROKENa | b 
 ---+---
  2 | b
  3 | 4

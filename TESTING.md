@@ -46,29 +46,42 @@ E2E_DIR=/tmp/pg_mooncake-e2e \
 - `E2E_DIR` defaults to `${TMPDIR:-/tmp}/pg_mooncake-e2e`.
 - Other settings (port, timeouts) are listed at the top of the script.
 
-Output is one line per item: `RESULT <scenario>.<check> PASS|FAIL|XFAIL(<bug>)|XPASS(<bug>)|SKIP [detail]`, `INFO`
-and `BUILD` lines, `KNOWN <bug> FIXED|OPEN|UNKNOWN|NOT-RUN|NOT-SEEN ... class=blocking|limitation` per known bug,
-`SUMMARY`, `BLOCKING e2e-smoke <n> <bugs>`, and a last line `GATE e2e-smoke PASS|FAIL|BLOCKED|INCOMPLETE`. Exit
-status: 0 for PASS, 1 for FAIL, 4 for BLOCKED, 3 for INCOMPLETE (a subset of scenarios ran and passed), 2 for a usage
-or setup error. Cluster logs and query outputs stay under `$E2E_DIR/out-<major>-<scenario>/`.
+Output is one line per item: `RESULT <scenario>.<check> <status> [detail]` with status `PASS`, `FAIL`,
+`XFAIL(<bugs>)`, `XFAIL(limitation:<bugs>)`, `XPASS(<bugs>)` or `SKIP`; `INFO` and `BUILD` lines (including
+`BUILD known_bugs=<file> sha256=<hash>`); `KNOWN <bug> FIXED|OPEN|UNKNOWN|NOT-RUN|NOT-SEEN ... class=<class>` per
+known bug; `SUMMARY`; `BLOCKING e2e-smoke <n> <bugs>`; and a last line `GATE e2e-smoke PASS|FAIL|BLOCKED|INCOMPLETE`.
+Exit status: 0 for PASS, 1 for FAIL, 4 for BLOCKED, 3 for INCOMPLETE (a subset of scenarios ran and passed), 2 for a
+usage or setup error. Cluster logs and query outputs stay under `$E2E_DIR/out-<major>-<scenario>/`.
 
 `scripts/e2e-known-bugs.txt` lists the failures known on the current submodules, each with a regex for its failure
-signature. A check that fails that way reports `XFAIL(<bug>)`; one that fails in any other way is `FAIL`. XFAIL still
-fails the gate. When a fix makes a listed check pass, it reports `XPASS(<bug>)`, and `KNOWN <bug> FIXED` means every
-check listed for that bug passed: remove its lines in the same change. A bug whose description starts with
-`Intermittent:` reports `NOT-SEEN` instead, since one clean run doesn't show it is gone.
+signature. A check that fails that way reports `XFAIL(<bugs>)`; one that fails in any other way is `FAIL`. When a fix
+makes a listed check pass, it reports `XPASS(<bugs>)`, and `KNOWN <bug> FIXED` means every check listed for that bug
+passed: remove its lines in the same change. A bug whose description starts with `Intermittent:` reports `NOT-SEEN`
+instead, since one clean run doesn't show it is gone. Setting `KNOWN_BUGS` to a file that is missing or empty is a
+setup error, and so is a bug declared twice.
+
+After unsupported source DDL (`ddl`, `ddl_drop`), a mirror passes if it equals the source, or if its scans fail with
+one ERROR line that names the mirror, says `schema changes are not supported` and gives the `drop and re-create`
+remedy. Any other error, or a mirror that silently differs, fails.
 
 ### Release policy: blocking and limitation
 
-Every known bug is tagged `blocking` or `limitation`:
+Every known bug is declared once with a class, `bug <name> class=blocking|class=limitation <description>`:
 
-- `blocking`: the bug can crash-loop moonlink, panic, lose or silently change mirrored data, or leave mirrors unusable.
-  It must be fixed before a release, not listed.
-- `limitation`: a documented restriction that is loud (an error at `mooncake.create_table`) or harmless. It ships and
-  goes into the release notes.
+- `class=blocking`: the bug can crash-loop moonlink, panic, lose or silently change mirrored data, or leave mirrors
+  unusable. It must be fixed before a release, not listed. A check that fails with it reports `XFAIL(<bugs>)`, which
+  fails the gate.
+- `class=limitation`: a documented restriction that is loud (an error at `mooncake.create_table`) or harmless. It
+  ships and goes into the release notes. A check that fails only with limitations reports
+  `XFAIL(limitation:<bugs>)`, and it doesn't count against the gate.
 
-`GATE e2e-smoke PASS` is what a release needs, and it is impossible while the file lists any `blocking` bug, even one
-the run did not hit (for example an intermittent one reported `NOT-SEEN`). A run with no FAIL, XFAIL or SKIP reports
-`GATE e2e-smoke BLOCKED` in that case, and the `BLOCKING` line names those bugs. A fix removes the bug's entry, which
-its `XPASS` and `FIXED` reports show is safe. Moving a bug from `blocking` to `limitation` is a release decision, not
-a test change.
+The gate is:
+
+- `FAIL` if any check is FAIL, SKIP or XFAIL of a blocking bug;
+- otherwise `BLOCKED` while the file lists any `class=blocking` bug, even one the run didn't hit (for example an
+  intermittent one reported `NOT-SEEN`); the `BLOCKING` line names them;
+- otherwise `INCOMPLETE` if not every scenario ran;
+- otherwise `PASS`, which is what a release needs.
+
+A fix removes the bug's entry, which its `XPASS` and `FIXED` reports show is safe. Moving a bug from `blocking` to
+`limitation` is a release decision, not a test change.

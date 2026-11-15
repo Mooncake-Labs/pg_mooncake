@@ -158,6 +158,9 @@ check ddl.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/b
 check ddl_drop.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
 check truncate.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
 check source_drop_restart.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+check config_reload.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+check mirror_writes.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+check roles.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
 check big_txn_restart.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
 check crash.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
 
@@ -177,6 +180,8 @@ check big_txn_restart.fresh_fence_setup restart-crash-loop [Ff]ailed to connect 
 requires big_txn_restart.fresh_fence_setup restart-crash-loop big_txn_restart.no_panics_after_restart restart-crash-loop
 check big_txn_restart.resnapshot_recreate restart-crash-loop [Ff]ailed to connect to moonlink
 requires big_txn_restart.resnapshot_recreate restart-crash-loop big_txn_restart.no_panics_after_restart restart-crash-loop
+check big_txn_restart.resnapshot_recreate drop-of-dead-table-breaks-mirror ^rc=[0-9]+ ERROR: +mooncake\.create_table failed: .*Duplicate table added to replication: postgres\.public\.b_mc
+requires big_txn_restart.resnapshot_recreate drop-of-dead-table-breaks-mirror big_txn_restart.no_panics_after_restart restart-crash-loop
 check big_txn_restart.resnapshot_matches_heap restart-crash-loop ([Ff]ailed to connect to moonlink|fence mirror e2e_fence_[0-9]+_mc missing)
 requires big_txn_restart.resnapshot_matches_heap restart-crash-loop big_txn_restart.no_panics_after_restart restart-crash-loop
 check big_txn_restart.resnapshot_matches_heap replay-regresses-flush-lsn data mismatch.*1000000\|last-before-restart
@@ -203,6 +208,8 @@ check crash.fresh_fence_setup restart-crash-loop [Ff]ailed to connect to moonlin
 requires crash.fresh_fence_setup restart-crash-loop crash.no_panics_after_crash restart-crash-loop
 check crash.resnapshot_recreate restart-crash-loop [Ff]ailed to connect to moonlink
 requires crash.resnapshot_recreate restart-crash-loop crash.no_panics_after_crash restart-crash-loop
+check crash.resnapshot_recreate drop-of-dead-table-breaks-mirror ^rc=[0-9]+ ERROR: +mooncake\.create_table failed: .*Duplicate table added to replication: postgres\.public\.c_mc
+requires crash.resnapshot_recreate drop-of-dead-table-breaks-mirror crash.no_panics_after_crash restart-crash-loop
 check crash.resnapshot_matches_heap restart-crash-loop ([Ff]ailed to connect to moonlink|fence mirror e2e_fence_[0-9]+_mc missing)
 requires crash.resnapshot_matches_heap restart-crash-loop crash.no_panics_after_crash restart-crash-loop
 check crash.resnapshot_matches_heap replay-regresses-flush-lsn data mismatch.*1000000\|pre-crash

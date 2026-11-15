@@ -1,0 +1,128 @@
+# Known differences of tests/mirror_diff on this branch with its submodules (moonlink c1a99ef,
+# pg_duckdb 7daa8e5), measured on PostgreSQL 17. Same model as scripts/e2e-known-bugs.txt:
+#
+#   bug <name> blocking|limitation <description>
+#   check <check-glob> <bug>[,<bug>...] [<regex>]
+#   engine <bug>
+#
+# blocking: the bug can crash or wedge moonlink or Postgres, panic, lose or silently change mirrored
+# data, or make mirrors unusable; it must be fixed before a release, and while one is listed the
+# gate reports BLOCKED. limitation: a documented, loud or harmless restriction that ships in the
+# release notes.
+#
+# <check-glob> is an fnmatch pattern on the check name; <regex> (Python syntax) must be found in the
+# failure detail. The first matching check line wins. A failing check that matches reports
+# XFAIL(<bugs>); a passing check that matches a line without a regex reports XPASS(<bugs>): the bug
+# looks fixed, remove its lines. "engine" names the bug the classifier attaches to query
+# differences that DuckDB also produces on the heap tables. Types that mooncake.create_table rejects
+# are SKIPs and need no entry.
+
+engine duckdb-semantics
+
+# ---- documented limitations --------------------------------------------------------------------
+bug duckdb-semantics limitation Queries on mirrors run in DuckDB and follow its semantics: integer division, char(n) padding, row order of unordered window frames, regex ~ full match, errors raised by only one engine
+bug json-text-normalised limitation json and jsonb values read back from a mirror in DuckDB's compact text form with keys reordered
+
+# ---- types ---------------------------------------------------------------------------------------
+bug char-padding-lost blocking char(n) values lose their trailing blank padding
+bug numeric-digits-shifted blocking Unconstrained numeric values come back with their digits shifted
+bug numeric-nan-inf-null blocking numeric NaN, Infinity and -Infinity read back as NULL
+bug numeric-typmod-panic blocking numeric with scale greater than precision or a negative scale panics moonlink in create_table
+bug numeric-beyond-i128-panic blocking A numeric value whose unscaled integer exceeds 128 bits panics the replication task
+bug decimal-stats-overflow-panic blocking Persisting a numeric column with values beyond 96 bits panics in the Iceberg statistics code
+bug date-out-of-range blocking date/timestamp values +-infinity, BC or after year 9999 panic the initial copy and silently drop the transaction in CDC
+bug arrays-come-back-empty blocking Array columns read back as empty arrays ({NULL} becomes {})
+bug multidim-arrays blocking Multi-dimensional or non-default-bound arrays panic the initial copy, are mangled, or drop the transaction in CDC
+bug keyless-nested-copy-panic blocking Initial copy of a table without a primary key that has an array or composite column panics the table handler
+bug composite-as-struct blocking Composite-type values read back as DuckDB STRUCT text instead of the Postgres row value
+bug range-array-panic blocking A range-array column (int8range[]) panics moonlink in create_table
+
+# ---- CDC and table shapes ----------------------------------------------------------------------
+bug unchanged-toast-overwritten blocking An UPDATE that doesn't touch an out-of-line (TOASTed) column replaces that column with an empty value in the mirror
+bug truncate-ignored blocking TRUNCATE of a mirrored source is not applied to the mirror
+bug generated-column-breaks-mirror blocking Stored generated columns are part of the mirror definition but not replicated, so SELECT * on the mirror fails
+bug inheritance-children-ignored blocking Mirrors of inheritance parents miss later changes of child tables
+bug inheritance-recovery-crash-loop blocking With an inheritance parent and child both mirrored, moonlink crash-loops after a restart (child already in the publication)
+bug partition-ddl-ignored blocking DROP, DETACH or ATTACH PARTITION on a mirrored partitioned table is not reflected in the mirror
+bug partition-update-panics blocking UPDATE whose old row is missing (multi-level partitions, replica identity not FULL) panics the replication task
+bug relation-schema-assert blocking A Relation message for a table the CDC stream doesn't know panics the replication task (multi-level partitions)
+bug snapshot-hangs-after-xidless-wal blocking create_snapshot waits forever when the session's last transaction wrote WAL without an xid
+
+# ---- backend crashes (Postgres crash recovery) -----------------------------------------------------
+bug duckdb-timezone-commit-abort blocking After a DuckDB query in the session, SET LOCAL TIME ZONE + COMMIT aborts the backend (catalog access in the GUC hook at end of transaction)
+bug duckdb-multiassign-abort blocking UPDATE ... SET (a, b) = (SELECT ...) on a mirror aborts the backend in pg_duckdb's deparser
+
+# ---- checks ---------------------------------------------------------------------------------------
+check stmt.extra_cdc.snapshot_after_xidless_wal snapshot-hangs-after-xidless-wal
+check cdc.extra_cdc.cdc_trunc truncate-ignored
+check cdc.extra_cdc.cdc_toast unchanged-toast-overwritten
+check cdc.extra_tables.shp_generated generated-column-breaks-mirror
+check cdc.extra_tables.shp_parent inheritance-children-ignored
+check query.extra_tables.L30 inheritance-children-ignored
+check stmt.extra_tables.multiassign_update_on_mirror duckdb-multiassign-abort
+check stmt.extra_tables.set_local_timezone_commit_after_duckdb duckdb-timezone-commit-abort
+check backend.extra_tables.* duckdb-timezone-commit-abort,duckdb-multiassign-abort
+check service.run.extra_tables inheritance-recovery-crash-loop
+check cdc.extra_tables.* inheritance-recovery-crash-loop mooncake_duckdb_cpp_init
+check query.aggregates.L430 inheritance-children-ignored
+check query.aggregates.L435 inheritance-children-ignored
+check cdc.insert_conflict.cities inheritance-children-ignored
+check cdc.merge.measurement inheritance-children-ignored
+check query.name.L50 duckdb-semantics
+
+check data.type.character_[0-9]* char-padding-lost
+check data.copy.* char-padding-lost ^lossy: types=\[(integer,)?character\(\d+\)\]
+check cdc.* char-padding-lost ^types=\[character\(\d+\)\]
+check data.type.int8range_array range-array-panic
+check data.copy.rangetypes.i8r_array range-array-panic
+check panic.rangetypes.* range-array-panic
+check data.type.*comptype* composite-as-struct
+check cdc.arrays.comptable composite-as-struct
+check data.type.*_array multidim-arrays,arrays-come-back-empty ^(crashed|lossy)
+check cdc.arrays.array_op_test arrays-come-back-empty
+check data.copy.arrays.* keyless-nested-copy-panic
+check panic.arrays.* keyless-nested-copy-panic
+check panic.aggregates.* keyless-nested-copy-panic
+check panic.insert.L78 keyless-nested-copy-panic
+check cdc.insert.inserttest keyless-nested-copy-panic
+check data.type.jsonb json-text-normalised ^equivalent
+check data.type.json json-text-normalised ^equivalent
+check data.copy.* json-text-normalised ^equivalent: types=\[(integer,)?jsonb?\]
+
+check data.type.numeric numeric-digits-shifted,numeric-nan-inf-null,numeric-beyond-i128-panic,decimal-stats-overflow-panic
+check data.type.numeric_* numeric-typmod-panic ^crashed
+check data.type.numeric_* numeric-nan-inf-null ^lossy
+check data.copy.numeric.num_typemod_test numeric-typmod-panic
+check panic.numeric.L1148 numeric-typmod-panic
+check panic.numeric.* numeric-beyond-i128-panic
+check data.copy.numeric.fract_only numeric-nan-inf-null
+check cdc.numeric.fract_only numeric-nan-inf-null
+check data.copy.* numeric-digits-shifted types=\[[^\]]*\bnumeric\b
+check cdc.* numeric-digits-shifted ^types=\[numeric\]
+
+check data.type.date date-out-of-range
+check data.type.timestamp* date-out-of-range ^crashed
+check data.copy.date.* date-out-of-range ^crashed
+check data.copy.timestamp* date-out-of-range ^crashed
+check panic.date.* date-out-of-range
+check panic.timestamp.* date-out-of-range
+check panic.timestamptz.* date-out-of-range
+check cdc.date.date_tbl date-out-of-range
+check cdc.timestamp.timestamp_tbl date-out-of-range
+check cdc.timestamptz.timestamptz_tbl date-out-of-range
+check cdc.timestamptz.timestamptz_tst date-out-of-range
+check backend.timestamptz.* duckdb-timezone-commit-abort
+
+check cdc.insert.list_parted partition-ddl-ignored
+check panic.insert.L491 relation-schema-assert
+check cdc.insert.mlparted relation-schema-assert
+check service.insert.wedged relation-schema-assert
+check service.run.insert relation-schema-assert
+check infra.insert.file_timeout relation-schema-assert
+check panic.insert_conflict.* partition-update-panics
+check cdc.insert_conflict.parted_conflict partition-update-panics
+check panic.update.* partition-update-panics
+check cdc.update.upsert_test partition-update-panics
+check service.update.wedged partition-update-panics
+check infra.update.file_timeout partition-update-panics
+check service.run.update partition-update-panics

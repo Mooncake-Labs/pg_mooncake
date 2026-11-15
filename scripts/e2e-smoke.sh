@@ -82,6 +82,7 @@ KNOWN_BUG_IDS=${KNOWN_BUG_IDS:-}
 DB_USER=${USER:-$(id -un)}
 export PGHOST=/tmp PGDATABASE=postgres PGPORT=${PGPORT:-$((5400 + MAJOR))}
 SCEN=""; DATA=""; OUT=""; FENCE_SRC=""; FENCE_MC=""; FENCE_N=0; RESNAPSHOT_OK=0; ALLOWED_EXIT_LINES=""; WAIT_ERR=""
+CLUSTER_STOPPED=0
 
 [[ -n $PG_PREFIX && -x $BIN/psql ]] || { echo "no psql in ${PG_PREFIX:-<unset>}/bin (set PG_PREFIX)" >&2; exit 2; }
 pg_major_found=$("$BIN/pg_config" --version | sed -E 's/^PostgreSQL ([0-9]+).*/\1/')
@@ -171,7 +172,8 @@ pg_alive() { "$BIN/pg_ctl" -D "$DATA" status > /dev/null 2>&1; }
 result() {
   local check=$SCEN.$1 ok=$2 detail=${3:-} sigs=${4:-} all bugs status
   all=$(known_bugs_of "$check")
-  if [[ $ok == 1 ]] && ! pg_alive; then ok=skip; detail="postgres not running; $detail"; fi
+  # A failure while postgres is down can't be judged, except for the log checks after the final stop.
+  if [[ $ok == 1 && $CLUSTER_STOPPED == 0 ]] && ! pg_alive; then ok=skip; detail="postgres not running; $detail"; fi
   case $ok in
     0)
       if [[ -n $all ]]; then status="XPASS($all)"; COUNT[xpass]=$((COUNT[xpass] + 1))
@@ -421,7 +423,7 @@ stop() {
 
 new_cluster() {
   SCEN=$1; DATA=$E2E_DIR/data-$MAJOR-$SCEN; OUT=$E2E_DIR/out-$MAJOR-$SCEN
-  FENCE_SRC=e2e_fence; FENCE_MC=e2e_fence_mc; FENCE_N=0; ALLOWED_EXIT_LINES=""
+  FENCE_SRC=e2e_fence; FENCE_MC=e2e_fence_mc; FENCE_N=0; ALLOWED_EXIT_LINES=""; CLUSTER_STOPPED=0
   [[ -f $DATA/postmaster.pid ]] && "$BIN/pg_ctl" -D "$DATA" -m immediate -w stop > /dev/null 2>&1
   rm -rf -- "$DATA" "$OUT"; mkdir -p "$OUT"
   "$BIN/initdb" -D "$DATA" -U "$DB_USER" > "$OUT/initdb.log" 2>&1 || { result initdb 1 "$(tail -2 "$OUT/initdb.log")"; return 1; }
@@ -451,8 +453,13 @@ CALL mooncake.create_table('e2e_probe_mc', 'e2e_probe');
 SQL
 }
 
+# end_cluster: stop the cluster, then check its whole log, so a panic or abnormal exit during the
+# final shutdown counts too.
 end_cluster() {
   local sites exits crashes
+  if pg_alive; then result postgres_alive 0; else result postgres_alive skip "postgres died during the scenario"; fi
+  stop fast clean_stop_at_end
+  CLUSTER_STOPPED=1
   sites=$(panic_sites)
   if [[ -n $sites ]]; then
     result no_moonlink_panics 1 "$(panic_count) panic(s) at: $(echo "$sites" | paste -sd, - | sed 's/,/, /g')" "$sites"
@@ -467,8 +474,6 @@ end_cluster() {
   if [[ -n $crashes ]]; then
     result no_postgres_crash_restarts 1 "$(echo "$crashes" | paste -sd, - | sed 's/,/, /g')" "$crashes"
   else result no_postgres_crash_restarts 0; fi
-  if pg_alive; then result postgres_alive 0; else result postgres_alive skip "postgres died during the scenario"; fi
-  stop fast clean_stop_at_end
 }
 
 # ---- build provenance ----------------------------------------------------------------------------
@@ -1188,6 +1193,17 @@ INSERT INTO d SELECT g, g, 'z' FROM generate_series(1, 100) g;
 SQL
   compare ddl_before d d_mc "id, a, z"
 }
+# compare_or_ddl_errored <check> <heap> <mirror> <cols>: after unsupported source DDL the mirror
+# either equals the heap, or that mirror is errored: its scans fail naming it, the schema change and
+# the remedy (drop and re-create). Silent divergence and any other error fail.
+compare_or_ddl_errored() {
+  local e=$OUT/$1.mirror.err
+  compare_core "$1" "$2" "$3" "$4" "$CONVERGE_SECS"
+  if (( CMP_OK != 0 )) && [[ $CMP_DETAIL == "mirror query failed"* ]] && grep -qF "public.$3" "$e" &&
+    grep -q 'schema changes are not supported' "$e" && grep -q 'drop and re-create' "$e"; then
+    result "$1" 0 "mirror errored: $(grep -m1 'ERROR:' "$e" | cut -c1-200)"
+  else result "$1" "$CMP_OK" "$CMP_DETAIL"; fi
+}
 ddl_finish() {
   run bystander_workload -c "INSERT INTO other VALUES (2, 'b')"
   compare bystander_after_ddl other other_mc
@@ -1199,7 +1215,7 @@ ddl_finish() {
 scenario_ddl() {
   ddl_cluster ddl || return
   run ddl_add_column -c "ALTER TABLE d ADD COLUMN b int DEFAULT 5" -c "INSERT INTO d SELECT g, g, 'z', 7 FROM generate_series(101, 200) g"
-  compare ddl_after_add_column d d_mc "id, a, z"
+  compare_or_ddl_errored ddl_after_add_column d d_mc "id, a, z"
   psqlq -c "\d d_mc" > "$OUT/ddl_mirror_schema.txt" 2>&1
   ddl_finish
 }
@@ -1207,7 +1223,7 @@ scenario_ddl() {
 scenario_ddl_drop() {
   ddl_cluster ddl_drop || return
   run ddl_drop_column -c "ALTER TABLE d DROP COLUMN z" -c "INSERT INTO d (id, a) SELECT g, g FROM generate_series(201, 300) g" -c "UPDATE d SET a = -a WHERE id <= 10"
-  compare ddl_after_drop_column d d_mc "id, a"
+  compare_or_ddl_errored ddl_after_drop_column d d_mc "id, a"
   ddl_finish
 }
 

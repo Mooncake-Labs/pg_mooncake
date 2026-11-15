@@ -11,6 +11,7 @@ DELETE FROM w_mc;
 WITH d AS (DELETE FROM w_mc RETURNING *) SELECT count(*) FROM d;
 EXPLAIN (COSTS OFF) UPDATE w_mc SET b = 'z';
 -- PostgreSQL 14 has no MERGE; elsewhere it is rejected like the other writes.
+SET client_min_messages = notice;
 DO $$
 BEGIN
   EXECUTE 'MERGE INTO w_mc t USING w s ON t.a = s.a WHEN MATCHED THEN DELETE';
@@ -24,6 +25,7 @@ EXCEPTION
     RAISE NOTICE 'MERGE: cannot modify mirror public.w_mc';
 END
 $$;
+RESET client_min_messages;
 -- So are TRUNCATE (alone or with other tables) and COPY FROM.
 TRUNCATE w_mc;
 TRUNCATE w, w_mc;

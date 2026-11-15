@@ -138,7 +138,8 @@ load_known_bugs() {
         # ... and so does one that matches these: canaries shaped like signatures, and plain text.
         if [[ x =~ $rest || "a b" =~ $rest || "zq canary x1" =~ $rest || "zq/canary.rs:1 x1" =~ $rest ||
               "x[0-9]: /a/b.rs:1 q9 [z]" =~ $rest ||
-              "the quick brown fox jumps over the lazy dog 0123456789" =~ $rest ]]; then
+              "the quick brown fox jumps over the lazy dog 0123456789" =~ $rest ||
+              "backend crashed (zq, signal 1, cassert=no) running [zq]; TRAP: none" =~ $rest ]]; then
           echo "$KNOWN_BUGS:$n: regex matches arbitrary text: $rest" >&2; exit 2
         fi
         KNOWN_RULES[$a]+="$b"$'\t'"$rest"$'\n' ;;
@@ -151,6 +152,17 @@ load_known_bugs() {
       *) echo "$KNOWN_BUGS:$n: unknown entry '$kind'" >&2; exit 2 ;;
     esac
   done < "$KNOWN_BUGS"
+  # A rule that accepts a bare crash restart explains any crash, unless a "requires" line ties it to
+  # an earlier failure of its bug.
+  local key
+  for key in "${!KNOWN_RULES[@]}"; do
+    while IFS=$'\t' read -r b rest; do
+      [[ -n $b && -z ${RULE_REQUIRES[$key|$b]:-} ]] || continue
+      if [[ "reinitializing x1" =~ $rest ]]; then
+        echo "$KNOWN_BUGS: rule for $key ($b) matches any crash restart without a 'requires' line: $rest" >&2; exit 2
+      fi
+    done <<< "${KNOWN_RULES[$key]}"
+  done
   # With no entries, no blocking bug is listed and the gate could pass by accident (an empty file, a
   # file of comments). A release with no known bugs says so explicitly.
   if (( ${#BUG_CLASS[@]} == 0 )) && [[ ${EMPTY_KNOWN_BUGS_OK:-} != 1 ]]; then
@@ -435,13 +447,14 @@ worker_exits() {
 # older call every backend "server process" (and aux processes "<name> process"); 18 names the
 # backend type ("client backend", "walsender", "autovacuum worker", ...). Background workers
 # ('background worker "<name>"') have their own checks.
-CRASH_RE='LOG: +[a-zA-Z][a-zA-Z ]* \(PID [0-9]+\) (was terminated by signal [0-9]+|exited with exit code [0-9]+)'
+CRASH_RE='LOG: +[a-zA-Z][-a-zA-Z ]* \(PID [0-9]+\) (was terminated by signal [0-9]+|exited with exit code [0-9]+)'
 # CRASH_KIND_SED: the process kind at the start of a line, in PostgreSQL 17 terms, so signatures are
-# the same on every major: PG18 backend types become "server process", and aux process names lose
-# their " process" suffix ("checkpointer process" and "checkpointer" both become "checkpointer").
+# the same on every major: PG18 backend types (including "dead-end client backend") become "server
+# process", and any other kind loses a trailing " process", so a kind logged as "<name> process" and
+# one logged as "<name>" read the same.
 CRASH_KIND_SED='
-  s/^(client backend|walsender|autovacuum worker|slotsync worker|standalone backend) /server process /
-  /^server process /!s/^([a-zA-Z ]+) process /\1 /'
+  s/^(dead-end client backend|client backend|walsender|autovacuum worker|slotsync worker|standalone backend) /server process /
+  /^server process /!s/^([-a-zA-Z ]+) process /\1 /'
 # crash_restarts: one "<process kind> terminated by signal <n> x<count>" (background workers
 # included) or "<process kind> exited with exit code <n> x<count>" (not background workers, whose
 # exits bgworker_no_abnormal_exits checks) per kind of crash, "reinitializing
@@ -449,7 +462,7 @@ CRASH_KIND_SED='
 # during a stop ends it without a restart (pg_ctl stop then still returns 0).
 crash_restarts() {
   sed -nE 's/.*LOG: +(.*) \(PID [0-9]+\) was terminated by signal ([0-9]+).*/\1 terminated by signal \2/p;
-           s/.*LOG: +([a-zA-Z][a-zA-Z ]*) \(PID [0-9]+\) exited with exit code ([0-9]+).*/\1 exited with exit code \2/p;
+           s/.*LOG: +([a-zA-Z][-a-zA-Z ]*) \(PID [0-9]+\) exited with exit code ([0-9]+).*/\1 exited with exit code \2/p;
            s/.*all server processes terminated; reinitializing.*/reinitializing/p;
            s/.*LOG: +abnormal database system shutdown.*/abnormal shutdown/p' "$OUT/postgres.log" 2>/dev/null |
     sed -E "$CRASH_KIND_SED" | sort | uniq -c | awk '{c = $1; $1 = ""; print substr($0, 2) " x" c}'
@@ -504,7 +517,7 @@ still_running() {
   # titles; a client backend's is "<role> <db> <address> ...", so a role named like one of them
   # still shows up.
   local wal_re='^walsender [^ ]+ [^ ]+ (\[local\]|[^ ]*\([0-9]+\)|[0-9a-fA-F.:]+)( |$)'
-  local aux_re='^(checkpointer|background writer|walwriter|logger|archiver|startup( .*)?|walsummarizer|io worker [0-9]+|autovacuum launcher)$'
+  local aux_re='^(checkpointer|background writer|walwriter|logger|archiver|startup( (recovering|waiting)( .*)?)?|walsummarizer|io worker [0-9]+|autovacuum launcher)$'
   ws=$(grep -cE "$wal_re" <<< "$titles")
   r=$(grep -vE "$wal_re" <<< "$titles" | grep -vE "$aux_re" | grep -v '^$' | sort -u | paste -sd, -)
   echo "${r:-none}; walsenders: $ws"
@@ -1207,7 +1220,7 @@ crash_detail() {
   log=$(tail -n +"$(( $1 + 1 ))" "$OUT/postgres.log")
   line=$(grep -aE -m1 "$CRASH_RE" <<< "$log")
   [[ -n $line ]] || return 0
-  kind=$(sed -E 's/.*LOG: +([a-zA-Z][a-zA-Z ]*) \(PID .*/\1 /' <<< "$line" | sed -E "$CRASH_KIND_SED" | sed 's/ $//')
+  kind=$(sed -E 's/.*LOG: +([a-zA-Z][-a-zA-Z ]*) \(PID .*/\1 /' <<< "$line" | sed -E "$CRASH_KIND_SED" | sed 's/ $//')
   how=$(sed -E 's/.*(was terminated by signal|exited with exit code) ([0-9]+).*/\1 \2/; s/^was terminated by //; s/^exited with //' <<< "$line")
   trap=$(grep -a -m1 '^TRAP: ' <<< "$log" | sed -E 's/^TRAP: //; s/, PID: [0-9]+//')
   stmt=$(grep -aE -m1 'DETAIL: +Failed process was running: ' <<< "$log" | sed -E 's/.*Failed process was running: +//; s/[; ]+$//')

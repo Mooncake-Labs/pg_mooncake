@@ -131,15 +131,16 @@ requires source_drop_restart.orphaned_mirror_unlisted dropped-source-crash-loop 
 
 # ---- sessions that crash the backend (pg_duckdb 7daa8e5) ------------------------------------------
 bug pgduckdb-timezone-hook-crash class=blocking After any DuckDB query in a session, a config reload or a TimeZone reset at transaction end (SET LOCAL ... COMMIT, SET ... ROLLBACK) runs pg_duckdb's TimeZone hook outside a transaction and crashes the backend (crash recovery for the whole server)
-# Assertion sites are pinned per PostgreSQL major: relcache.c:2052 (17) / 2071 (18), and pg_duckdb's
-# vendored ruleutils pg_ruleutils_17.c:7053 / pg_ruleutils_18.c:7355.
+# The relcache.c assertion moves between PostgreSQL minor releases, so only its text is pinned; the
+# sites in pg_duckdb's vendored ruleutils (pg_ruleutils_17.c:7053, pg_ruleutils_18.c:7355) depend
+# on the pg_duckdb pin only.
 bug mirror-write-multiassign-crash class=blocking UPDATE or INSERT ... ON CONFLICT DO UPDATE of a mirror with SET (...) = (SELECT ...) crashes the backend in pg_duckdb's deparser instead of failing (crash recovery for the whole server)
 
-check config_reload.reload_after_mirror_read pgduckdb-timezone-hook-crash ^backend crashed \(server process, signal 6, cassert=yes\) running \[SELECT 'before ' \|\| 'reload'\]; TRAP: failed Assert\("IsTransactionState\(\)"\), File: "relcache\.c", Line: (2052|2071)$
+check config_reload.reload_after_mirror_read pgduckdb-timezone-hook-crash ^backend crashed \(server process, signal 6, cassert=yes\) running \[SELECT 'before ' \|\| 'reload'\]; TRAP: failed Assert\("IsTransactionState\(\)"\), File: "relcache\.c", Line: [0-9]+$
 check config_reload.reload_after_mirror_read pgduckdb-timezone-hook-crash ^backend crashed \(server process, signal 11, cassert=no\) running \[SELECT 'before ' \|\| 'reload'\]; TRAP: none$
-check config_reload.set_local_time_zone_commit pgduckdb-timezone-hook-crash ^backend crashed \(server process, signal 6, cassert=yes\) running \[COMMIT\]; TRAP: failed Assert\("IsTransactionState\(\)"\), File: "relcache\.c", Line: (2052|2071)$
+check config_reload.set_local_time_zone_commit pgduckdb-timezone-hook-crash ^backend crashed \(server process, signal 6, cassert=yes\) running \[COMMIT\]; TRAP: failed Assert\("IsTransactionState\(\)"\), File: "relcache\.c", Line: [0-9]+$
 check config_reload.set_local_time_zone_commit pgduckdb-timezone-hook-crash ^backend crashed \(server process, signal 11, cassert=no\) running \[COMMIT\]; TRAP: none$
-check config_reload.set_time_zone_rollback pgduckdb-timezone-hook-crash ^backend crashed \(server process, signal 6, cassert=yes\) running \[ROLLBACK\]; TRAP: failed Assert\("IsTransactionState\(\)"\), File: "relcache\.c", Line: (2052|2071)$
+check config_reload.set_time_zone_rollback pgduckdb-timezone-hook-crash ^backend crashed \(server process, signal 6, cassert=yes\) running \[ROLLBACK\]; TRAP: failed Assert\("IsTransactionState\(\)"\), File: "relcache\.c", Line: [0-9]+$
 check config_reload.set_time_zone_rollback pgduckdb-timezone-hook-crash ^backend crashed \(server process, signal 11, cassert=no\) running \[ROLLBACK\]; TRAP: none$
 check config_reload.no_postgres_crash_restarts pgduckdb-timezone-hook-crash ^((server process terminated by signal (6|11)|reinitializing) x[1-3]|server process crashes not reported by a session check x0)$
 requires config_reload.no_postgres_crash_restarts pgduckdb-timezone-hook-crash config_reload.reload_after_mirror_read pgduckdb-timezone-hook-crash

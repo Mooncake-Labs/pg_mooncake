@@ -10,6 +10,32 @@ INSERT INTO w_mc VALUES (1, 'q') ON CONFLICT (a) DO UPDATE SET (b, a) = (SELECT 
 DELETE FROM w_mc;
 WITH d AS (DELETE FROM w_mc RETURNING *) SELECT count(*) FROM d;
 EXPLAIN (COSTS OFF) UPDATE w_mc SET b = 'z';
+-- PostgreSQL 14 has no MERGE; elsewhere it is rejected like the other writes.
+DO $$
+BEGIN
+  EXECUTE 'MERGE INTO w_mc t USING w s ON t.a = s.a WHEN MATCHED THEN DELETE';
+EXCEPTION
+  WHEN wrong_object_type THEN
+    RAISE NOTICE 'MERGE: %', SQLERRM;
+  WHEN syntax_error THEN
+    IF current_setting('server_version_num')::int >= 150000 THEN
+      RAISE;
+    END IF;
+    RAISE NOTICE 'MERGE: cannot modify mirror public.w_mc';
+END
+$$;
+-- So are TRUNCATE (alone or with other tables) and COPY FROM.
+TRUNCATE w_mc;
+TRUNCATE w, w_mc;
+COPY w_mc FROM '/dev/null';
+-- A mirror cannot become a partition or an inheritance child: writes to the parent would reach it.
+CREATE TABLE w_parted (a int NOT NULL, b text) PARTITION BY RANGE (a);
+ALTER TABLE w_parted ATTACH PARTITION w_mc FOR VALUES FROM (0) TO (10);
+CREATE TABLE w_parent (a int NOT NULL, b text);
+ALTER TABLE w_mc INHERIT w_parent;
+DROP TABLE w_parted, w_parent;
+-- COPY out of a mirror is a read.
+COPY (SELECT * FROM w_mc ORDER BY a) TO STDOUT;
 -- Reads and writes to the source still work.
 UPDATE w SET b = 'y';
 SELECT * FROM w_mc;

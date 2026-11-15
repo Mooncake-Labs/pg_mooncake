@@ -23,6 +23,9 @@ upgrading**; see [Upgrading from 0.2](README.md#upgrading-from-02).
 - `DROP TABLE` of a mirror always succeeds. If moonlink is down or does not answer, the drop completes with a `WARNING`
   describing how to clean up moonlink's copy. All mirror drops of one transaction wait at most 30 s in total.
 - `PREPARE TRANSACTION` in a transaction that drops a mirror is an error.
+- `INSERT`, `UPDATE`, `DELETE` and `MERGE` on a mirror fail with `cannot modify mirror <name>` before pg_duckdb plans
+  them. Before, some forms crashed the backend on assert-enabled builds (`UPDATE ... SET (a, b) = (SELECT ...)`) or
+  raised DuckDB internal errors.
 
 ### Fixed
 - `DROP TABLE` and `DROP SCHEMA ... CASCADE` of regular tables no longer contact moonlink, so they work

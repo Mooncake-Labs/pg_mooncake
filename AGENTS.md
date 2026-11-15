@@ -46,8 +46,10 @@ when your local tests (with a locally built extension) pass.
    - A clean exit (e.g. the worker alone receives SIGTERM) exits with status 0, and Postgres never restarts it.
 2. **Shutdown signals are handled only on the worker's main thread** (`src/bgworker.rs`). moonlink's `tokio::signal`
    handler chains to pgrx's SIGTERM handler, which calls into Postgres and panics on any other thread, so SIGTERM, SIGHUP
-   and SIGINT are blocked in every runtime thread (`on_thread_start`). Keep that if you change how the runtime is
-   built, and don't call Postgres from runtime threads.
+   and SIGINT are blocked in every moonlink thread: the main thread blocks them while it creates the runtime and the
+   `moonlink` thread (which inherit its mask), `on_thread_start` covers threads created later, and the main thread then
+   restores its own mask and only waits. Keep that if you change how the runtime is built, and don't call Postgres from
+   moonlink threads.
 3. **`ServiceConfig` is built with a struct literal** in `src/bgworker.rs`. Adding or removing a field in
    `moonlink_service` needs a matching edit there. **[pins]**
 4. **On this path moonlink uses only the sqlite metadata store** (`$PGDATA/pg_mooncake/moonlink_metadata_store.sqlite`,
@@ -89,7 +91,7 @@ when your local tests (with a locally built extension) pass.
 | `_PG_init`, bootstrap SQL | `src/lib.rs`, `src/sql/bootstrap.sql` |
 | `mooncake.create_table/create_snapshot/optimize_table/list_tables`, drop event trigger, identifier parsing | `src/functions.rs` |
 | Which dropped relations are mirrors (`object_access_hook`) | `src/drop_tracking.rs` |
-| Rejecting INSERT/UPDATE/DELETE/MERGE on mirrors (`planner_hook`, runs before pg_duckdb's) | `src/mirror_writes.rs` |
+| Rejecting writes, renames and attaching on mirrors (`planner_hook` and `ProcessUtility_hook`, run before pg_duckdb's) | `src/mirror_writes.rs` |
 | `mooncake` table AM (mostly `unimplemented!()`) and its registration with pg_duckdb | `src/table.rs` |
 | Background worker (`ServiceConfig`, `start_with_config`) | `src/bgworker.rs` |
 | Per-backend RPC connection (`rpc!`), tokio runtime, `DATABASE` | `src/utils.rs` |

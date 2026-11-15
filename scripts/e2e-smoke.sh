@@ -557,6 +557,9 @@ scenario_build() {
   # local build copied over an INSTALLed one keeps it.
   if [[ -n $path && -f $path.build-info ]]; then
     sha=$(sha256 "$path"); info=$(sed -n 's/^sha256=//p' "$path.build-info")
+    # Both must be real hashes: an empty hash on each side would compare equal.
+    [[ $sha =~ ^[0-9a-f]{64}$ ]] || sha="unreadable"
+    [[ $info =~ ^[0-9a-f]{64}$ ]] || info="missing"
     if [[ $sha == "$info" ]]; then result duckdb_mooncake_build_info_current 0
     else result duckdb_mooncake_build_info_current 1 "stale: build-info says sha256 $info, loaded file is $sha"; fi
     local b_commit b_dirty b_lock

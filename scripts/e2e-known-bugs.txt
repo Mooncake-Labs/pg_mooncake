@@ -65,6 +65,11 @@ bug bgworker-not-restarted A moonlink bgworker that exits cleanly (e.g. on SIGTE
 
 check moonlink_down.bgworker_restarted_after_term bgworker-not-restarted ^no new moonlink bgworker [0-9]+s after SIGTERM \(pid before: [0-9]+, now: \[\]\)$
 
+bug recreate-binds-old-table After a DROP that warned moonlink was down, mooncake.create_table under the same name fails on moonlink's duplicate check and leaves a mirror that reads the old moonlink table
+check moonlink_down.recreate_after_warned_drop recreate-binds-old-table ^rc=[0-9]+ ERROR: +mooncake\.create_table failed: .*Duplicate table added
+check moonlink_down.recreate_not_bound_to_old_table recreate-binds-old-table ^data mismatch .*; mirror reads: 1\|old-1 2\|old-2$
+requires moonlink_down.recreate_not_bound_to_old_table recreate-binds-old-table moonlink_down.recreate_after_warned_drop recreate-binds-old-table
+
 # ---- source DDL ---------------------------------------------------------------------------------
 bug ddl-breaks-cdc ALTER TABLE ADD/DROP COLUMN on a mirrored source panics moonlink: the mirror stops ingesting (DROP COLUMN: every mirror of the database)
 bug truncate-ignored TRUNCATE of a mirrored source is ignored: the mirror keeps the old rows
@@ -79,6 +84,38 @@ check ddl_drop.no_moonlink_panics ddl-breaks-cdc (storage/mooncake_table\.rs:(64
 check ddl_drop.no_moonlink_panics drop-of-dead-table-breaks-mirror (mooncake_table/table_event_manager\.rs:127|moonlink_connectors/src/replication_connection\.rs:146) x
 check truncate.truncate_not_silent truncate-ignored data mismatch.* 1a2,101
 
+# ---- restart after a source table was dropped ------------------------------------------------------
+bug dropped-source-crash-loop After a restart while a mirror's source table is gone, moonlink recovery fails on the missing table and the bgworker restarts every 15s, so mooncake.* calls fail
+
+check source_drop_restart.service_up_after_restart dropped-source-crash-loop ^mooncake\.list_tables\(\) not answering within [0-9]+s; panics since restart: none; last error: .*[Ff]ailed to connect to moonlink.*; bgworker errors since restart: [^;]*moonlink_backend/src/recovery_utils\.rs:77: [^;]*relation "public\.gone" does not exist x
+check source_drop_restart.no_crash_loop_after_restart dropped-source-crash-loop ^crash loop: [^;]*; panics since restart: none; .*; bgworker errors since restart: [^;]*moonlink_backend/src/recovery_utils\.rs:77: [^;]*relation "public\.gone" does not exist x
+check source_drop_restart.no_worker_errors_after_restart dropped-source-crash-loop moonlink_backend/src/recovery_utils\.rs:77: .*relation "public\.gone" does not exist x[0-9]+$
+check source_drop_restart.fresh_fence_setup dropped-source-crash-loop [Ff]ailed to connect to moonlink
+requires source_drop_restart.fresh_fence_setup dropped-source-crash-loop source_drop_restart.no_worker_errors_after_restart dropped-source-crash-loop
+check source_drop_restart.kept_cdc_after_restart dropped-source-crash-loop ([Ff]ailed to connect to moonlink|fence mirror e2e_fence_[0-9]+_mc missing)
+requires source_drop_restart.kept_cdc_after_restart dropped-source-crash-loop source_drop_restart.no_worker_errors_after_restart dropped-source-crash-loop
+check source_drop_restart.bgworker_no_abnormal_exits dropped-source-crash-loop ^exited with exit code 1 x[0-9]+$
+requires source_drop_restart.bgworker_no_abnormal_exits dropped-source-crash-loop source_drop_restart.no_worker_errors_after_restart dropped-source-crash-loop
+check source_drop_restart.drop_orphaned_mirror dropped-source-crash-loop ^rc=0 WARNING: +mirror public\.gone_mc was dropped, but moonlink did not drop it: [Ff]ailed to connect to moonlink
+requires source_drop_restart.drop_orphaned_mirror dropped-source-crash-loop source_drop_restart.no_worker_errors_after_restart dropped-source-crash-loop
+check source_drop_restart.orphaned_mirror_unlisted dropped-source-crash-loop ^after [0-9]+s, list_tables: .*[Ff]ailed to connect to moonlink
+requires source_drop_restart.orphaned_mirror_unlisted dropped-source-crash-loop source_drop_restart.no_worker_errors_after_restart dropped-source-crash-loop
+
+# ---- any scenario -------------------------------------------------------------------------------
+bug sigterm-handler-off-main-thread Intermittent: SIGTERM delivered to a tokio thread of the moonlink bgworker panics in pgrx's signal handler (postgres FFI from another thread); a run without it does not prove it FIXED
+check build.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+check main.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+check schema.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+check restart_after_drop.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+check persist.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+check moonlink_down.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+check ddl.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+check ddl_drop.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+check truncate.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+check source_drop_restart.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+check big_txn_restart.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+check crash.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+
 # ---- restart and crash --------------------------------------------------------------------------
 bug restart-crash-loop After a restart that follows a large (streamed) transaction, moonlink panics while recovering and the bgworker restarts every 15s, so mooncake.* calls fail
 bug replay-regresses-flush-lsn After a restart, replayed transactions regress a table's flush LSN: the table stops applying changes and DROP of its mirror hangs
@@ -87,6 +124,8 @@ check big_txn_restart.service_up_after_restart restart-crash-loop ^mooncake\.lis
 check big_txn_restart.no_crash_loop_after_restart restart-crash-loop ^crash loop: [^;]*; panics since restart: [^;]*storage/wal\.rs:682 x
 check big_txn_restart.no_panics_after_restart restart-crash-loop storage/wal\.rs:(682|979) x
 check big_txn_restart.no_panics_after_restart replay-regresses-flush-lsn mooncake_table/snapshot_validation\.rs:26 x
+check big_txn_restart.no_worker_errors_after_restart restart-crash-loop ^error: failed to send table event during recovery: SendError \{ \.\. \} x[0-9]+$
+requires big_txn_restart.no_worker_errors_after_restart restart-crash-loop big_txn_restart.no_panics_after_restart restart-crash-loop
 check big_txn_restart.fresh_fence_setup restart-crash-loop [Ff]ailed to connect to moonlink
 requires big_txn_restart.fresh_fence_setup restart-crash-loop big_txn_restart.no_panics_after_restart restart-crash-loop
 check big_txn_restart.resnapshot_recreate restart-crash-loop [Ff]ailed to connect to moonlink
@@ -109,6 +148,8 @@ check crash.service_up_after_crash restart-crash-loop ^mooncake\.list_tables\(\)
 check crash.no_crash_loop_after_crash restart-crash-loop ^crash loop: [^;]*; panics since restart: [^;]*storage/wal\.rs:682 x
 check crash.no_panics_after_crash restart-crash-loop storage/wal\.rs:(682|979) x
 check crash.no_panics_after_crash replay-regresses-flush-lsn mooncake_table/snapshot_validation\.rs:26 x
+check crash.no_worker_errors_after_crash restart-crash-loop ^error: failed to send table event during recovery: SendError \{ \.\. \} x[0-9]+$
+requires crash.no_worker_errors_after_crash restart-crash-loop crash.no_panics_after_crash restart-crash-loop
 check crash.fresh_fence_setup restart-crash-loop [Ff]ailed to connect to moonlink
 requires crash.fresh_fence_setup restart-crash-loop crash.no_panics_after_crash restart-crash-loop
 check crash.resnapshot_recreate restart-crash-loop [Ff]ailed to connect to moonlink

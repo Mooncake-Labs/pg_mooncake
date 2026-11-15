@@ -19,8 +19,8 @@ crash loop, `mooncake.list_tables()` must answer, and dropping and re-creating t
 It also checks that the duckdb_mooncake that DuckDB loads is built from the submodule commit that the DuckDB
 community extension for DuckDB v1.4.1 uses, with the same moonlink wire protocol.
 
-Requirements: Linux, bash 4 or later, GNU coreutils, procps, and a PostgreSQL install (tested with 17; 18 has not
-been run with this script yet) with pg_duckdb and pg_mooncake installed and the submodules checked out. The script
+Requirements: Linux, bash 4 or later, GNU coreutils, GNU find, procps, and a PostgreSQL install (tested with 17; 18 has
+not been run with this script yet) with pg_duckdb and pg_mooncake installed and the submodules checked out. The script
 checks its tool requirements before it starts. It runs about 20 minutes, creates clusters under `$E2E_DIR` on
 `$PGPORT`, and stops them when done.
 
@@ -61,9 +61,11 @@ signature. A check that fails that way reports `XFAIL(<bugs>)`; one that fails i
 makes a listed check pass, it reports `XPASS(<bugs>)`, and `KNOWN <bug> FIXED` means every check listed for that bug
 passed: remove its lines in the same change. For a bug whose description starts with `Intermittent:`, a run in which
 every listed check passed reports `NOT-SEEN` instead of `FIXED`: passing runs don't show that an intermittent bug is
-gone, so its entry stays until its fix is in. A known-bugs file that is missing, empty or has no `bug` entries is a
-setup error (exit 2), and so is a bug declared twice or a name outside `[A-Za-z0-9_.-]`. `EMPTY_KNOWN_BUGS_OK=1`
-allows an existing file without entries, for a release with no known bugs; a missing file is always an error.
+gone, so its entry stays until its fix is in. The known-bugs file must be a readable regular file. These are setup
+errors (exit 2): a missing file (or `KNOWN_BUGS` set to an empty value), a file that is empty or has no `bug` entries,
+a regex that matches the empty string, a bug declared twice, and a bug name outside `[A-Za-z0-9_.-]`.
+`EMPTY_KNOWN_BUGS_OK=1` allows an existing file without entries, for a release with no known bugs; a missing file is
+always an error.
 
 After unsupported source DDL (`ddl`, `ddl_drop`), a mirror passes if it equals the source, or if its scans fail with
 one ERROR line that names the mirror, says `schema changes are not supported` and gives the `drop and re-create`
@@ -82,10 +84,14 @@ shuts down. Errors before that are checked where they happen (for example `no_wo
 A clean stop that doesn't finish within 30 s fails, and names the processes still running and the panics during it.
 
 Session checks (`config_reload`, `mirror_writes`, `roles`) run one psql session per case. A backend crash, seen in the
-server log or as a lost connection, fails the case and names the signal, the statement and the assertion. The
-`config_reload` cases must read the mirror first (pg_duckdb's hook only runs once DuckDB is initialised) and then run
-without any error; the reload case also requires `received SIGHUP` in the server log. In `mirror_writes`, the contract
-a fix must meet for the multiple-assignment `UPDATE` and `INSERT ... ON CONFLICT DO UPDATE` is an ordinary
+server log or as a lost connection, fails the case and names the signal, the statement and the assertion. A session that
+lost its connection without a crash in the log is reported as `session lost its connection ...`, and a crash logged just
+after the session's last output (looked for 1.5 s later) as `a server process crashed after the session's last output`.
+`no_postgres_crash_restarts` also counts the server process crashes that no session check reported, so a crash elsewhere
+in the scenario isn't hidden behind a known one. The `config_reload` cases wait for the mirrors before each case, must
+read the mirror first (pg_duckdb's hook only runs once DuckDB is initialised) and then run without any error; the reload
+case also requires the backend's `pg_conf_load_time()` to advance. In `mirror_writes`, the contract a fix must meet for
+the multiple-assignment `UPDATE` and `INSERT ... ON CONFLICT DO UPDATE` is an ordinary
 `ERROR: cannot modify mirror ...` and no crash. No code emits that message yet; today plain writes fail with
 pg_duckdb's "not implemented" errors, which the plain-write controls accept as long as there is no crash.
 

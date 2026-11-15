@@ -23,8 +23,8 @@
 # and PASS (exit 0). A check that fails only as known limitations (XFAIL(limitation:...)) does not
 # fail the gate. SKIP means a check could not run, e.g. because postgres died.
 #
-# Known bugs are an optional overlay (KNOWN_BUGS=<file>, default scripts/e2e-known-bugs.txt if it
-# exists) that lists, per check, a bug and a regex for that bug's failure signature. A listed check
+# Known bugs come from KNOWN_BUGS=<file> (default scripts/e2e-known-bugs.txt; missing or without
+# entries is a setup error unless EMPTY_KNOWN_BUGS_OK=1) that lists, per check, a bug and a regex for that bug's failure signature. A listed check
 # whose failure signatures all match listed bugs reports XFAIL(<bugs>). Any other failure stays FAIL,
 # so a new problem in a check that is already known to fail is not hidden. A listed check that
 # passes reports XPASS(<bugs>), and KNOWN <bug> FIXED means every check listed for the bug passed
@@ -43,7 +43,8 @@
 #      E2E_DIR (clusters and outputs, default ${TMPDIR:-/tmp}/pg_mooncake-e2e), BUILD_SRC (checkout
 #      the binaries were built from; default the harness checkout), PGPORT (default 5400+major),
 #      CONVERGE_SECS (fence timeout, 30), GRACE_SECS (apply grace after the fence, 5),
-#      PSQL_TIMEOUT (per psql call, 60), KNOWN_BUGS, KNOWN_BUG_IDS,
+#      PSQL_TIMEOUT (per psql call, 60), KNOWN_BUGS, KNOWN_BUG_IDS, EMPTY_KNOWN_BUGS_OK (1: allow a
+#      known-bugs file without entries),
 #      WIRE_MOONLINK_RPC_REV and COMMUNITY_DUCKDB_MOONCAKE_REF (expected pins, see scenario build).
 set -uo pipefail
 
@@ -136,6 +137,11 @@ load_known_bugs() {
         *) echo "$KNOWN_BUGS:$n: unknown entry '$kind'" >&2; exit 2 ;;
       esac
     done < "$KNOWN_BUGS"
+  fi
+  # With no entries, no blocking bug is listed and the gate could pass by accident (a missing default
+  # file, a file of comments). A release with no known bugs says so explicitly.
+  if (( ${#BUG_CLASS[@]} == 0 )) && [[ ${EMPTY_KNOWN_BUGS_OK:-} != 1 ]]; then
+    echo "$KNOWN_BUGS: missing or no 'bug' entries (set EMPTY_KNOWN_BUGS_OK=1 if there are no known bugs)" >&2; exit 2
   fi
   if [[ -f $KNOWN_BUG_IDS ]]; then
     while read -r a b; do [[ -z $a || $a == \#* ]] || BUG_IDS[$a]=$b; done < "$KNOWN_BUG_IDS"
@@ -391,8 +397,8 @@ panic_sites() {
 panics_inline() { local p; p=$(panic_sites "${1:-0}" | paste -sd, - | sed 's/,/, /g'); echo "${p:-none}"; }
 # worker_exits: one "<how> x<count>" per kind of abnormal moonlink bgworker exit the postmaster logged.
 # A worker exits with code 1 on SIGTERM so that the postmaster restarts it; one such exit is left out
-# in each postgres.log line range of ALLOWED_EXIT_LINES ("<from> <to> ...": the SIGTERM test and the
-# final stop), unless that worker logged an ERROR (it then died of the error). A signal death is
+# in each postgres.log line range of ALLOWED_EXIT_LINES ("<from> <to> ...": the SIGTERM test and every
+# clean stop), unless that worker logged an ERROR (it then died of the error). A signal death is
 # never left out.
 worker_exits() {
   local errpids
@@ -454,8 +460,10 @@ stop() {
   from=$(wc -l < "$OUT/postgres.log")
   "$BIN/pg_ctl" -D "$DATA" -m "$mode" -w -t 30 stop > /dev/null 2>&1; rc=$?
   (( rc == 0 )) || "$BIN/pg_ctl" -D "$DATA" -m immediate -w stop > /dev/null 2>&1
-  # end_cluster allows the bgworker's exit during the final stop (see worker_exits).
   LAST_STOP_LINES="$from $(wc -l < "$OUT/postgres.log")"
+  # A clean stop SIGTERMs the bgworker, which may exit with code 1 (see worker_exits). An immediate
+  # stop sends SIGQUIT, and nothing is excused there.
+  [[ $mode == fast ]] && ALLOWED_EXIT_LINES+=" $LAST_STOP_LINES"
   [[ -z $check ]] && return 0
   if (( rc == 0 )); then result "$check" 0
   else result "$check" 1 "pg_ctl stop -m $mode did not finish within 30s (continuing after -m immediate)"; fi
@@ -502,7 +510,6 @@ end_cluster() {
   stop fast clean_stop_at_end
   CLUSTER_STOPPED=1
   if [[ -n $LAST_STOP_LINES ]]; then
-    ALLOWED_EXIT_LINES+=" $LAST_STOP_LINES"
     # The worker must shut down cleanly: an ERROR it logs during the stop is a failure.
     sites=$(worker_errors "${LAST_STOP_LINES%% *}")
     if [[ -n $sites ]]; then result no_worker_errors_during_final_stop 1 "bgworker errors: $(worker_errors_inline "${LAST_STOP_LINES%% *}")" "$sites"
@@ -791,14 +798,21 @@ SQL
   else result drop_all_slots 1 "$(psqlq -c "SELECT slot_name || ' active=' || active FROM pg_replication_slots" 2>&1 | one_line)"; fi
   find "$DATA/pg_mooncake" -maxdepth 3 > "$OUT/pg_mooncake_tree_after_drop_all.txt" 2>&1
   if poll_until 30 no_leftover_files; then result drop_all_files_removed 0
-  else result drop_all_files_removed 1 "$(leftover_files | head -5 | one_line)"; fi
+  else
+    # The signature is the whole listing, so a known leftover can't hide another one.
+    local left; left=$(leftover_files)
+    result drop_all_files_removed 1 "$(echo "$left" | wc -l) left: $(echo "$left" | head -5 | one_line)" "$(echo "$left" | paste -sd' ' -)"
+  fi
 
   end_cluster
 }
 no_files_matching() { [[ -z $(find "$DATA/pg_mooncake" -path "$1" 2>/dev/null | head -1) ]]; }
 leftover_files() {
-  find "$DATA/pg_mooncake" -mindepth 1 -maxdepth 2 -not -name moonlink.sock -not -name 'moonlink_metadata_store.sqlite*' \
-    -not -path '*/temp' -not -path '*/read_through_cache' -not -path '*/_wal' -not -path '*/postgres' -not -name indicator.text 2>/dev/null
+  # Everything under pg_mooncake, at any depth, except moonlink's own files and empty cache roots.
+  local p=$DATA/pg_mooncake
+  find "$p" -mindepth 1 -not -path "$p/moonlink.sock" -not -path "$p/moonlink_metadata_store.sqlite*" \
+    -not -path "$p/temp" -not -path "$p/read_through_cache" -not -path "$p/_wal" -not -path "$p/postgres" \
+    -not -path "$p/*/indicator.text" 2>/dev/null | sort
 }
 no_leftover_files() { [[ -z $(leftover_files | head -1) ]]; }
 

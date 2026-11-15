@@ -98,6 +98,8 @@ bug dropped-source-crash-loop class=blocking After a restart while a mirror's so
 check source_drop_restart.service_up_after_restart dropped-source-crash-loop ^mooncake\.list_tables\(\) not answering within [0-9]+s; panics since restart: none; last error: .*[Ff]ailed to connect to moonlink.*; bgworker errors since restart: [^;]*moonlink_backend/src/recovery_utils\.rs:77: [^;]*relation "public\.gone" does not exist x
 check source_drop_restart.no_crash_loop_after_restart dropped-source-crash-loop ^crash loop: [^;]*; panics since restart: none; .*; bgworker errors since restart: [^;]*moonlink_backend/src/recovery_utils\.rs:77: [^;]*relation "public\.gone" does not exist x
 check source_drop_restart.no_worker_errors_after_restart dropped-source-crash-loop moonlink_backend/src/recovery_utils\.rs:77: .*relation "public\.gone" does not exist x[0-9]+$
+check source_drop_restart.no_worker_errors_during_final_stop dropped-source-crash-loop moonlink_backend/src/recovery_utils\.rs:77: .*relation "public\.gone" does not exist x[0-9]+$
+requires source_drop_restart.no_worker_errors_during_final_stop dropped-source-crash-loop source_drop_restart.no_worker_errors_after_restart dropped-source-crash-loop
 check source_drop_restart.fresh_fence_setup dropped-source-crash-loop [Ff]ailed to connect to moonlink
 requires source_drop_restart.fresh_fence_setup dropped-source-crash-loop source_drop_restart.no_worker_errors_after_restart dropped-source-crash-loop
 check source_drop_restart.kept_cdc_after_restart dropped-source-crash-loop ([Ff]ailed to connect to moonlink|fence mirror e2e_fence_[0-9]+_mc missing)
@@ -134,6 +136,8 @@ check big_txn_restart.no_panics_after_restart restart-crash-loop storage/wal\.rs
 check big_txn_restart.no_panics_after_restart replay-regresses-flush-lsn mooncake_table/snapshot_validation\.rs:26 x
 check big_txn_restart.no_worker_errors_after_restart restart-crash-loop ^error: failed to send table event during recovery: SendError \{ \.\. \} x[0-9]+$
 requires big_txn_restart.no_worker_errors_after_restart restart-crash-loop big_txn_restart.no_panics_after_restart restart-crash-loop
+check big_txn_restart.no_worker_errors_during_final_stop restart-crash-loop ^error: failed to send table event during recovery: SendError \{ \.\. \} x[0-9]+$
+requires big_txn_restart.no_worker_errors_during_final_stop restart-crash-loop big_txn_restart.no_panics_after_restart restart-crash-loop
 check big_txn_restart.fresh_fence_setup restart-crash-loop [Ff]ailed to connect to moonlink
 requires big_txn_restart.fresh_fence_setup restart-crash-loop big_txn_restart.no_panics_after_restart restart-crash-loop
 check big_txn_restart.resnapshot_recreate restart-crash-loop [Ff]ailed to connect to moonlink
@@ -158,6 +162,8 @@ check crash.no_panics_after_crash restart-crash-loop storage/wal\.rs:(682|979) x
 check crash.no_panics_after_crash replay-regresses-flush-lsn mooncake_table/snapshot_validation\.rs:26 x
 check crash.no_worker_errors_after_crash restart-crash-loop ^error: failed to send table event during recovery: SendError \{ \.\. \} x[0-9]+$
 requires crash.no_worker_errors_after_crash restart-crash-loop crash.no_panics_after_crash restart-crash-loop
+check crash.no_worker_errors_during_final_stop restart-crash-loop ^error: failed to send table event during recovery: SendError \{ \.\. \} x[0-9]+$
+requires crash.no_worker_errors_during_final_stop restart-crash-loop crash.no_panics_after_crash restart-crash-loop
 check crash.fresh_fence_setup restart-crash-loop [Ff]ailed to connect to moonlink
 requires crash.fresh_fence_setup restart-crash-loop crash.no_panics_after_crash restart-crash-loop
 check crash.resnapshot_recreate restart-crash-loop [Ff]ailed to connect to moonlink

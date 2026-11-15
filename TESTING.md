@@ -56,9 +56,10 @@ usage or setup error. Cluster logs and query outputs stay under `$E2E_DIR/out-<m
 `scripts/e2e-known-bugs.txt` lists the failures known on the current submodules, each with a regex for its failure
 signature. A check that fails that way reports `XFAIL(<bugs>)`; one that fails in any other way is `FAIL`. When a fix
 makes a listed check pass, it reports `XPASS(<bugs>)`, and `KNOWN <bug> FIXED` means every check listed for that bug
-passed: remove its lines in the same change. A bug whose description starts with `Intermittent:` reports `NOT-SEEN`
-instead, since one clean run doesn't show it is gone. Setting `KNOWN_BUGS` to a file that is missing or empty is a
-setup error, and so is a bug declared twice.
+passed: remove its lines in the same change. For a bug whose description starts with `Intermittent:`, a run in which
+every listed check passed reports `NOT-SEEN` instead of `FIXED`: passing runs don't show that an intermittent bug is
+gone, so its entry stays until its fix is in. A known-bugs file that is missing, empty or has no `bug` entries is a
+setup error (exit 2), and so is a bug declared twice; a release with no known bugs sets `EMPTY_KNOWN_BUGS_OK=1`.
 
 After unsupported source DDL (`ddl`, `ddl_drop`), a mirror passes if it equals the source, or if its scans fail with
 one ERROR line that names the mirror, says `schema changes are not supported` and gives the `drop and re-create`
@@ -69,8 +70,8 @@ remedy. Any other error, or a mirror that silently differs, fails.
 Every known bug is declared once with a class, `bug <name> class=blocking|class=limitation <description>`:
 
 - `class=blocking`: the bug can crash-loop moonlink, panic, lose or silently change mirrored data, or leave mirrors
-  unusable. It must be fixed before a release, not listed. A check that fails with it reports `XFAIL(<bugs>)`, which
-  fails the gate.
+  unusable. A release needs it fixed and its entry removed; while it is listed the gate can't pass. A check that
+  fails with it reports `XFAIL(<bugs>)`, which fails the gate.
 - `class=limitation`: a documented restriction that is loud (an error at `mooncake.create_table`) or harmless. It
   ships and goes into the release notes. A check that fails only with limitations reports
   `XFAIL(limitation:<bugs>)`, and it doesn't count against the gate.
@@ -79,7 +80,7 @@ The gate is:
 
 - `FAIL` if any check is FAIL, SKIP or XFAIL of a blocking bug;
 - otherwise `BLOCKED` while the file lists any `class=blocking` bug, even one the run didn't hit (for example an
-  intermittent one reported `NOT-SEEN`); the `BLOCKING` line names them;
+  intermittent one that reports `NOT-SEEN` or `UNKNOWN`); the `BLOCKING` line names them;
 - otherwise `INCOMPLETE` if not every scenario ran;
 - otherwise `PASS`, which is what a release needs.
 

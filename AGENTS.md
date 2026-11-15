@@ -44,11 +44,15 @@ when your local tests (with a locally built extension) pass.
      (`src/bgworker.rs`: `start_with_config(config).await.unwrap()`). That includes a recovery error, so a table
      that fails recovery crash-loops the worker every 15 s.
    - A clean exit (e.g. the worker alone receives SIGTERM) exits with status 0, and Postgres never restarts it.
-2. **`ServiceConfig` is built with a struct literal** in `src/bgworker.rs`. Adding or removing a field in
+2. **Shutdown signals are handled only on the worker's main thread** (`src/bgworker.rs`). moonlink's `tokio::signal`
+   handler chains to pgrx's SIGTERM handler, which calls into Postgres and panics on any other thread, so SIGTERM, SIGHUP
+   and SIGINT are blocked in every runtime thread (`on_thread_start`). Keep that if you change how the runtime is
+   built, and don't call Postgres from runtime threads.
+3. **`ServiceConfig` is built with a struct literal** in `src/bgworker.rs`. Adding or removing a field in
    `moonlink_service` needs a matching edit there. **[pins]**
-3. **On this path moonlink uses only the sqlite metadata store** (`$PGDATA/pg_mooncake/moonlink_metadata_store.sqlite`,
+4. **On this path moonlink uses only the sqlite metadata store** (`$PGDATA/pg_mooncake/moonlink_metadata_store.sqlite`,
    the recovery source of truth) **and the filesystem Iceberg catalog.** **[pins]**
-4. **User-level recovery is "drop and re-create the mirror"** (`DROP TABLE <mirror>; CALL mooncake.create_table(...)`).
+5. **User-level recovery is "drop and re-create the mirror"** (`DROP TABLE <mirror>; CALL mooncake.create_table(...)`).
    DROP must succeed no matter what state moonlink is in:
    - An `object_access_hook` (`src/drop_tracking.rs`) records which dropped relations are mooncake mirrors (by
      `relam`, before the catalog rows go away; this covers cascades and `DROP SCHEMA`). The `sql_drop` trigger queues

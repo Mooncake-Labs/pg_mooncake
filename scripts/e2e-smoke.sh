@@ -3,7 +3,7 @@
 #
 # Usage: scripts/e2e-smoke.sh <pg_major> [scenario ...]
 #   scenarios: build main schema restart_after_drop persist moonlink_down ddl ddl_drop truncate
-#              big_txn_restart crash
+#              source_drop_restart big_txn_restart crash
 #              (default: all; each on a fresh cluster)
 # Requires Linux, bash >= 4, GNU coreutils (timeout, date), procps (pgrep), diff and find; checked
 # before anything else runs.
@@ -33,9 +33,10 @@
 # never block inside moonlink waiting for an LSN, so one stuck mirror can't wedge the rest of the run.
 # Read-your-writes waits are tested separately (ryw_* checks).
 #
-# Env: WORK (default ~/work), PG_PREFIX (default $WORK/pg/<major>), DUCKDB_EXTENSION_DIR,
-#      E2E_DIR (clusters and outputs, default $WORK/e2e), BUILD_SRC (checkout the binaries were
-#      built from; default the harness checkout), PGPORT (default 5400+major),
+# Env: PG_PREFIX (PostgreSQL install root; default: the one whose pg_config is on PATH),
+#      DUCKDB_EXTENSION_DIR (required: duckdb.extension_directory of the test clusters),
+#      E2E_DIR (clusters and outputs, default ${TMPDIR:-/tmp}/pg_mooncake-e2e), BUILD_SRC (checkout
+#      the binaries were built from; default the harness checkout), PGPORT (default 5400+major),
 #      CONVERGE_SECS (fence timeout, 30), GRACE_SECS (apply grace after the fence, 5),
 #      PSQL_TIMEOUT (per psql call, 60), KNOWN_BUGS, KNOWN_BUG_IDS,
 #      WIRE_MOONLINK_RPC_REV and COMMUNITY_DUCKDB_MOONCAKE_REF (expected pins, see scenario build).
@@ -62,14 +63,15 @@ export LC_MESSAGES=C
 unset LANGUAGE
 
 MAJOR=${1:?pg major}; shift
-ALL_SCENARIOS=(build main schema restart_after_drop persist moonlink_down ddl ddl_drop truncate big_txn_restart crash)
+ALL_SCENARIOS=(build main schema restart_after_drop persist moonlink_down ddl ddl_drop truncate source_drop_restart
+  big_txn_restart crash)
 SCENARIOS=("$@"); [[ ${#SCENARIOS[@]} -eq 0 ]] && SCENARIOS=("${ALL_SCENARIOS[@]}")
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
-WORK=${WORK:-$HOME/work}
-PG_PREFIX=${PG_PREFIX:-$WORK/pg/$MAJOR}
+if [[ -z ${PG_PREFIX:-} ]] && command -v pg_config > /dev/null; then PG_PREFIX=$(dirname "$(pg_config --bindir)"); fi
+PG_PREFIX=${PG_PREFIX:-}
 BIN=$PG_PREFIX/bin
-EXTDIR=${DUCKDB_EXTENSION_DIR:-$WORK/duckdb_extensions}
-E2E_DIR=${E2E_DIR:-$WORK/e2e}
+EXTDIR=${DUCKDB_EXTENSION_DIR:-}
+E2E_DIR=${E2E_DIR:-${TMPDIR:-/tmp}/pg_mooncake-e2e}
 BUILD_SRC=${BUILD_SRC:-$SCRIPT_DIR/..}
 CONVERGE_SECS=${CONVERGE_SECS:-30}
 GRACE_SECS=${GRACE_SECS:-5}
@@ -80,7 +82,10 @@ DB_USER=${USER:-$(id -un)}
 export PGHOST=/tmp PGDATABASE=postgres PGPORT=${PGPORT:-$((5400 + MAJOR))}
 SCEN=""; DATA=""; OUT=""; FENCE_SRC=""; FENCE_MC=""; FENCE_N=0; RESNAPSHOT_OK=0; ALLOWED_EXIT_LINES=""; WAIT_ERR=""
 
-[[ -x $BIN/psql ]] || { echo "no psql in $BIN (set PG_PREFIX)" >&2; exit 2; }
+[[ -n $PG_PREFIX && -x $BIN/psql ]] || { echo "no psql in ${PG_PREFIX:-<unset>}/bin (set PG_PREFIX)" >&2; exit 2; }
+pg_major_found=$("$BIN/pg_config" --version | sed -E 's/^PostgreSQL ([0-9]+).*/\1/')
+[[ $pg_major_found == "$MAJOR" ]] || { echo "$PG_PREFIX is PostgreSQL $pg_major_found, not $MAJOR (set PG_PREFIX)" >&2; exit 2; }
+[[ -n $EXTDIR ]] || { echo "set DUCKDB_EXTENSION_DIR (see TESTING.md)" >&2; exit 2; }
 
 # ---- known bugs ----------------------------------------------------------------------------------
 # File lines: "bug <name> <description>", "check <scenario.check> <bug> <regex>" and
@@ -240,7 +245,7 @@ SQL
 # check_mirror_scalar <check> <sql> <expected>: fence, then a fresh-session read (no read-your-writes
 # wait) polled for up to GRACE_SECS while the table applies the events it was handed.
 check_mirror_scalar() {
-  local got t0
+  local got t0 rc
   if ! fence_wait "$CONVERGE_SECS"; then result "$1" 1 "$FENCE_ERR"; return; fi
   t0=$(date +%s)
   while got=$(psqlq -c "$2" 2>&1); [[ $got != "$3" ]] && (( $(date +%s) - t0 < GRACE_SECS )); do sleep 0.3; done
@@ -315,17 +320,33 @@ moonlink_restarted() { local p; p=$(moonlink_pid); [[ -n $p && $p != "$1" ]]; }
 # panic_lines: one line per "panicked at" line in the postgres log: "<path>:<line>" with registry and
 # checkout prefixes stripped (so locations compare across machines), or "unparsed panic: <text>" for
 # any other form, so that no panic is dropped and marks (panic_count) and sites count the same lines.
+# Source paths in messages, shortened to the crate-relative path (registry crates, git checkouts,
+# the moonlink submodule).
+SITE_SED='
+  s#^.*/registry/src/[^/]+/##
+  s#^.*/git/checkouts/[^/]+/[^/]+/##
+  s#^/([^/]+/)*(moonlink/src/(moonlink|moonlink_[a-z_]+)/src/)#\2#'
 panic_lines() {
   grep 'panicked at' "$OUT/postgres.log" 2>/dev/null | sed -E '
     s/.*panicked at ([^ ]+):([0-9]+):[0-9]+:.*/\1:\2/
     t parsed
     s/.*panicked at (.{0,80}).*/unparsed panic: \1/
     b
-    :parsed
-    s#^.*/registry/src/[^/]+/##
-    s#^.*/git/checkouts/[^/]+/[^/]+/##
-    s#^/([^/]+/)*(moonlink/src/(moonlink|moonlink_[a-z_]+)/src/)#\2#'
+    :parsed'"$SITE_SED"
 }
+# worker_errors [n]: one "<site> x<count>" per distinct ERROR that a moonlink bgworker logged after
+# line n of postgres.log. A bgworker exits on ERROR, and pgrx reports a Rust unwrap() failure as an
+# ERROR, not a panic. The site is the error's first source location, or its text if it has none.
+worker_errors() {
+  local pids line site
+  pids=$(sed -nE 's/.*background worker "moonlink" \(PID ([0-9]+)\) (exited|was terminated).*/\1/p' "$OUT/postgres.log" 2>/dev/null | paste -sd'|' -)
+  [[ -n $pids ]] || return 0
+  tail -n +"$(( ${1:-0} + 1 ))" "$OUT/postgres.log" | grep -E "\[($pids)\] ERROR: " | while IFS= read -r line; do
+    site=$(grep -oE ' at /[^ ,]+:[0-9]+:[0-9]+' <<< "$line" | head -1 | sed -E 's/^ at //; s/:([0-9]+):[0-9]+$/:\1/'"$SITE_SED")
+    echo "${site:-error: $(sed -E 's/.*ERROR: +//' <<< "$line" | cut -c1-80)}"
+  done | sort | uniq -c | awk '{c = $1; $1 = ""; print substr($0, 2) " x" c}'
+}
+worker_errors_inline() { local p; p=$(worker_errors "${1:-0}" | paste -sd, - | sed 's/,/, /g'); echo "${p:-none}"; }
 panic_count() { panic_lines | wc -l; }
 # panic_sites [n]: one "<site> x<count>" per distinct panic site, counting only panics after the first n.
 panic_sites() {
@@ -352,19 +373,20 @@ crash_restarts() {
     sort | uniq -c | awk '{c = $1; $1 = ""; print substr($0, 2) " x" c}'
 }
 
-# no_crash_loop <check> [panic mark]: over a 20s window the bgworker pid is stable and
+# no_crash_loop <check> [panic mark] [log line mark]: over a 20s window the bgworker pid is stable and
 # mooncake.list_tables() still answers (the user's "never crash-loop" criterion). Failures name the
 # panics after the mark, so a known bug can be told apart from a new cause.
 no_crash_loop() {
-  local p1 p2 c1 c2 lt mark=${2:-0}
+  local p1 p2 c1 c2 lt mark=${2:-0} errs=""
   p1=$(moonlink_pid); c1=$(panic_count)
   sleep 20
   p2=$(moonlink_pid); c2=$(panic_count)
   lt=$(psqlq -c "SELECT count(*) FROM mooncake.list_tables()" 2>&1)
+  [[ -z ${3:-} ]] || errs="; bgworker errors since restart: $(worker_errors_inline "$3")"
   if [[ -z $p1 || $p1 != "$p2" ]]; then
-    result "$1" 1 "crash loop: bgworker pid [$p1] -> [$p2] in 20s; panics since restart: $(panics_inline "$mark"); list_tables: $(echo "$lt" | one_line 120)"
+    result "$1" 1 "crash loop: bgworker pid [$p1] -> [$p2] in 20s; panics since restart: $(panics_inline "$mark"); list_tables: $(echo "$lt" | one_line 120)$errs"
   elif [[ ! $lt =~ ^[0-9]+$ ]]; then
-    result "$1" 1 "bgworker up (pid $p1) but list_tables failed; panics since restart: $(panics_inline "$mark"); list_tables: $(echo "$lt" | one_line 160)"
+    result "$1" 1 "bgworker up (pid $p1) but list_tables failed; panics since restart: $(panics_inline "$mark"); list_tables: $(echo "$lt" | one_line 160)$errs"
   else result "$1" 0 "pid $p1, panics $c1 -> $c2 in 20s"; fi
 }
 
@@ -532,8 +554,14 @@ scenario_build() {
     else
       result duckdb_mooncake_built_from_pins 1 "built from commit [$b_commit] (pin [$pin]), dirty [$b_dirty], moonlink_rpc [$b_lock] (expected #$WIRE_MOONLINK_RPC_REV)"
     fi
+  elif [[ -n $path && -f $path.info ]]; then
+    # Installed by DuckDB from an extension repository: the loaded version is checked above.
+    info duckdb_mooncake_build_info "none; $path was installed by DuckDB INSTALL"
   else
-    info duckdb_mooncake_build_info "none next to ${path:-the loaded extension}: the loaded binary's build provenance is unverified"
+    local hint="no $path.build-info, so the loaded binary's build provenance is unverified; after building, run: scripts/e2e-build-info.sh $path"
+    [[ -n $path ]] || hint="no duckdb_mooncake loaded"
+    result duckdb_mooncake_build_info_current skip "$hint"
+    result duckdb_mooncake_built_from_pins skip "$hint"
   fi
   end_cluster
 }
@@ -666,7 +694,16 @@ SQL
   if poll_until 30 sql_is "$pubq" 0; then result drop_source_removed_from_publication 0
   else result drop_source_removed_from_publication 1 "count=$(psqlq -c "$pubq" 2>&1) after 30s"; fi
   run drop_source_with_mirror -c "DROP TABLE trades"
-  check_mirror_scalar mirror_survives_source_drop "SELECT count(*) FROM trades_iceberg" "4"
+  # The mirror of a dropped source may keep serving its last rows, or error naming the source.
+  local got t0 rc
+  if ! fence_wait "$CONVERGE_SECS"; then result source_drop_not_silent 1 "$FENCE_ERR"
+  else
+    t0=$(date +%s)
+    while got=$(psqlq -c "SELECT count(*) FROM trades_iceberg" 2>&1); rc=$?; (( rc == 0 )) && [[ $got != 4 ]] && (( $(date +%s) - t0 < GRACE_SECS )); do sleep 0.3; done
+    if (( rc == 0 )) && [[ $got == 4 ]]; then result source_drop_not_silent 0 "4 rows"
+    elif (( rc != 0 && rc < 124 )) && [[ $got =~ ERROR:.*trades([^_]|$) ]]; then result source_drop_not_silent 0 "mirror errors: $(echo "$got" | one_line 160)"
+    else result source_drop_not_silent 1 "rc=$rc, expected 4 rows or an error naming trades, got [$(echo "$got" | one_line 160)]"; fi
+  fi
   # Drop every remaining mirror (incl. the fence); the database should then hold no slot or
   # publication (an orphaned inactive logical slot retains WAL forever).
   local m rc mirrors failed=""
@@ -820,6 +857,36 @@ raw_psql() {
   timeout -k 5 "$secs" "$BIN/psql" -X -qAt -v ON_ERROR_STOP=0 "$@" > "$out" 2> "$err"
 }
 
+# recreate_after_warned_drop: s4_mc was dropped while moonlink was down, so moonlink still has
+# public.s4_mc (from s4, rows old-*). Re-creating the mirror from a new source must replace that
+# table, or fail without leaving a mirror that reads it.
+recreate_compare() {
+  compare_core recreate_not_bound_to_old_table s4b s4_mc '*' "$CONVERGE_SECS"
+  (( CMP_OK == 0 )) || CMP_DETAIL+="; mirror reads: $(head -3 "$OUT/recreate_not_bound_to_old_table.mirror" 2>/dev/null | one_line 80)"
+  result recreate_not_bound_to_old_table "$CMP_OK" "$CMP_DETAIL"
+}
+recreate_after_warned_drop() {
+  local reg="SELECT count(*) FROM mooncake.list_tables() WHERE \"table\" = 'public.s4_mc'"
+  info orphan_listed_after_restart "public.s4_mc listed: $(psqlq -c "$reg" 2>&1 | one_line 80)"
+  # A new source: a source that already has a mirror can't be mirrored again.
+  run recreate_source_setup -c "CREATE TABLE s4b (id int PRIMARY KEY, v text)" -c "INSERT INTO s4b VALUES (10, 'new-10'), (11, 'new-11')"
+  run recreate_after_warned_drop -c "CALL mooncake.create_table('s4_mc', 's4b')"
+  if [[ ${STATUS_OF[$SCEN.recreate_after_warned_drop]} == *PASS ]]; then
+    recreate_compare
+    check_eq recreate_single_registration "$(psqlq -c "$reg" 2>&1)" 1
+    run recreate_cdc_workload -c "INSERT INTO s4b VALUES (12, 'new-12')" -c "DELETE FROM s4b WHERE id = 10"
+    compare cdc_into_recreated s4b s4_mc
+    return
+  fi
+  if [[ $(psqlq -c "SELECT to_regclass('s4_mc') IS NULL" 2>&1) == t ]]; then
+    result recreate_not_bound_to_old_table 0 "create_table failed and left no mirror"
+  else
+    recreate_compare
+  fi
+  result recreate_single_registration skip "not attempted: create_table failed"
+  result cdc_into_recreated skip "not attempted: create_table failed"
+}
+
 scenario_moonlink_down() {
   new_cluster moonlink_down || return
   run setup <<'SQL'
@@ -832,6 +899,9 @@ CREATE TABLE s2 (id int PRIMARY KEY, v text);
 CALL mooncake.create_table('s2_mc', 's2');
 CREATE TABLE s3 (id int PRIMARY KEY, v text);
 CALL mooncake.create_table('s3_mc', 's3');
+CREATE TABLE s4 (id int PRIMARY KEY, v text);
+INSERT INTO s4 VALUES (1, 'old-1'), (2, 'old-2');
+CALL mooncake.create_table('s4_mc', 's4');
 SQL
   local o=$OUT/down rc errs pid term_pid="" t0 secs log_before
 
@@ -881,6 +951,9 @@ SQL
   if (( rc == 0 )) && ! grep -q 'ERROR:' "$o.dm.err" && grep -q 'WARNING:.*did not drop' "$o.dm.err" && grep -qx 'dropped=true' "$o.dm.out"; then
     result drop_mirror_while_down 0 "$(grep -m1 'WARNING:' "$o.dm.err" | cut -c1-160)"
   else result drop_mirror_while_down 1 "rc=$rc $(one_line 240 < "$o.dm.err") $(one_line 40 < "$o.dm.out")"; fi
+  # s4_mc too, for the re-create checks after the restart (moonlink keeps its table).
+  raw_psql 30 "$o.d4.out" "$o.d4.err" -c "DROP TABLE s4_mc"
+  info drop_s4_mc_while_down "rc=$? $(one_line 160 < "$o.d4.err")"
   raw_psql 30 "$o.lt.out" "$o.lt.err" -c "SELECT count(*) FROM mooncake.list_tables()"; rc=$?
   if grep -q 'ERROR:' "$o.lt.err" && ! grep -qi 'server closed the connection\|terminated abnormally' "$o.lt.err" && pg_alive; then
     result list_tables_errors_while_down 0 "$(grep -m1 'ERROR:' "$o.lt.err" | cut -c1-120)"
@@ -894,6 +967,8 @@ SQL
 
   stop fast clean_stop_before_restart; start
   if wait_ready; then result restart_ready 0; else result restart_ready 1 "mooncake.list_tables() not answering within 60s"; fi
+
+  recreate_after_warned_drop
 
   # moonlink hung: DROP of a mirror returns (bounded RPC) with a WARNING instead of blocking forever.
   pid=$(moonlink_pid)
@@ -910,24 +985,29 @@ SQL
     else result drop_mirror_while_hung 1 "rc=$rc after ${secs}s: $(one_line 200 < "$o.hg.err")"; fi
   fi
 
-  # Orphan cleanup (INFO): s_mc was dropped while moonlink was down, so moonlink still has it. The
+  # Orphan cleanup: s_mc was dropped while moonlink was down, so moonlink still has it. The
   # documented cleanup is CREATE TABLE <same name> (id int) USING mooncake; DROP TABLE <same name>.
-  local m
-  for m in e2e_fence_mc e2e_probe_mc s3_mc; do raw_psql 40 "$o.cl.out" "$o.cl.err" -c "DROP TABLE IF EXISTS $m"; done
+  local m listed="SELECT count(*) FROM mooncake.list_tables() WHERE \"table\" = 'public.s_mc'"
+  for m in e2e_fence_mc e2e_probe_mc s3_mc s4_mc; do raw_psql 40 "$o.cl.out" "$o.cl.err" -c "DROP TABLE IF EXISTS $m"; done
   info orphan_before "list_tables: $(psqlq -c "SELECT string_agg(\"table\", ',') FROM mooncake.list_tables()" 2>&1 | one_line 160)"
   if [[ $(psqlq -c "SELECT to_regclass('s_mc') IS NULL" 2>&1) != t ]]; then
-    info orphan_cleanup "skipped: s_mc still exists in Postgres (its DROP failed while moonlink was down)"
+    result orphan_cleanup skip "s_mc still exists in Postgres (its DROP failed while moonlink was down)"
+  else
+    raw_psql 40 "$o.or.out" "$o.or.err" -c "CREATE TABLE s_mc (id int) USING mooncake" -c "DROP TABLE s_mc"; rc=$?
+    if (( rc == 0 )) && ! grep -q 'ERROR:' "$o.or.err" && poll_until 30 sql_is "$listed" 0; then result orphan_cleanup 0
+    else result orphan_cleanup 1 "rc=$rc $(one_line 160 < "$o.or.err"); public.s_mc still listed: $(psqlq -c "$listed" 2>&1 | one_line 80)"; fi
   fi
-  raw_psql 40 "$o.or.out" "$o.or.err" -c "DROP TABLE IF EXISTS s_mc" -c "CREATE TABLE s_mc (id int) USING mooncake" -c "DROP TABLE s_mc"; rc=$?
-  info orphan_cleanup "rc=$rc $(one_line 160 < "$o.or.err") public.s_mc still listed: $(psqlq -c "SELECT count(*) FROM mooncake.list_tables() WHERE \"table\" = 'public.s_mc'" 2>&1 | one_line 80)"
-  poll_until 30 sql_is "SELECT count(*) FROM pg_replication_slots" 0
-  info orphan_last_mirror_slot "slots after the last mirror was cleaned up: $(psqlq -c "SELECT count(*) || ' ' || coalesce(string_agg(slot_name, ','), '') FROM pg_replication_slots" 2>&1 | one_line 120)"
+  # Every mirror is gone now, so moonlink should list none and the database should hold no slot.
+  if poll_until 30 sql_is "SELECT count(*) FROM mooncake.list_tables()" 0; then result list_tables_empty_after_cleanup 0
+  else result list_tables_empty_after_cleanup 1 "still listed: $(psqlq -c "SELECT string_agg(\"table\", ',') FROM mooncake.list_tables()" 2>&1 | one_line 160)"; fi
+  if poll_until 30 sql_is "SELECT count(*) FROM pg_replication_slots" 0; then result last_mirror_slot_released 0
+  else result last_mirror_slot_released 1 "slots: $(psqlq -c "SELECT string_agg(slot_name || ' active=' || active, ',') FROM pg_replication_slots" 2>&1 | one_line 120)"; fi
 
   end_cluster
 }
 
 # ================================================================================================
-# Restart / crash acceptance (per user): crash recovery need not be exact. After a restart the
+# Restart / crash acceptance: crash recovery need not be exact. After a restart the
 # moonlink bgworker must be up and serving RPCs (no crash-loop), and drop + re-create of the mirror
 # ("resnapshot") must yield the heap contents. Exact post-restart equality is reported as INFO.
 
@@ -961,24 +1041,56 @@ cdc_after_resnapshot() {
   compare cdc_after_resnapshot "$1" "$2"
 }
 
-# restart_gate <suffix> <heap> <mirror> <stop mode>
-restart_gate() {
-  local mark sites
-  if [[ $4 == fast ]]; then stop fast clean_stop_before_restart; else stop "$4"; fi
-  mark=$(panic_count)
+# restart_checks <suffix> <stop mode>: stop, start, and require a serving bgworker without a crash
+# loop or panics during recovery.
+restart_checks() {
+  local mark sites logmark
+  if [[ $2 == fast ]]; then stop fast clean_stop_before_restart; else stop "$2"; fi
+  mark=$(panic_count); logmark=$(wc -l < "$OUT/postgres.log")
   start
   if wait_ready; then result "service_up_after_$1" 0
   else
-    result "service_up_after_$1" 1 "mooncake.list_tables() not answering within 60s; panics since restart: $(panics_inline "$mark"); last error: $(echo "$WAIT_ERR" | one_line 160)"
+    result "service_up_after_$1" 1 "mooncake.list_tables() not answering within 60s; panics since restart: $(panics_inline "$mark"); last error: $(echo "$WAIT_ERR" | one_line 160); bgworker errors since restart: $(worker_errors_inline "$logmark")"
   fi
-  no_crash_loop "no_crash_loop_after_$1" "$mark"
+  no_crash_loop "no_crash_loop_after_$1" "$mark" "$logmark"
   # Recovery itself must not panic; later checks of this restart can require this one's cause.
   sites=$(panic_sites "$mark")
   if [[ -n $sites ]]; then result "no_panics_after_$1" 1 "panics since restart: $(panics_inline "$mark")" "$sites"
   else result "no_panics_after_$1" 0; fi
+  sites=$(worker_errors "$logmark")
+  if [[ -n $sites ]]; then result "no_worker_errors_after_$1" 1 "bgworker errors since restart: $(worker_errors_inline "$logmark")" "$sites"
+  else result "no_worker_errors_after_$1" 0; fi
+}
+
+# restart_gate <suffix> <heap> <mirror> <stop mode>
+restart_gate() {
+  restart_checks "$1" "$4"
   info_compare "exact_after_$1" "$2" "$3"
   fresh_fence fresh_fence_setup
   resnapshot_check resnapshot "$2" "$3"
+}
+
+# Clean restart while a mirror's source table is gone: moonlink must recover without a crash loop,
+# the other mirror must keep ingesting, and the orphaned mirror must stay droppable.
+scenario_source_drop_restart() {
+  new_cluster source_drop_restart || return
+  run setup <<'SQL'
+CREATE TABLE gone (id int PRIMARY KEY, v text);
+INSERT INTO gone VALUES (1, 'a'), (2, 'b');
+CALL mooncake.create_table('gone_mc', 'gone');
+CREATE TABLE kept (id int PRIMARY KEY, v text);
+CALL mooncake.create_table('kept_mc', 'kept');
+INSERT INTO kept VALUES (1, 'a');
+SQL
+  compare before_restart kept kept_mc
+  run drop_source -c "DROP TABLE gone"
+  compare after_drop_source kept kept_mc
+  restart_checks restart fast
+  fresh_fence fresh_fence_setup
+  run kept_workload -c "INSERT INTO kept VALUES (2, 'b')" -c "UPDATE kept SET v = 'u' WHERE id = 1"
+  compare kept_cdc_after_restart kept kept_mc
+  run drop_orphaned_mirror -c "DROP TABLE gone_mc"
+  end_cluster
 }
 
 scenario_big_txn_restart() {

@@ -9,15 +9,17 @@ section 4 for the build and cluster setup.
 
 `scripts/e2e-smoke.sh` drives an installed pg_mooncake, pg_duckdb and duckdb_mooncake through mirrors on throwaway
 clusters: CDC bursts, every supported column type, unchanged TOAST values, identifiers, persistence after a snapshot
-and after a restart, moonlink being down or hung, source DDL and TRUNCATE, a clean restart after a large transaction,
-and a crash (`pg_ctl stop -m immediate`). After the crash, the moonlink background worker must come back without a
+and after a restart, moonlink being down or hung (and re-creating a mirror whose DROP only warned), source DDL and
+TRUNCATE, a clean restart after a mirror's source table was dropped, a clean restart after a large transaction, and a
+crash (`pg_ctl stop -m immediate`). After the crash, the moonlink background worker must come back without a
 crash loop, `mooncake.list_tables()` must answer, and dropping and re-creating the mirror must give the heap contents.
 It also checks that the duckdb_mooncake that DuckDB loads is built from the submodule commit that the DuckDB
 community extension for DuckDB v1.4.1 uses, with the same moonlink wire protocol.
 
-Requirements: Linux, bash 4 or later, GNU coreutils, procps, and a PostgreSQL install (tested with 16 and 17) with
-pg_duckdb and pg_mooncake installed and the submodules checked out. The script checks its tool requirements before it
-starts. It runs about 35 minutes, creates clusters under `$E2E_DIR` on `$PGPORT`, and stops them when done.
+Requirements: Linux, bash 4 or later, GNU coreutils, procps, and a PostgreSQL install (tested with 17; 18 has not
+been run with this script yet) with pg_duckdb and pg_mooncake installed and the submodules checked out. The script
+checks its tool requirements before it starts. It runs 20 to 35 minutes, creates clusters under `$E2E_DIR` on
+`$PGPORT`, and stops them when done.
 
 ```bash
 PG_PREFIX=/path/to/pg17 \
@@ -26,12 +28,19 @@ E2E_DIR=/tmp/pg_mooncake-e2e \
   scripts/e2e-smoke.sh 17                  # all scenarios; or name some, e.g. scripts/e2e-smoke.sh 17 main crash
 ```
 
-- `PG_PREFIX` is the PostgreSQL install root (`$PG_PREFIX/bin/pg_ctl`). For a pgrx-managed PostgreSQL that is
+- `PG_PREFIX` is the PostgreSQL install root (`$PG_PREFIX/bin/pg_ctl`); by default the one whose `pg_config` is on
+  `PATH`. Its major version must match the argument. For a pgrx-managed PostgreSQL that is
   `$(dirname "$(dirname "$(cargo pgrx info pg-config pg17)")")`.
-- `DUCKDB_EXTENSION_DIR` becomes `duckdb.extension_directory` of every test cluster. Put a locally built
+- `DUCKDB_EXTENSION_DIR` (required) becomes `duckdb.extension_directory` of every test cluster. Put a locally built
   `mooncake.duckdb_extension` in `<dir>/v1.4.1/linux_amd64/` (see "Using a locally built duckdb_mooncake" in
   `AGENTS.md`). With an empty directory, `CREATE EXTENSION pg_mooncake` installs the community build instead; that
   path has not been run with this script yet.
+- After building duckdb_mooncake and copying it there, run
+  `scripts/e2e-build-info.sh <dir>/v1.4.1/linux_amd64/mooncake.duckdb_extension`. It writes
+  `mooncake.duckdb_extension.build-info` (the file's sha256, the duckdb_mooncake commit, whether that checkout had
+  local changes, and its moonlink_rpc source), which the `build` scenario checks against the submodule pins. Without
+  that file those two checks are SKIP, so the gate can't pass on a binary of unknown origin.
+- `E2E_DIR` defaults to `${TMPDIR:-/tmp}/pg_mooncake-e2e`.
 - Other settings (port, timeouts) are listed at the top of the script.
 
 Output is one line per item: `RESULT <scenario>.<check> PASS|FAIL|XFAIL(<bug>)|XPASS(<bug>)|SKIP [detail]`, `INFO`

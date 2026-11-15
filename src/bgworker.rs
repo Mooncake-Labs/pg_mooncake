@@ -40,11 +40,13 @@ extern "C-unwind" fn moonlink_main(_arg: pg_sys::Datum) {
         .expect("failed to build the moonlink runtime");
     let moonlink = std::thread::Builder::new()
         .name("moonlink".to_owned())
-        .spawn(move || runtime.block_on(start()))
+        .spawn(move || runtime.block_on(start_with_config(service_config())))
         .expect("failed to start the moonlink thread");
     set_signal_mask(&original_mask);
-    if let Err(panic) = moonlink.join() {
-        std::panic::resume_unwind(panic);
+    // An error is raised here, under pg_guard, so it is reported like any other worker error, as before.
+    match moonlink.join() {
+        Ok(result) => result.unwrap(),
+        Err(panic) => std::panic::resume_unwind(panic),
     }
 }
 
@@ -68,8 +70,8 @@ fn set_signal_mask(mask: &libc::sigset_t) {
     assert_eq!(rc, 0, "pthread_sigmask failed");
 }
 
-async fn start() {
-    let config = ServiceConfig {
+fn service_config() -> ServiceConfig {
+    ServiceConfig {
         base_path: "pg_mooncake".to_owned(),
         data_server_uri: None,
         rest_api_port: None,
@@ -77,6 +79,5 @@ async fn start() {
         tcp_port: None,
         log_directory: None,
         otel_export_target: None,
-    };
-    start_with_config(config).await.unwrap();
+    }
 }

@@ -41,7 +41,7 @@ when your local tests (with a locally built extension) pass.
    - A panic in a spawned tokio task (per-table handler, per-connection RPC handler) does not exit the worker.
      It surfaces as `early eof` on that connection or as a mirror that silently stops ingesting.
    - An error or panic on the main path exits with status 1 and the worker restarts after 15 s
-     (`src/bgworker.rs`: `start_with_config(config).await.unwrap()`). That includes a recovery error, so a table
+     (`src/bgworker.rs` unwraps `start_with_config`'s result on the main thread). That includes a recovery error, so a table
      that fails recovery crash-loops the worker every 15 s.
    - A clean exit (e.g. the worker alone receives SIGTERM) exits with status 0, and Postgres never restarts it.
 2. **Shutdown signals are handled only on the worker's main thread** (`src/bgworker.rs`). moonlink's `tokio::signal`

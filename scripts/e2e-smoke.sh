@@ -10,17 +10,21 @@
 #
 # Output (one line each, machine-readable; <check> never contains spaces):
 #   BUILD <key>=<value>                        what is under test (binaries, hashes, commits)
-#   RESULT <scenario.check> <status> [detail]  status: PASS | FAIL | XFAIL(<bugs>) | XPASS(<bugs>) | SKIP
+#   RESULT <scenario.check> <status> [detail]  status: PASS | FAIL | XFAIL(<bugs>) |
+#                                              XFAIL(limitation:<bugs>) | XPASS(<bugs>) | SKIP
 #   INFO <scenario.check> ...                  reported only, never part of the gate
-#   KNOWN <bug> FIXED|OPEN|UNKNOWN|NOT-RUN|NOT-SEEN <check>=<status>,... [ids=<ids>]
-#   SUMMARY e2e-smoke pg<major> scenarios=<a,b,...> pass=N xpass=N fail=N xfail=N skip=N
-#   GATE e2e-smoke PASS|FAIL|INCOMPLETE        (last line)
-# Every RESULT line is a gate check. GATE is FAIL (exit 1) if any RESULT is FAIL, XFAIL or SKIP,
-# INCOMPLETE (exit 3) if everything else passed but not every scenario ran, and PASS (exit 0)
-# otherwise. SKIP means a check could not run, e.g. because postgres died.
+#   KNOWN <bug> FIXED|OPEN|UNKNOWN|NOT-RUN|NOT-SEEN <check>=<status>,... class=blocking|limitation [ids=<ids>]
+#   SUMMARY e2e-smoke pg<major> scenarios=<a,b,...> pass=N xpass=N fail=N xfail=N xfail_limitation=N skip=N
+#   BLOCKING e2e-smoke <n> [<bug>,...]          blocking known bugs listed (whether or not seen)
+#   GATE e2e-smoke PASS|FAIL|BLOCKED|INCOMPLETE  (last line)
+# Every RESULT line is a gate check. GATE is FAIL (exit 1) if any RESULT is FAIL, SKIP or XFAIL of
+# a blocking bug; otherwise BLOCKED (exit 4) while the known-bugs file lists any bug of class
+# blocking, even one this run did not hit; otherwise INCOMPLETE (exit 3) if not every scenario ran,
+# and PASS (exit 0). A check that fails only as known limitations (XFAIL(limitation:...)) does not
+# fail the gate. SKIP means a check could not run, e.g. because postgres died.
 #
-# Known bugs are an optional overlay (KNOWN_BUGS=<file>, default scripts/e2e-known-bugs.txt if it
-# exists) that lists, per check, a bug and a regex for that bug's failure signature. A listed check
+# Known bugs come from KNOWN_BUGS=<file> (default scripts/e2e-known-bugs.txt; missing or without
+# entries is a setup error unless EMPTY_KNOWN_BUGS_OK=1) that lists, per check, a bug and a regex for that bug's failure signature. A listed check
 # whose failure signatures all match listed bugs reports XFAIL(<bugs>). Any other failure stays FAIL,
 # so a new problem in a check that is already known to fail is not hidden. A listed check that
 # passes reports XPASS(<bugs>), and KNOWN <bug> FIXED means every check listed for the bug passed
@@ -39,7 +43,8 @@
 #      E2E_DIR (clusters and outputs, default ${TMPDIR:-/tmp}/pg_mooncake-e2e), BUILD_SRC (checkout
 #      the binaries were built from; default the harness checkout), PGPORT (default 5400+major),
 #      CONVERGE_SECS (fence timeout, 30), GRACE_SECS (apply grace after the fence, 5),
-#      PSQL_TIMEOUT (per psql call, 60), KNOWN_BUGS, KNOWN_BUG_IDS,
+#      PSQL_TIMEOUT (per psql call, 60), KNOWN_BUGS, KNOWN_BUG_IDS, EMPTY_KNOWN_BUGS_OK (1: allow a
+#      known-bugs file without entries),
 #      WIRE_MOONLINK_RPC_REV and COMMUNITY_DUCKDB_MOONCAKE_REF (expected pins, see scenario build).
 set -uo pipefail
 
@@ -77,12 +82,13 @@ BUILD_SRC=${BUILD_SRC:-$SCRIPT_DIR/..}
 CONVERGE_SECS=${CONVERGE_SECS:-30}
 GRACE_SECS=${GRACE_SECS:-5}
 PSQL_TIMEOUT=${PSQL_TIMEOUT:-60}
+KNOWN_BUGS_GIVEN=${KNOWN_BUGS:+1}
 KNOWN_BUGS=${KNOWN_BUGS:-$SCRIPT_DIR/e2e-known-bugs.txt}
 KNOWN_BUG_IDS=${KNOWN_BUG_IDS:-}
 DB_USER=${USER:-$(id -un)}
 export PGHOST=/tmp PGDATABASE=postgres PGPORT=${PGPORT:-$((5400 + MAJOR))}
 SCEN=""; DATA=""; OUT=""; FENCE_SRC=""; FENCE_MC=""; FENCE_N=0; RESNAPSHOT_OK=0; ALLOWED_EXIT_LINES=""; WAIT_ERR=""
-CLUSTER_STOPPED=0
+CLUSTER_STOPPED=0; LAST_STOP_LINES=""
 
 [[ -n $PG_PREFIX && -x $BIN/psql ]] || { echo "no psql in ${PG_PREFIX:-<unset>}/bin (set PG_PREFIX)" >&2; exit 2; }
 pg_major_found=$("$BIN/pg_config" --version | sed -E 's/^PostgreSQL ([0-9]+).*/\1/')
@@ -90,22 +96,31 @@ pg_major_found=$("$BIN/pg_config" --version | sed -E 's/^PostgreSQL ([0-9]+).*/\
 [[ -n $EXTDIR ]] || { echo "set DUCKDB_EXTENSION_DIR (see TESTING.md)" >&2; exit 2; }
 
 # ---- known bugs ----------------------------------------------------------------------------------
-# File lines: "bug <name> <description>", "check <scenario.check> <bug> <regex>" and
+# File lines: "bug <name> class=blocking|class=limitation <description>" (once per bug),
+# "check <scenario.check> <bug> <regex>" and
 # "requires <scenario.check> <bug> <earlier scenario.check> <bug2>". The regex (bash ERE) is matched
 # against each failure signature: the check's detail, or one line per distinct cause where a check
 # reports several (panic locations, process exits). A "requires" line makes the check's rule for
 # <bug> count only if the earlier check failed with <bug2>, for failures whose text alone doesn't
 # identify the cause (a hung DROP, a missing fence mirror).
-declare -A BUG_DESC=() KNOWN_RULES=() BUG_IDS=() RULE_REQUIRES=()
+declare -A BUG_DESC=() BUG_CLASS=() KNOWN_RULES=() BUG_IDS=() RULE_REQUIRES=()
 load_known_bugs() {
   local line kind a b rest other other_bug extra n=0
+  # An explicitly given file must be there: without it every known failure would be a plain FAIL,
+  # and no blocking bug would be listed.
+  if [[ -n $KNOWN_BUGS_GIVEN && ! -s $KNOWN_BUGS ]]; then echo "KNOWN_BUGS=$KNOWN_BUGS: missing or empty" >&2; exit 2; fi
   if [[ -f $KNOWN_BUGS ]]; then
     while IFS= read -r line || [[ -n $line ]]; do
       n=$((n + 1))
       [[ $line =~ ^[[:space:]]*(#|$) ]] && continue
       read -r kind a b rest <<< "$line"
       case $kind in
-        bug) BUG_DESC[$a]="$b${rest:+ $rest}" ;;
+        bug)
+          if [[ $b != class=blocking && $b != class=limitation || -z $rest ]]; then
+            echo "$KNOWN_BUGS:$n: expected 'bug <name> class=blocking|class=limitation <description>'" >&2; exit 2
+          fi
+          if [[ -n ${BUG_CLASS[$a]:-} ]]; then echo "$KNOWN_BUGS:$n: bug $a is declared twice" >&2; exit 2; fi
+          BUG_CLASS[$a]=${b#class=}; BUG_DESC[$a]=$rest ;;
         check)
           if [[ -z $rest || -z ${BUG_DESC[$b]:-} ]]; then
             echo "$KNOWN_BUGS:$n: expected 'check <check> <declared bug> <regex>'" >&2; exit 2
@@ -122,6 +137,11 @@ load_known_bugs() {
         *) echo "$KNOWN_BUGS:$n: unknown entry '$kind'" >&2; exit 2 ;;
       esac
     done < "$KNOWN_BUGS"
+  fi
+  # With no entries, no blocking bug is listed and the gate could pass by accident (a missing default
+  # file, a file of comments). A release with no known bugs says so explicitly.
+  if (( ${#BUG_CLASS[@]} == 0 )) && [[ ${EMPTY_KNOWN_BUGS_OK:-} != 1 ]]; then
+    echo "$KNOWN_BUGS: missing or no 'bug' entries (set EMPTY_KNOWN_BUGS_OK=1 if there are no known bugs)" >&2; exit 2
   fi
   if [[ -f $KNOWN_BUG_IDS ]]; then
     while read -r a b; do [[ -z $a || $a == \#* ]] || BUG_IDS[$a]=$b; done < "$KNOWN_BUG_IDS"
@@ -146,6 +166,11 @@ rule_requirements_met() {
 }
 # known_bugs_matching <check> <signatures>: the listed bugs that explain the failure, or nothing
 # unless every signature line matches at least one of the check's bug regexes.
+# only_limitations <bug,...>: every bug is of class limitation (such an XFAIL doesn't fail the gate).
+only_limitations() {
+  local b
+  for b in ${1//,/ }; do [[ ${BUG_CLASS[$b]:-} == limitation ]] || return 1; done
+}
 known_bugs_matching() {
   local rules=${KNOWN_RULES[$1]:-} sig bug re hit bugs=""
   [[ -n $rules ]] || return 0
@@ -163,7 +188,7 @@ known_bugs_matching() {
 
 # ---- results -------------------------------------------------------------------------------------
 declare -A STATUS_OF=() MATCHED_OF=()
-declare -A COUNT=([pass]=0 [xpass]=0 [fail]=0 [xfail]=0 [skip]=0)
+declare -A COUNT=([pass]=0 [xpass]=0 [fail]=0 [xfail]=0 [xfail_limitation]=0 [skip]=0)
 one_line() { tr '\n\t' '  ' | sed 's/ *$//' | cut -c1-"${1:-300}"; }
 pg_alive() { "$BIN/pg_ctl" -D "$DATA" status > /dev/null 2>&1; }
 
@@ -182,7 +207,10 @@ result() {
     *)
       bugs=$(known_bugs_matching "$check" "${sigs:-$detail}")
       if [[ -n $bugs ]]; then
-        status="XFAIL($bugs)"; MATCHED_OF[$check]=$bugs; COUNT[xfail]=$((COUNT[xfail] + 1))
+        MATCHED_OF[$check]=$bugs
+        if only_limitations "$bugs"; then
+          status="XFAIL(limitation:$bugs)"; COUNT[xfail_limitation]=$((COUNT[xfail_limitation] + 1))
+        else status="XFAIL($bugs)"; COUNT[xfail]=$((COUNT[xfail] + 1)); fi
       else
         status=FAIL; COUNT[fail]=$((COUNT[fail] + 1))
         [[ -z $all ]] || detail="not the known failure of $all: $detail"
@@ -324,11 +352,16 @@ moonlink_restarted() { local p; p=$(moonlink_pid); [[ -n $p && $p != "$1" ]]; }
 # checkout prefixes stripped (so locations compare across machines), or "unparsed panic: <text>" for
 # any other form, so that no panic is dropped and marks (panic_count) and sites count the same lines.
 # Source paths in messages, shortened to the crate-relative path (registry crates, git checkouts,
-# the moonlink submodule).
+# the moonlink submodule). SITE_SED handles a line that is one path; PATH_SED any path in a text.
 SITE_SED='
   s#^.*/registry/src/[^/]+/##
   s#^.*/git/checkouts/[^/]+/[^/]+/##
   s#^/([^/]+/)*(moonlink/src/(moonlink|moonlink_[a-z_]+)/src/)#\2#'
+PATH_SED='
+  s#/[^ ]*/registry/src/[^/ ]+/##g
+  s#/[^ ]*/git/checkouts/[^/ ]+/[^/ ]+/##g
+  s#/[^ ]*/(moonlink/src/(moonlink|moonlink_[a-z_]+)/src/)#\1#g
+  s#(^| )/([^/ ]+/)+([^/ ]+)#\1\3#g'
 panic_lines() {
   grep 'panicked at' "$OUT/postgres.log" 2>/dev/null | sed -E '
     s/.*panicked at ([^ ]+):([0-9]+):[0-9]+:.*/\1:\2/
@@ -347,8 +380,11 @@ worker_errors() {
   [[ -n $pids ]] || return 0
   tail -n +"$(( ${1:-0} + 1 ))" "$OUT/postgres.log" | grep -E "\[($pids)\] ERROR: " | while IFS= read -r line; do
     site=$(grep -oE ' at /[^ ,]+:[0-9]+:[0-9]+' <<< "$line" | head -1 | sed -E 's/^ at //; s/:([0-9]+):[0-9]+$/:\1/'"$SITE_SED")
-    if [[ -n $site ]]; then echo "$site: $(sed -E 's/.*source: //; s/[,;]/ /g' <<< "$line" | cut -c1-100)"
-    else echo "error: $(sed -E 's/.*ERROR: +//; s/[,;]/ /g' <<< "$line" | cut -c1-80)"; fi
+    # Only the message text: the log prefix (time, pid) would make every occurrence distinct.
+    # Up to the first "] ERROR:", i.e. the log prefix only; absolute paths shortened like sites.
+    line=$(sed -E 's/^[^]]*\] ERROR: +//; s/[,;]/ /g'"$PATH_SED" <<< "$line")
+    if [[ -n $site ]]; then echo "$site: ${line##*source: }"
+    else echo "error: $line"; fi
   done | sort | uniq -c | awk '{c = $1; $1 = ""; print substr($0, 2) " x" c}'
 }
 worker_errors_inline() { local p; p=$(worker_errors "${1:-0}" | paste -sd, - | sed 's/,/, /g'); echo "${p:-none}"; }
@@ -359,14 +395,22 @@ panic_sites() {
 }
 # panics_inline [n]: panic sites after the first n on one line, or "none".
 panics_inline() { local p; p=$(panic_sites "${1:-0}" | paste -sd, - | sed 's/,/, /g'); echo "${p:-none}"; }
-# worker_exits: one "<how> x<count>" per kind of abnormal moonlink bgworker exit the postmaster logged,
-# leaving out one exit logged within the postgres.log line range ALLOWED_EXIT_LINES ("<from> <to>").
+# worker_exits: one "<how> x<count>" per kind of abnormal moonlink bgworker exit the postmaster logged.
+# A worker exits with code 1 on SIGTERM so that the postmaster restarts it; one such exit is left out
+# in each postgres.log line range of ALLOWED_EXIT_LINES ("<from> <to> ...": the SIGTERM test and every
+# clean stop), unless that worker logged an ERROR (it then died of the error). A signal death is
+# never left out.
 worker_exits() {
-  awk -v range="$ALLOWED_EXIT_LINES" '
-    BEGIN { split(range, r, " ") }
+  local errpids
+  errpids=$(sed -nE 's/^[^]]*\[([0-9]+)\] ERROR: .*/\1/p' "$OUT/postgres.log" 2>/dev/null | sort -u | paste -sd' ' -)
+  awk -v range="$ALLOWED_EXIT_LINES" -v errpids=" $errpids " '
+    BEGIN { n = split(range, r, " ") }
     match($0, /background worker "moonlink" \(PID [0-9]+\) (exited with exit code [1-9][0-9]*|was terminated by signal [0-9]+)/) {
-      how = substr($0, RSTART, RLENGTH); sub(/.*\) /, "", how)
-      if (!allowed_used && r[1] != "" && NR > r[1] && NR <= r[2] && how ~ /^exited/) { allowed_used = 1; next }
+      how = substr($0, RSTART, RLENGTH); pid = how; sub(/.*\) /, "", how)
+      sub(/^[^(]*\(PID /, "", pid); sub(/\).*/, "", pid)
+      if (how == "exited with exit code 1" && index(errpids, " " pid " ") == 0)
+        for (i = 1; i < n; i += 2)
+          if (!used[i] && NR > r[i] && NR <= r[i + 1]) { used[i] = 1; next }
       print how
     }' "$OUT/postgres.log" 2>/dev/null | sort | uniq -c | awk '{c = $1; $1 = ""; print substr($0, 2) " x" c}'
 }
@@ -411,14 +455,18 @@ start() { "$BIN/pg_ctl" -D "$DATA" -l "$OUT/postgres.log" -w -t 60 start > /dev/
 # hung shutdown is a bug in itself (a service manager would SIGKILL Postgres), e.g. a backend blocked
 # in a moonlink RPC ignores SIGTERM. The run then goes on after an immediate stop.
 stop() {
-  local mode=${1:-fast} check=${2:-}
+  local mode=${1:-fast} check=${2:-} from rc
   if ! pg_alive; then [[ -z $check ]] || result "$check" skip "postgres not running"; return 0; fi
-  if "$BIN/pg_ctl" -D "$DATA" -m "$mode" -w -t 30 stop > /dev/null 2>&1; then
-    [[ -z $check ]] || result "$check" 0
-    return 0
-  fi
-  [[ -z $check ]] || result "$check" 1 "pg_ctl stop -m $mode did not finish within 30s (continuing after -m immediate)"
-  "$BIN/pg_ctl" -D "$DATA" -m immediate -w stop > /dev/null 2>&1
+  from=$(wc -l < "$OUT/postgres.log")
+  "$BIN/pg_ctl" -D "$DATA" -m "$mode" -w -t 30 stop > /dev/null 2>&1; rc=$?
+  (( rc == 0 )) || "$BIN/pg_ctl" -D "$DATA" -m immediate -w stop > /dev/null 2>&1
+  LAST_STOP_LINES="$from $(wc -l < "$OUT/postgres.log")"
+  # A clean stop SIGTERMs the bgworker, which may exit with code 1 (see worker_exits). An immediate
+  # stop sends SIGQUIT, and nothing is excused there.
+  [[ $mode == fast ]] && ALLOWED_EXIT_LINES+=" $LAST_STOP_LINES"
+  [[ -z $check ]] && return 0
+  if (( rc == 0 )); then result "$check" 0
+  else result "$check" 1 "pg_ctl stop -m $mode did not finish within 30s (continuing after -m immediate)"; fi
 }
 
 new_cluster() {
@@ -458,8 +506,15 @@ SQL
 end_cluster() {
   local sites exits crashes
   if pg_alive; then result postgres_alive 0; else result postgres_alive skip "postgres died during the scenario"; fi
+  LAST_STOP_LINES=""
   stop fast clean_stop_at_end
   CLUSTER_STOPPED=1
+  if [[ -n $LAST_STOP_LINES ]]; then
+    # The worker must shut down cleanly: an ERROR it logs during the stop is a failure.
+    sites=$(worker_errors "${LAST_STOP_LINES%% *}")
+    if [[ -n $sites ]]; then result no_worker_errors_during_final_stop 1 "bgworker errors: $(worker_errors_inline "${LAST_STOP_LINES%% *}")" "$sites"
+    else result no_worker_errors_during_final_stop 0; fi
+  fi
   sites=$(panic_sites)
   if [[ -n $sites ]]; then
     result no_moonlink_panics 1 "$(panic_count) panic(s) at: $(echo "$sites" | paste -sd, - | sed 's/,/, /g')" "$sites"
@@ -482,6 +537,8 @@ build_info() {
   local libdir f
   local dirty=""
   [[ -n $(git -C "$SCRIPT_DIR" status --porcelain -- . 2>/dev/null) ]] && dirty=" (scripts/ has uncommitted changes)"
+  if [[ -f $KNOWN_BUGS ]]; then echo "BUILD known_bugs=$KNOWN_BUGS sha256=$(sha256 "$KNOWN_BUGS")"
+  else echo "BUILD known_bugs=none"; fi
   echo "BUILD harness_commit=$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)$dirty"
   local sub pin head
   echo "BUILD build_src=$BUILD_SRC commit=$(git -C "$BUILD_SRC" rev-parse HEAD 2>/dev/null || echo unknown)$([[ -n $(git -C "$BUILD_SRC" status --porcelain --untracked-files=no 2>/dev/null) ]] && echo ' (uncommitted changes)')"
@@ -741,14 +798,21 @@ SQL
   else result drop_all_slots 1 "$(psqlq -c "SELECT slot_name || ' active=' || active FROM pg_replication_slots" 2>&1 | one_line)"; fi
   find "$DATA/pg_mooncake" -maxdepth 3 > "$OUT/pg_mooncake_tree_after_drop_all.txt" 2>&1
   if poll_until 30 no_leftover_files; then result drop_all_files_removed 0
-  else result drop_all_files_removed 1 "$(leftover_files | head -5 | one_line)"; fi
+  else
+    # The signature is the whole listing, so a known leftover can't hide another one.
+    local left; left=$(leftover_files)
+    result drop_all_files_removed 1 "$(echo "$left" | wc -l) left: $(echo "$left" | head -5 | one_line)" "$(echo "$left" | paste -sd' ' -)"
+  fi
 
   end_cluster
 }
 no_files_matching() { [[ -z $(find "$DATA/pg_mooncake" -path "$1" 2>/dev/null | head -1) ]]; }
 leftover_files() {
-  find "$DATA/pg_mooncake" -mindepth 1 -maxdepth 2 -not -name moonlink.sock -not -name 'moonlink_metadata_store.sqlite*' \
-    -not -path '*/temp' -not -path '*/read_through_cache' -not -path '*/_wal' -not -path '*/postgres' -not -name indicator.text 2>/dev/null
+  # Everything under pg_mooncake, at any depth, except moonlink's own files and empty cache roots.
+  local p=$DATA/pg_mooncake
+  find "$p" -mindepth 1 -not -path "$p/moonlink.sock" -not -path "$p/moonlink_metadata_store.sqlite*" \
+    -not -path "$p/temp" -not -path "$p/read_through_cache" -not -path "$p/_wal" -not -path "$p/postgres" \
+    -not -path "$p/*/indicator.text" 2>/dev/null | sort
 }
 no_leftover_files() { [[ -z $(leftover_files | head -1) ]]; }
 
@@ -982,7 +1046,7 @@ SQL
   elif poll_until 10 moonlink_gone; then result bgworker_exited_after_term 0
   else result bgworker_exited_after_term 1 "bgworker pid $term_pid still running 10s after SIGTERM"; fi
   # The SIGTERMed worker's own exit (non-zero is how a fixed worker gets restarted) is not abnormal.
-  ALLOWED_EXIT_LINES="$log_before $(wc -l < "$OUT/postgres.log")"
+  ALLOWED_EXIT_LINES+=" $log_before $(wc -l < "$OUT/postgres.log")"
   raw_psql 30 "$o.dh.out" "$o.dh.err" -c "DROP TABLE h"; rc=$?
   if (( rc == 0 )) && ! grep -q 'ERROR:\|WARNING:' "$o.dh.err"; then result drop_heap_while_down 0
   else result drop_heap_while_down 1 "rc=$rc $(one_line 240 < "$o.dh.err")"; fi
@@ -1202,9 +1266,12 @@ SQL
 compare_or_ddl_errored() {
   local e=$OUT/$1.mirror.err
   compare_core "$1" "$2" "$3" "$4" "$CONVERGE_SECS"
-  if (( CMP_OK != 0 )) && [[ $CMP_DETAIL == "mirror query failed"* ]] && grep -qF "public.$3" "$e" &&
-    grep -q 'schema changes are not supported' "$e" && grep -q 'drop and re-create' "$e"; then
-    result "$1" 0 "mirror errored: $(grep -m1 'ERROR:' "$e" | cut -c1-200)"
+  local m=""
+  # All three parts must be in the same ERROR line: that mirror, the reason and the remedy.
+  [[ -f $e ]] && m=$(awk -v t="public.$3" 'index($0, "ERROR:") && index($0, t) &&
+    index($0, "schema changes are not supported") && index($0, "drop and re-create") { print; exit }' "$e")
+  if (( CMP_OK != 0 )) && [[ $CMP_DETAIL == "mirror query failed"* && -n $m ]]; then
+    result "$1" 0 "mirror errored: $(echo "$m" | cut -c1-200)"
   else result "$1" "$CMP_OK" "$CMP_DETAIL"; fi
 }
 ddl_finish() {
@@ -1274,7 +1341,7 @@ known_summary() {
       if [[ ${BUG_DESC[$bug]:-} == Intermittent:* ]]; then verdict=NOT-SEEN; else verdict=FIXED; fi
     elif (( n_notrun == n_all )); then verdict=NOT-RUN
     else verdict=UNKNOWN; fi
-    echo "KNOWN $bug $verdict $list${BUG_IDS[$bug]:+ ids=${BUG_IDS[$bug]}}"
+    echo "KNOWN $bug $verdict $list class=${BUG_CLASS[$bug]}${BUG_IDS[$bug]:+ ids=${BUG_IDS[$bug]}}"
   done
 }
 
@@ -1287,11 +1354,16 @@ main() {
   for s in "${ALL_SCENARIOS[@]}"; do [[ " ${SCENARIOS[*]} " == *" $s "* ]] || complete=0; done
   known_summary
   scen_list=$(IFS=,; echo "${SCENARIOS[*]}")
-  counts="pass=${COUNT[pass]} xpass=${COUNT[xpass]} fail=${COUNT[fail]} xfail=${COUNT[xfail]} skip=${COUNT[skip]}"
+  counts="pass=${COUNT[pass]} xpass=${COUNT[xpass]} fail=${COUNT[fail]} xfail=${COUNT[xfail]} xfail_limitation=${COUNT[xfail_limitation]} skip=${COUNT[skip]}"
   echo "SUMMARY e2e-smoke pg$MAJOR scenarios=$scen_list $counts"
+  local blocking
+  blocking=$(for s in "${!BUG_CLASS[@]}"; do [[ ${BUG_CLASS[$s]} == blocking ]] && echo "$s"; done | sort | paste -sd, -)
+  echo "BLOCKING e2e-smoke $( [[ -z $blocking ]] && echo 0 || echo "$(tr ',' '\n' <<< "$blocking" | wc -l) $blocking")"
   if (( COUNT[fail] + COUNT[xfail] + COUNT[skip] > 0 || COUNT[pass] + COUNT[xpass] == 0 )); then
     echo "GATE e2e-smoke FAIL"; return 1
   fi
+  # Release policy: a listed blocking bug must be fixed, even if this run did not hit it.
+  if [[ -n $blocking ]]; then echo "GATE e2e-smoke BLOCKED"; return 4; fi
   if (( ! complete )); then echo "GATE e2e-smoke INCOMPLETE"; return 3; fi
   echo "GATE e2e-smoke PASS"
 }

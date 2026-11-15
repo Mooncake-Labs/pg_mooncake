@@ -1,7 +1,15 @@
 # Known failures of scripts/e2e-smoke.sh on this branch with its submodules (moonlink c1a99ef).
 #
-#   bug <name> <description>
+#   bug <name> class=blocking|class=limitation <description>
 #   check <scenario.check> <bug> <regex>
+#   requires <scenario.check> <bug> <earlier scenario.check> <bug2>
+#
+# class=blocking: the bug can crash-loop moonlink, panic, lose or silently change mirrored data, or
+# make mirrors unusable. It must be fixed before a release; while one is listed the gate can't pass,
+# and a check that fails with it fails the gate.
+# class=limitation: a documented, loud or harmless restriction that ships in the release notes. A
+# check that fails only with limitations reports XFAIL(limitation:<bugs>) and doesn't fail the gate.
+# A bug may be declared only once.
 #
 # A listed check reports XFAIL(<bug>) only when each of its failure signatures matches the regex
 # (bash ERE) of one of its listed bugs; any other failure is a plain FAIL. A check may list several
@@ -13,11 +21,11 @@
 # revision.
 
 # ---- types --------------------------------------------------------------------------------------
-bug numeric-digits-shifted Unconstrained numeric values come back with their digits shifted
-bug char-padding-lost char(n) values lose their trailing blank padding
-bug interval-inet-unsupported interval and inet source columns are rejected by mooncake.create_table
-bug arrays-come-back-empty Array columns (integer[], text[]) read back as empty arrays
-bug decimal-stats-overflow-panic Persisting a numeric column with values beyond 96 bits panics in the Iceberg statistics code
+bug numeric-digits-shifted class=blocking Unconstrained numeric values come back with their digits shifted
+bug char-padding-lost class=blocking char(n) values lose their trailing blank padding
+bug interval-inet-unsupported class=limitation interval and inet source columns are rejected by mooncake.create_table
+bug arrays-come-back-empty class=blocking Array columns (integer[], text[]) read back as empty arrays
+bug decimal-stats-overflow-panic class=blocking Persisting a numeric column with values beyond 96 bits panics in the Iceberg statistics code
 
 check schema.type.numeric numeric-digits-shifted data mismatch.* > 1\|12345678901234567890\.1234567890
 check schema.type.char_3 char-padding-lost data mismatch.*< 1\|ab  --- > 1\|ab$
@@ -40,10 +48,10 @@ check persist.type.text_array.after_snapshot arrays-come-back-empty data mismatc
 check persist.type.text_array.after_restart arrays-come-back-empty data mismatch.* > 1\|\{\}$
 
 # ---- CDC and reads ------------------------------------------------------------------------------
-bug unchanged-toast-overwritten An UPDATE that doesn't touch an out-of-line (TOASTed) column replaces that column with an empty value in the mirror
-bug ryw-scan-after-restart After a restart, a read-your-writes scan of a mirror with no commit since the restart hangs or returns stale rows
-bug scan-commit-lsn-assert A scan can hit the commit_lsn <= replication_lsn assertion in moonlink's read path, which kills that connection
-bug initial-copy-dir-leak Dropping a mirror leaves its empty initial-copy directory under pg_mooncake/initial_copy
+bug unchanged-toast-overwritten class=blocking An UPDATE that doesn't touch an out-of-line (TOASTed) column replaces that column with an empty value in the mirror
+bug ryw-scan-after-restart class=blocking After a restart, a read-your-writes scan of a mirror with no commit since the restart hangs or returns stale rows
+bug scan-commit-lsn-assert class=blocking A scan can hit the commit_lsn <= replication_lsn assertion in moonlink's read path, which kills that connection
+bug initial-copy-dir-leak class=limitation Dropping a mirror leaves its empty initial-copy directory under pg_mooncake/initial_copy
 
 check main.toast_unchanged_update unchanged-toast-overwritten data mismatch.*\|d41d8cd98f00b204e9800998ecf8427e\|
 check main.ryw_cross_table_after_restart ryw-scan-after-restart (did not return within [0-9]+s; moonlink panics during the check: none$|^expected \[[0-9]+\] got \[[0-9]+\]$)
@@ -52,8 +60,8 @@ check main.no_moonlink_panics scan-commit-lsn-assert union_read/read_state_manag
 check main.drop_all_files_removed initial-copy-dir-leak ^[^ ]*/pg_mooncake/initial_copy( [^ ]*/pg_mooncake/initial_copy/table_[0-9]+)*$
 
 # ---- restart after other mirrors were dropped -----------------------------------------------------
-bug mirror-lost-after-restart-after-drops A mirror stops ingesting or comes back empty after a clean restart if other mirrors of the database were dropped before it
-bug update-after-restart-panics UPDATE or DELETE of rows persisted before a restart panics the table's snapshot task
+bug mirror-lost-after-restart-after-drops class=blocking A mirror stops ingesting or comes back empty after a clean restart if other mirrors of the database were dropped before it
+bug update-after-restart-panics class=blocking UPDATE or DELETE of rows persisted before a restart panics the table's snapshot task
 
 check restart_after_drop.survivor_after_restart mirror-lost-after-restart-after-drops (did not apply the fence commit .*moonlink panics so far: none$|data mismatch.*,[0-9]+d0)
 check restart_after_drop.survivor_cdc_after_restart mirror-lost-after-restart-after-drops (did not apply the fence commit|mirror query timed out)
@@ -61,19 +69,19 @@ check restart_after_drop.survivor_cdc_after_restart update-after-restart-panics 
 check restart_after_drop.no_moonlink_panics update-after-restart-panics storage/mooncake_table/snapshot\.rs:865 x
 
 # ---- moonlink unhealthy -------------------------------------------------------------------------
-bug bgworker-not-restarted A moonlink bgworker that exits cleanly (e.g. on SIGTERM) is never restarted
+bug bgworker-not-restarted class=blocking A moonlink bgworker that exits cleanly (e.g. on SIGTERM) is never restarted
 
 check moonlink_down.bgworker_restarted_after_term bgworker-not-restarted ^no new moonlink bgworker [0-9]+s after SIGTERM \(pid before: [0-9]+, now: \[\]\)$
 
-bug recreate-binds-old-table After a DROP that warned moonlink was down, mooncake.create_table under the same name fails on moonlink's duplicate check and leaves a mirror that reads the old moonlink table
+bug recreate-binds-old-table class=blocking After a DROP that warned moonlink was down, mooncake.create_table under the same name fails on moonlink's duplicate check and leaves a mirror that reads the old moonlink table
 check moonlink_down.recreate_after_warned_drop recreate-binds-old-table ^rc=[0-9]+ ERROR: +mooncake\.create_table failed: .*Duplicate table added
 check moonlink_down.recreate_not_bound_to_old_table recreate-binds-old-table ^data mismatch .*; mirror reads: 1\|old-1 2\|old-2$
 requires moonlink_down.recreate_not_bound_to_old_table recreate-binds-old-table moonlink_down.recreate_after_warned_drop recreate-binds-old-table
 
 # ---- source DDL ---------------------------------------------------------------------------------
-bug ddl-breaks-cdc ALTER TABLE ADD/DROP COLUMN on a mirrored source panics moonlink: the mirror stops ingesting (DROP COLUMN: every mirror of the database)
-bug truncate-ignored TRUNCATE of a mirrored source is ignored: the mirror keeps the old rows
-bug drop-of-dead-table-breaks-mirror DROP of a mirror whose moonlink table task already died panics in moonlink and leaves the table half-dropped there
+bug ddl-breaks-cdc class=blocking ALTER TABLE ADD/DROP COLUMN on a mirrored source panics moonlink: the mirror stops ingesting (DROP COLUMN: every mirror of the database)
+bug truncate-ignored class=blocking TRUNCATE of a mirrored source is ignored: the mirror keeps the old rows
+bug drop-of-dead-table-breaks-mirror class=blocking DROP of a mirror whose moonlink table task already died panics in moonlink and leaves the table half-dropped there
 
 check ddl.ddl_after_add_column ddl-breaks-cdc data mismatch.* 101,200d100
 check ddl.no_moonlink_panics ddl-breaks-cdc (storage/mooncake_table\.rs:(644|646)|conversions/cdc_event\.rs:56) x
@@ -85,11 +93,13 @@ check ddl_drop.no_moonlink_panics drop-of-dead-table-breaks-mirror (mooncake_tab
 check truncate.truncate_not_silent truncate-ignored data mismatch.* 1a2,101
 
 # ---- restart after a source table was dropped ------------------------------------------------------
-bug dropped-source-crash-loop After a restart while a mirror's source table is gone, moonlink recovery fails on the missing table and the bgworker restarts every 15s, so mooncake.* calls fail
+bug dropped-source-crash-loop class=blocking After a restart while a mirror's source table is gone, moonlink recovery fails on the missing table and the bgworker restarts every 15s, so mooncake.* calls fail
 
 check source_drop_restart.service_up_after_restart dropped-source-crash-loop ^mooncake\.list_tables\(\) not answering within [0-9]+s; panics since restart: none; last error: .*[Ff]ailed to connect to moonlink.*; bgworker errors since restart: [^;]*moonlink_backend/src/recovery_utils\.rs:77: [^;]*relation "public\.gone" does not exist x
 check source_drop_restart.no_crash_loop_after_restart dropped-source-crash-loop ^crash loop: [^;]*; panics since restart: none; .*; bgworker errors since restart: [^;]*moonlink_backend/src/recovery_utils\.rs:77: [^;]*relation "public\.gone" does not exist x
 check source_drop_restart.no_worker_errors_after_restart dropped-source-crash-loop moonlink_backend/src/recovery_utils\.rs:77: .*relation "public\.gone" does not exist x[0-9]+$
+check source_drop_restart.no_worker_errors_during_final_stop dropped-source-crash-loop moonlink_backend/src/recovery_utils\.rs:77: .*relation "public\.gone" does not exist x[0-9]+$
+requires source_drop_restart.no_worker_errors_during_final_stop dropped-source-crash-loop source_drop_restart.no_worker_errors_after_restart dropped-source-crash-loop
 check source_drop_restart.fresh_fence_setup dropped-source-crash-loop [Ff]ailed to connect to moonlink
 requires source_drop_restart.fresh_fence_setup dropped-source-crash-loop source_drop_restart.no_worker_errors_after_restart dropped-source-crash-loop
 check source_drop_restart.kept_cdc_after_restart dropped-source-crash-loop ([Ff]ailed to connect to moonlink|fence mirror e2e_fence_[0-9]+_mc missing)
@@ -102,7 +112,7 @@ check source_drop_restart.orphaned_mirror_unlisted dropped-source-crash-loop ^af
 requires source_drop_restart.orphaned_mirror_unlisted dropped-source-crash-loop source_drop_restart.no_worker_errors_after_restart dropped-source-crash-loop
 
 # ---- any scenario -------------------------------------------------------------------------------
-bug sigterm-handler-off-main-thread Intermittent: SIGTERM delivered to a tokio thread of the moonlink bgworker panics in pgrx's signal handler (postgres FFI from another thread); a run without it does not prove it FIXED
+bug sigterm-handler-off-main-thread class=blocking Intermittent: SIGTERM delivered to a tokio thread of the moonlink bgworker panics in pgrx's signal handler (postgres FFI from another thread); a run without it does not prove it FIXED
 check build.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
 check main.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
 check schema.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
@@ -117,8 +127,8 @@ check big_txn_restart.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\
 check crash.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
 
 # ---- restart and crash --------------------------------------------------------------------------
-bug restart-crash-loop After a restart that follows a large (streamed) transaction, moonlink panics while recovering and the bgworker restarts every 15s, so mooncake.* calls fail
-bug replay-regresses-flush-lsn After a restart, replayed transactions regress a table's flush LSN: the table stops applying changes and DROP of its mirror hangs
+bug restart-crash-loop class=blocking After a restart that follows a large (streamed) transaction, moonlink panics while recovering and the bgworker restarts every 15s, so mooncake.* calls fail
+bug replay-regresses-flush-lsn class=blocking After a restart, replayed transactions regress a table's flush LSN: the table stops applying changes and DROP of its mirror hangs
 
 check big_txn_restart.service_up_after_restart restart-crash-loop ^mooncake\.list_tables\(\) not answering within [0-9]+s; panics since restart: [^;]*storage/wal\.rs:682 x[0-9]+[^;]*; last error: .*[Ff]ailed to connect to moonlink
 check big_txn_restart.no_crash_loop_after_restart restart-crash-loop ^crash loop: [^;]*; panics since restart: [^;]*storage/wal\.rs:682 x
@@ -126,6 +136,8 @@ check big_txn_restart.no_panics_after_restart restart-crash-loop storage/wal\.rs
 check big_txn_restart.no_panics_after_restart replay-regresses-flush-lsn mooncake_table/snapshot_validation\.rs:26 x
 check big_txn_restart.no_worker_errors_after_restart restart-crash-loop ^error: failed to send table event during recovery: SendError \{ \.\. \} x[0-9]+$
 requires big_txn_restart.no_worker_errors_after_restart restart-crash-loop big_txn_restart.no_panics_after_restart restart-crash-loop
+check big_txn_restart.no_worker_errors_during_final_stop restart-crash-loop ^error: failed to send table event during recovery: SendError \{ \.\. \} x[0-9]+$
+requires big_txn_restart.no_worker_errors_during_final_stop restart-crash-loop big_txn_restart.no_panics_after_restart restart-crash-loop
 check big_txn_restart.fresh_fence_setup restart-crash-loop [Ff]ailed to connect to moonlink
 requires big_txn_restart.fresh_fence_setup restart-crash-loop big_txn_restart.no_panics_after_restart restart-crash-loop
 check big_txn_restart.resnapshot_recreate restart-crash-loop [Ff]ailed to connect to moonlink
@@ -150,6 +162,8 @@ check crash.no_panics_after_crash restart-crash-loop storage/wal\.rs:(682|979) x
 check crash.no_panics_after_crash replay-regresses-flush-lsn mooncake_table/snapshot_validation\.rs:26 x
 check crash.no_worker_errors_after_crash restart-crash-loop ^error: failed to send table event during recovery: SendError \{ \.\. \} x[0-9]+$
 requires crash.no_worker_errors_after_crash restart-crash-loop crash.no_panics_after_crash restart-crash-loop
+check crash.no_worker_errors_during_final_stop restart-crash-loop ^error: failed to send table event during recovery: SendError \{ \.\. \} x[0-9]+$
+requires crash.no_worker_errors_during_final_stop restart-crash-loop crash.no_panics_after_crash restart-crash-loop
 check crash.fresh_fence_setup restart-crash-loop [Ff]ailed to connect to moonlink
 requires crash.fresh_fence_setup restart-crash-loop crash.no_panics_after_crash restart-crash-loop
 check crash.resnapshot_recreate restart-crash-loop [Ff]ailed to connect to moonlink

@@ -353,8 +353,10 @@ worker_errors() {
   [[ -n $pids ]] || return 0
   tail -n +"$(( ${1:-0} + 1 ))" "$OUT/postgres.log" | grep -E "\[($pids)\] ERROR: " | while IFS= read -r line; do
     site=$(grep -oE ' at /[^ ,]+:[0-9]+:[0-9]+' <<< "$line" | head -1 | sed -E 's/^ at //; s/:([0-9]+):[0-9]+$/:\1/'"$SITE_SED")
-    if [[ -n $site ]]; then echo "$site: $(sed -E 's/.*source: //; s/[,;]/ /g' <<< "$line" | cut -c1-100)"
-    else echo "error: $(sed -E 's/.*ERROR: +//; s/[,;]/ /g' <<< "$line" | cut -c1-80)"; fi
+    # Only the message text: the log prefix (time, pid) would make every occurrence distinct.
+    line=$(sed -E 's/^.*\] ERROR: +//; s/[,;]/ /g' <<< "$line")
+    if [[ -n $site ]]; then echo "$site: ${line##*source: }"
+    else echo "error: $line"; fi
   done | sort | uniq -c | awk '{c = $1; $1 = ""; print substr($0, 2) " x" c}'
 }
 worker_errors_inline() { local p; p=$(worker_errors "${1:-0}" | paste -sd, - | sed 's/,/, /g'); echo "${p:-none}"; }
@@ -366,13 +368,16 @@ panic_sites() {
 # panics_inline [n]: panic sites after the first n on one line, or "none".
 panics_inline() { local p; p=$(panic_sites "${1:-0}" | paste -sd, - | sed 's/,/, /g'); echo "${p:-none}"; }
 # worker_exits: one "<how> x<count>" per kind of abnormal moonlink bgworker exit the postmaster logged,
-# leaving out one exit logged within the postgres.log line range ALLOWED_EXIT_LINES ("<from> <to>").
+# leaving out one "exited" line within each postgres.log line range of ALLOWED_EXIT_LINES
+# ("<from> <to> ..."; stop and the SIGTERM test add theirs).
 worker_exits() {
   awk -v range="$ALLOWED_EXIT_LINES" '
-    BEGIN { split(range, r, " ") }
+    BEGIN { n = split(range, r, " ") }
     match($0, /background worker "moonlink" \(PID [0-9]+\) (exited with exit code [1-9][0-9]*|was terminated by signal [0-9]+)/) {
       how = substr($0, RSTART, RLENGTH); sub(/.*\) /, "", how)
-      if (!allowed_used && r[1] != "" && NR > r[1] && NR <= r[2] && how ~ /^exited/) { allowed_used = 1; next }
+      if (how ~ /^exited/)
+        for (i = 1; i < n; i += 2)
+          if (!used[i] && NR > r[i] && NR <= r[i + 1]) { used[i] = 1; next }
       print how
     }' "$OUT/postgres.log" 2>/dev/null | sort | uniq -c | awk '{c = $1; $1 = ""; print substr($0, 2) " x" c}'
 }
@@ -417,14 +422,17 @@ start() { "$BIN/pg_ctl" -D "$DATA" -l "$OUT/postgres.log" -w -t 60 start > /dev/
 # hung shutdown is a bug in itself (a service manager would SIGKILL Postgres), e.g. a backend blocked
 # in a moonlink RPC ignores SIGTERM. The run then goes on after an immediate stop.
 stop() {
-  local mode=${1:-fast} check=${2:-}
+  local mode=${1:-fast} check=${2:-} from rc
   if ! pg_alive; then [[ -z $check ]] || result "$check" skip "postgres not running"; return 0; fi
-  if "$BIN/pg_ctl" -D "$DATA" -m "$mode" -w -t 30 stop > /dev/null 2>&1; then
-    [[ -z $check ]] || result "$check" 0
-    return 0
-  fi
-  [[ -z $check ]] || result "$check" 1 "pg_ctl stop -m $mode did not finish within 30s (continuing after -m immediate)"
-  "$BIN/pg_ctl" -D "$DATA" -m immediate -w stop > /dev/null 2>&1
+  from=$(wc -l < "$OUT/postgres.log")
+  "$BIN/pg_ctl" -D "$DATA" -m "$mode" -w -t 30 stop > /dev/null 2>&1; rc=$?
+  (( rc == 0 )) || "$BIN/pg_ctl" -D "$DATA" -m immediate -w stop > /dev/null 2>&1
+  # The shutdown SIGTERMs the bgworker, and a worker may exit non-zero on it (so that it is restarted
+  # when it gets SIGTERM otherwise): one exit during each stop is expected.
+  ALLOWED_EXIT_LINES+=" $from $(wc -l < "$OUT/postgres.log")"
+  [[ -z $check ]] && return 0
+  if (( rc == 0 )); then result "$check" 0
+  else result "$check" 1 "pg_ctl stop -m $mode did not finish within 30s (continuing after -m immediate)"; fi
 }
 
 new_cluster() {
@@ -988,7 +996,7 @@ SQL
   elif poll_until 10 moonlink_gone; then result bgworker_exited_after_term 0
   else result bgworker_exited_after_term 1 "bgworker pid $term_pid still running 10s after SIGTERM"; fi
   # The SIGTERMed worker's own exit (non-zero is how a fixed worker gets restarted) is not abnormal.
-  ALLOWED_EXIT_LINES="$log_before $(wc -l < "$OUT/postgres.log")"
+  ALLOWED_EXIT_LINES+=" $log_before $(wc -l < "$OUT/postgres.log")"
   raw_psql 30 "$o.dh.out" "$o.dh.err" -c "DROP TABLE h"; rc=$?
   if (( rc == 0 )) && ! grep -q 'ERROR:\|WARNING:' "$o.dh.err"; then result drop_heap_while_down 0
   else result drop_heap_while_down 1 "rc=$rc $(one_line 240 < "$o.dh.err")"; fi
@@ -1208,9 +1216,12 @@ SQL
 compare_or_ddl_errored() {
   local e=$OUT/$1.mirror.err
   compare_core "$1" "$2" "$3" "$4" "$CONVERGE_SECS"
-  if (( CMP_OK != 0 )) && [[ $CMP_DETAIL == "mirror query failed"* ]] && grep -qF "public.$3" "$e" &&
-    grep -q 'schema changes are not supported' "$e" && grep -q 'drop and re-create' "$e"; then
-    result "$1" 0 "mirror errored: $(grep -m1 'ERROR:' "$e" | cut -c1-200)"
+  local m=""
+  # All three parts must be in the same ERROR line: that mirror, the reason and the remedy.
+  [[ -f $e ]] && m=$(awk -v t="public.$3" 'index($0, "ERROR:") && index($0, t) &&
+    index($0, "schema changes are not supported") && index($0, "drop and re-create") { print; exit }' "$e")
+  if (( CMP_OK != 0 )) && [[ $CMP_DETAIL == "mirror query failed"* && -n $m ]]; then
+    result "$1" 0 "mirror errored: $(echo "$m" | cut -c1-200)"
   else result "$1" "$CMP_OK" "$CMP_DETAIL"; fi
 }
 ddl_finish() {

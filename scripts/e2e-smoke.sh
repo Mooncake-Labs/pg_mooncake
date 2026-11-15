@@ -106,12 +106,11 @@ pg_major_found=$("$BIN/pg_config" --version | sed -E 's/^PostgreSQL ([0-9]+).*/\
 declare -A BUG_DESC=() BUG_CLASS=() KNOWN_RULES=() BUG_IDS=() RULE_REQUIRES=()
 load_known_bugs() {
   local line kind a b rest other other_bug extra n=0
-  # An explicitly given file must be there: without it every known failure would be a plain FAIL,
-  # and no blocking bug would be listed.
-  if [[ -n $KNOWN_BUGS_GIVEN && ! -s $KNOWN_BUGS ]]; then echo "KNOWN_BUGS=$KNOWN_BUGS: missing or empty" >&2; exit 2; fi
+  # An explicitly given file must exist; whether it may be without entries is checked below.
+  if [[ -n $KNOWN_BUGS_GIVEN && ! -f $KNOWN_BUGS ]]; then echo "KNOWN_BUGS=$KNOWN_BUGS: missing" >&2; exit 2; fi
   if [[ -f $KNOWN_BUGS ]]; then
     while IFS= read -r line || [[ -n $line ]]; do
-      n=$((n + 1))
+      n=$((n + 1)); line=${line%$'\r'}
       [[ $line =~ ^[[:space:]]*(#|$) ]] && continue
       read -r kind a b rest <<< "$line"
       case $kind in
@@ -370,7 +369,10 @@ panic_lines() {
     b
     :parsed'"$SITE_SED"
 }
-# worker_errors [n]: one "<site>: <cause> x<count>" per distinct ERROR that a moonlink bgworker
+# The FATAL Postgres logs for a background worker it stops at shutdown; not an error of the worker.
+SHUTDOWN_FATAL='FATAL:  terminating background worker ".*" due to administrator command'
+# worker_errors [n]: one "<site>: <cause> x<count>" per distinct ERROR or FATAL (other than
+# SHUTDOWN_FATAL) that a moonlink bgworker
 # logged after line n of postgres.log. A bgworker exits on ERROR, and pgrx reports a Rust unwrap()
 # failure as an ERROR, not a panic. The site is the error's first source location and the cause the
 # text of its innermost source; an error without a location is "error: <text>".
@@ -378,11 +380,11 @@ worker_errors() {
   local pids line site
   pids=$(sed -nE 's/.*background worker "moonlink" \(PID ([0-9]+)\) (exited|was terminated).*/\1/p' "$OUT/postgres.log" 2>/dev/null | paste -sd'|' -)
   [[ -n $pids ]] || return 0
-  tail -n +"$(( ${1:-0} + 1 ))" "$OUT/postgres.log" | grep -E "\[($pids)\] ERROR: " | while IFS= read -r line; do
+  tail -n +"$(( ${1:-0} + 1 ))" "$OUT/postgres.log" | grep -E "\[($pids)\] (ERROR|FATAL): " | grep -v "$SHUTDOWN_FATAL" | while IFS= read -r line; do
     site=$(grep -oE ' at /[^ ,]+:[0-9]+:[0-9]+' <<< "$line" | head -1 | sed -E 's/^ at //; s/:([0-9]+):[0-9]+$/:\1/'"$SITE_SED")
-    # Only the message text: the log prefix (time, pid) would make every occurrence distinct.
-    # Up to the first "] ERROR:", i.e. the log prefix only; absolute paths shortened like sites.
-    line=$(sed -E 's/^[^]]*\] ERROR: +//; s/[,;]/ /g'"$PATH_SED" <<< "$line")
+    # Only the message text (the log prefix, up to the first "] ERROR:" or "] FATAL:", would make
+    # every occurrence distinct); absolute paths shortened like sites.
+    line=$(sed -E 's/^[^]]*\] (ERROR|FATAL): +//; s/[,;]/ /g'"$PATH_SED" <<< "$line")
     if [[ -n $site ]]; then echo "$site: ${line##*source: }"
     else echo "error: $line"; fi
   done | sort | uniq -c | awk '{c = $1; $1 = ""; print substr($0, 2) " x" c}'
@@ -402,7 +404,7 @@ panics_inline() { local p; p=$(panic_sites "${1:-0}" | paste -sd, - | sed 's/,/,
 # never left out.
 worker_exits() {
   local errpids
-  errpids=$(sed -nE 's/^[^]]*\[([0-9]+)\] ERROR: .*/\1/p' "$OUT/postgres.log" 2>/dev/null | sort -u | paste -sd' ' -)
+  errpids=$(grep -v "$SHUTDOWN_FATAL" "$OUT/postgres.log" 2>/dev/null | sed -nE 's/^[^]]*\[([0-9]+)\] (ERROR|FATAL): .*/\1/p' | sort -u | paste -sd' ' -)
   awk -v range="$ALLOWED_EXIT_LINES" -v errpids=" $errpids " '
     BEGIN { n = split(range, r, " ") }
     match($0, /background worker "moonlink" \(PID [0-9]+\) (exited with exit code [1-9][0-9]*|was terminated by signal [0-9]+)/) {
@@ -800,7 +802,7 @@ SQL
   if poll_until 30 no_leftover_files; then result drop_all_files_removed 0
   else
     # The signature is the whole listing, so a known leftover can't hide another one.
-    local left; left=$(leftover_files)
+    local left; left=$(leftover_files | sed "s#^$DATA/##")
     result drop_all_files_removed 1 "$(echo "$left" | wc -l) left: $(echo "$left" | head -5 | one_line)" "$(echo "$left" | paste -sd' ' -)"
   fi
 

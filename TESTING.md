@@ -65,6 +65,14 @@ After unsupported source DDL (`ddl`, `ddl_drop`), a mirror passes if it equals t
 one ERROR line that names the mirror, says `schema changes are not supported` and gives the `drop and re-create`
 remedy. Any other error, or a mirror that silently differs, fails.
 
+Every scenario ends by stopping its cluster (`pg_ctl stop -m fast`) and then checking the whole server log:
+`no_moonlink_panics`, `bgworker_no_abnormal_exits`, `no_postgres_crash_restarts` and
+`no_worker_errors_during_final_stop`. A clean stop SIGTERMs the moonlink background worker, which may exit with code
+1 so that Postgres restarts it when it is killed at other times. So each clean stop (and the SIGTERM test in
+`moonlink_down`) excuses one `exited with exit code 1` in its part of the log, but only from a worker that logged no
+ERROR or FATAL. Other exit codes, signal deaths, and the exits of an immediate stop (`-m immediate` sends SIGQUIT)
+always count. `no_worker_errors_during_final_stop` fails if the worker logs an ERROR or FATAL while it shuts down.
+
 ### Release policy: blocking and limitation
 
 Every known bug is declared once with a class, `bug <name> class=blocking|class=limitation <description>`:

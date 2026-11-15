@@ -13,9 +13,16 @@
 #
 # A listed check reports XFAIL(<bug>) only when each of its failure signatures matches the regex
 # (bash ERE) of one of its listed bugs; any other failure is a plain FAIL. A check may list several
-# bugs, one line each. Signatures are the RESULT detail, or for no_moonlink_panics one "<file>:<line>"
-# per panic location and for bgworker_no_abnormal_exits / no_postgres_crash_restarts one line per
-# kind of exit. A "requires <check> <bug> <earlier check> <bug2>" line makes the check's <bug> rule
+# bugs, one line each. Signatures, one per line:
+#   most checks                       the RESULT detail
+#   no_moonlink_panics                "<file>:<line> x<n>" per panic location
+#   bgworker_no_abnormal_exits        "exited with exit code <c> x<n>" / "was terminated by signal <s> x<n>"
+#   no_postgres_crash_restarts        "<process kind> terminated by signal <s> x<n>", "reinitializing x<n>"
+#   no_worker_errors_*                "<file>:<line>: <innermost cause> x<n>", or "error: <text> x<n>"
+#                                     for an error without a source location (log prefix and absolute
+#                                     paths removed)
+#   main.drop_all_files_removed       the whole leftover listing on one line, paths relative to the
+#                                     data directory ("pg_mooncake/...") A "requires <check> <bug> <earlier check> <bug2>" line makes the check's <bug> rule
 # count only if the earlier check failed with <bug2>, for failures whose text alone doesn't name
 # the cause (a hung DROP, a missing fence mirror). Panic sites are pinned to file:line per moonlink
 # revision.
@@ -29,13 +36,13 @@ bug decimal-stats-overflow-panic class=blocking Persisting a numeric column with
 
 check schema.type.numeric numeric-digits-shifted data mismatch.* > 1\|12345678901234567890\.1234567890
 check schema.type.char_3 char-padding-lost data mismatch.*< 1\|ab  --- > 1\|ab$
-check schema.type.interval interval-inet-unsupported type with oid 1186 .*is not supported
-check schema.type.inet interval-inet-unsupported type with oid 869 .*is not supported
+check schema.type.interval interval-inet-unsupported ^setup: ERROR: +mooncake\.create_table failed: .*type with oid 1186 .*is not supported
+check schema.type.inet interval-inet-unsupported ^setup: ERROR: +mooncake\.create_table failed: .*type with oid 869 .*is not supported
 check schema.type.integer_array arrays-come-back-empty data mismatch.* > 1\|\{\}$
 check schema.type.text_array arrays-come-back-empty data mismatch.* > 1\|\{\}$
 
-check persist.type.interval interval-inet-unsupported type with oid 1186 .*is not supported
-check persist.type.inet interval-inet-unsupported type with oid 869 .*is not supported
+check persist.type.interval interval-inet-unsupported ^setup: ERROR: +mooncake\.create_table failed: .*type with oid 1186 .*is not supported
+check persist.type.inet interval-inet-unsupported ^setup: ERROR: +mooncake\.create_table failed: .*type with oid 869 .*is not supported
 check persist.type.numeric decimal-stats-overflow-panic ^create_snapshot did not return within [0-9]+s; panics during it: .*rust_decimal-(1\.43\.0/src/decimal\.rs:2047|1\.39\.0/src/decimal\.rs:1982) x
 check persist.no_moonlink_panics decimal-stats-overflow-panic rust_decimal-(1\.43\.0/src/decimal\.rs:2047|1\.39\.0/src/decimal\.rs:1982) x
 check persist.type.numeric.after_snapshot numeric-digits-shifted data mismatch.* > 1\|12345678901234567890\.1234567890
@@ -57,7 +64,7 @@ check main.toast_unchanged_update unchanged-toast-overwritten data mismatch.*\|d
 check main.ryw_cross_table_after_restart ryw-scan-after-restart (did not return within [0-9]+s; moonlink panics during the check: none$|^expected \[[0-9]+\] got \[[0-9]+\]$)
 check main.ryw_cross_table_after_restart scan-commit-lsn-assert IO error .*moonlink panics during the check: .*union_read/read_state_manager\.rs:145 x
 check main.no_moonlink_panics scan-commit-lsn-assert union_read/read_state_manager\.rs:145 x
-check main.drop_all_files_removed initial-copy-dir-leak ^[^ ]*/pg_mooncake/initial_copy( [^ ]*/pg_mooncake/initial_copy/table_[0-9]+)*$
+check main.drop_all_files_removed initial-copy-dir-leak ^pg_mooncake/initial_copy( pg_mooncake/initial_copy/table_[0-9]+)*$
 
 # ---- restart after other mirrors were dropped -----------------------------------------------------
 bug mirror-lost-after-restart-after-drops class=blocking A mirror stops ingesting or comes back empty after a clean restart if other mirrors of the database were dropped before it

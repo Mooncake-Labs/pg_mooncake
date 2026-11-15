@@ -57,7 +57,7 @@ runs:
       env:
         PG: ${{ inputs.pg }}
       run: |
-        pgrx_version=$(sed -n 's/^pgrx = "\(.*\)"/\1/p' Cargo.toml)
+        pgrx_version=$(sed -n 's/^pgrx = "=\{0,1\}\(.*\)"/\1/p' Cargo.toml)
         # Outside the checkout, so the runner's default toolchain builds the CLI.
         (cd "$RUNNER_TEMP" && cargo install --locked "cargo-pgrx@$pgrx_version")
         cargo pgrx init "--pg$PG" "$PG_BIN/pg_config"
@@ -66,11 +66,23 @@ runs:
       shell: bash
       run: make pg_duckdb "PG_VERSION=pg${{ inputs.pg }}"
 
+    # duckdb_mooncake must be built for the DuckDB version pg_duckdb embeds, or DuckDB refuses to load it.
+    - name: Read the DuckDB version
+      shell: bash
+      run: |
+        version=$(sed -n 's/^DUCKDB_VERSION := //p' Makefile)
+        pg_duckdb_version=$(sed -n 's/^DUCKDB_VERSION = //p' pg_duckdb/Makefile)
+        if [[ -z $version || $version != "$pg_duckdb_version" ]]; then
+          echo "Makefile DUCKDB_VERSION ($version) differs from pg_duckdb's ($pg_duckdb_version)" >&2
+          exit 1
+        fi
+        echo "DUCKDB_VERSION=$version" >> "$GITHUB_ENV"
+
     - name: Download duckdb_mooncake
       uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
       with:
         name: duckdb_mooncake
-        path: ${{ runner.temp }}/duckdb_extensions/v1.4.1/linux_amd64
+        path: ${{ runner.temp }}/duckdb_extensions/${{ env.DUCKDB_VERSION }}/linux_amd64
 
     - name: Configure the pgrx cluster
       shell: bash

@@ -13,19 +13,22 @@
 #
 # A listed check reports XFAIL(<bug>) only when each of its failure signatures matches the regex
 # (bash ERE) of one of its listed bugs; any other failure is a plain FAIL. A check may list several
-# bugs, one line each. Signatures, one per line:
-#   most checks                       the RESULT detail
-#   no_moonlink_panics                "<file>:<line> x<n>" per panic location
-#   bgworker_no_abnormal_exits        "exited with exit code <c> x<n>" / "was terminated by signal <s> x<n>"
-#   no_postgres_crash_restarts        "<process kind> terminated by signal <s> x<n>", "reinitializing x<n>"
-#   no_worker_errors_*                "<file>:<line>: <innermost cause> x<n>", or "error: <text> x<n>"
-#                                     for an error without a source location (log prefix and absolute
-#                                     paths removed)
-#   main.drop_all_files_removed       the whole leftover listing on one line, paths relative to the
-#                                     data directory ("pg_mooncake/...") A "requires <check> <bug> <earlier check> <bug2>" line makes the check's <bug> rule
-# count only if the earlier check failed with <bug2>, for failures whose text alone doesn't name
-# the cause (a hung DROP, a missing fence mirror). Panic sites are pinned to file:line per moonlink
-# revision.
+# bugs, one line each. Bug names use only [A-Za-z0-9_.-]. Signatures, one per line:
+#   most checks                   the RESULT detail
+#   no_moonlink_panics            "<file>:<line> x<n>" per panic location
+#   bgworker_no_abnormal_exits    "exited with exit code <c> x<n>", "was terminated by signal <s> x<n>"
+#   no_postgres_crash_restarts    "<process kind> terminated by signal <s> x<n>", "reinitializing x<n>"
+#   no_worker_errors_*            "<file>:<line>: <innermost cause> x<n>", or "error: <text> x<n>" for
+#                                 an ERROR or FATAL without a source location (log prefix removed,
+#                                 absolute paths shortened)
+#   main.drop_all_files_removed   the whole leftover listing on one line: "<type> pg_mooncake/<path>"
+#                                 per entry, type as find's %y (d directory, f file, ...)
+#   session checks (config_reload, mirror_writes, roles)
+#                                 "backend crashed (signal <s>); TRAP: <assertion or none>", or
+#                                 "unexpected output: <stderr and stdout of the session>"
+# A "requires <check> <bug> <earlier check> <bug2>" line makes the check's <bug> rule count only if
+# the earlier check failed with <bug2>, for failures whose text alone doesn't name the cause (a hung
+# DROP, a missing fence mirror). Panic sites are pinned to file:line per moonlink revision.
 
 # ---- types --------------------------------------------------------------------------------------
 bug numeric-digits-shifted class=blocking Unconstrained numeric values come back with their digits shifted
@@ -64,7 +67,7 @@ check main.toast_unchanged_update unchanged-toast-overwritten data mismatch.*\|d
 check main.ryw_cross_table_after_restart ryw-scan-after-restart (did not return within [0-9]+s; moonlink panics during the check: none$|^expected \[[0-9]+\] got \[[0-9]+\]$)
 check main.ryw_cross_table_after_restart scan-commit-lsn-assert IO error .*moonlink panics during the check: .*union_read/read_state_manager\.rs:145 x
 check main.no_moonlink_panics scan-commit-lsn-assert union_read/read_state_manager\.rs:145 x
-check main.drop_all_files_removed initial-copy-dir-leak ^pg_mooncake/initial_copy( pg_mooncake/initial_copy/table_[0-9]+)*$
+check main.drop_all_files_removed initial-copy-dir-leak ^d pg_mooncake/initial_copy( d pg_mooncake/initial_copy/table_[0-9]+)*$
 
 # ---- restart after other mirrors were dropped -----------------------------------------------------
 bug mirror-lost-after-restart-after-drops class=blocking A mirror stops ingesting or comes back empty after a clean restart if other mirrors of the database were dropped before it

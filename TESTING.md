@@ -62,7 +62,8 @@ makes a listed check pass, it reports `XPASS(<bugs>)`, and `KNOWN <bug> FIXED` m
 passed: remove its lines in the same change. For a bug whose description starts with `Intermittent:`, a run in which
 every listed check passed reports `NOT-SEEN` instead of `FIXED`: passing runs don't show that an intermittent bug is
 gone, so its entry stays until its fix is in. A known-bugs file that is missing, empty or has no `bug` entries is a
-setup error (exit 2), and so is a bug declared twice; a release with no known bugs sets `EMPTY_KNOWN_BUGS_OK=1`.
+setup error (exit 2), and so is a bug declared twice or a name outside `[A-Za-z0-9_.-]`. `EMPTY_KNOWN_BUGS_OK=1`
+allows an existing file without entries, for a release with no known bugs; a missing file is always an error.
 
 After unsupported source DDL (`ddl`, `ddl_drop`), a mirror passes if it equals the source, or if its scans fail with
 one ERROR line that names the mirror, says `schema changes are not supported` and gives the `drop and re-create`
@@ -89,7 +90,7 @@ Every known bug is declared once with a class, `bug <name> class=blocking|class=
 
 The gate is:
 
-- `FAIL` if any check is FAIL, SKIP or XFAIL of a blocking bug;
+- `FAIL` if any check is FAIL, SKIP or XFAIL of a blocking bug, or if no check passed;
 - otherwise `BLOCKED` while the file lists any `class=blocking` bug, even one the run didn't hit (for example an
   intermittent one that reports `NOT-SEEN` or `UNKNOWN`); the `BLOCKING` line names them;
 - otherwise `INCOMPLETE` if not every scenario ran;

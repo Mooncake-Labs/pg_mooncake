@@ -23,8 +23,8 @@
 # and PASS (exit 0). A check that fails only as known limitations (XFAIL(limitation:...)) does not
 # fail the gate. SKIP means a check could not run, e.g. because postgres died.
 #
-# Known bugs come from KNOWN_BUGS=<file> (default scripts/e2e-known-bugs.txt; missing or without
-# entries is a setup error unless EMPTY_KNOWN_BUGS_OK=1) that lists, per check, a bug and a regex for that bug's failure signature. A listed check
+# Known bugs come from KNOWN_BUGS=<file> (default scripts/e2e-known-bugs.txt; a missing file is a
+# setup error, and so is one without entries unless EMPTY_KNOWN_BUGS_OK=1) that lists, per check, a bug and a regex for that bug's failure signature. A listed check
 # whose failure signatures all match listed bugs reports XFAIL(<bugs>). Any other failure stays FAIL,
 # so a new problem in a check that is already known to fail is not hidden. A listed check that
 # passes reports XPASS(<bugs>), and KNOWN <bug> FIXED means every check listed for the bug passed
@@ -43,8 +43,8 @@
 #      E2E_DIR (clusters and outputs, default ${TMPDIR:-/tmp}/pg_mooncake-e2e), BUILD_SRC (checkout
 #      the binaries were built from; default the harness checkout), PGPORT (default 5400+major),
 #      CONVERGE_SECS (fence timeout, 30), GRACE_SECS (apply grace after the fence, 5),
-#      PSQL_TIMEOUT (per psql call, 60), KNOWN_BUGS, KNOWN_BUG_IDS, EMPTY_KNOWN_BUGS_OK (1: allow a
-#      known-bugs file without entries),
+#      PSQL_TIMEOUT (per psql call, 60), KNOWN_BUGS, KNOWN_BUG_IDS, EMPTY_KNOWN_BUGS_OK (1: allow an
+#      existing known-bugs file without entries),
 #      WIRE_MOONLINK_RPC_REV and COMMUNITY_DUCKDB_MOONCAKE_REF (expected pins, see scenario build).
 set -uo pipefail
 
@@ -68,7 +68,8 @@ if [[ -n ${LC_ALL:-} ]]; then export LANG=$LC_ALL; unset LC_ALL; fi
 export LC_MESSAGES=C
 unset LANGUAGE
 
-MAJOR=${1:?pg major}; shift
+[[ $# -ge 1 && $1 =~ ^[0-9]+$ ]] || { echo "usage: $0 <pg_major> [scenario ...]" >&2; exit 2; }
+MAJOR=$1; shift
 ALL_SCENARIOS=(build main schema restart_after_drop persist moonlink_down ddl ddl_drop truncate source_drop_restart
   config_reload mirror_writes roles big_txn_restart crash)
 SCENARIOS=("$@"); [[ ${#SCENARIOS[@]} -eq 0 ]] && SCENARIOS=("${ALL_SCENARIOS[@]}")
@@ -100,15 +101,16 @@ pg_major_found=$("$BIN/pg_config" --version | sed -E 's/^PostgreSQL ([0-9]+).*/\
 # "check <scenario.check> <bug> <regex>" and
 # "requires <scenario.check> <bug> <earlier scenario.check> <bug2>". The regex (bash ERE) is matched
 # against each failure signature: the check's detail, or one line per distinct cause where a check
-# reports several (panic locations, process exits). A "requires" line makes the check's rule for
+# reports several (panics, exits, crash restarts, bgworker errors, leftover files; the forms are
+# listed at the top of scripts/e2e-known-bugs.txt). A "requires" line makes the check's rule for
 # <bug> count only if the earlier check failed with <bug2>, for failures whose text alone doesn't
 # identify the cause (a hung DROP, a missing fence mirror).
 declare -A BUG_DESC=() BUG_CLASS=() KNOWN_RULES=() BUG_IDS=() RULE_REQUIRES=()
 load_known_bugs() {
   local line kind a b rest other other_bug extra n=0
-  # An explicitly given file must exist; whether it may be without entries is checked below.
-  if [[ -n $KNOWN_BUGS_GIVEN && ! -f $KNOWN_BUGS ]]; then echo "KNOWN_BUGS=$KNOWN_BUGS: missing" >&2; exit 2; fi
-  if [[ -f $KNOWN_BUGS ]]; then
+  # The file must exist (default or given); EMPTY_KNOWN_BUGS_OK only allows one without entries.
+  if [[ ! -r $KNOWN_BUGS || -d $KNOWN_BUGS ]]; then echo "KNOWN_BUGS=$KNOWN_BUGS: missing or not a readable file" >&2; exit 2; fi
+  {
     while IFS= read -r line || [[ -n $line ]]; do
       n=$((n + 1)); line=${line%$'\r'}
       [[ $line =~ ^[[:space:]]*(#|$) ]] && continue
@@ -118,6 +120,7 @@ load_known_bugs() {
           if [[ $b != class=blocking && $b != class=limitation || -z $rest ]]; then
             echo "$KNOWN_BUGS:$n: expected 'bug <name> class=blocking|class=limitation <description>'" >&2; exit 2
           fi
+          if [[ ! $a =~ ^[A-Za-z0-9_.-]+$ ]]; then echo "$KNOWN_BUGS:$n: bug name '$a' must match [A-Za-z0-9_.-]+" >&2; exit 2; fi
           if [[ -n ${BUG_CLASS[$a]:-} ]]; then echo "$KNOWN_BUGS:$n: bug $a is declared twice" >&2; exit 2; fi
           BUG_CLASS[$a]=${b#class=}; BUG_DESC[$a]=$rest ;;
         check)
@@ -136,11 +139,11 @@ load_known_bugs() {
         *) echo "$KNOWN_BUGS:$n: unknown entry '$kind'" >&2; exit 2 ;;
       esac
     done < "$KNOWN_BUGS"
-  fi
-  # With no entries, no blocking bug is listed and the gate could pass by accident (a missing default
-  # file, a file of comments). A release with no known bugs says so explicitly.
+  }
+  # With no entries, no blocking bug is listed and the gate could pass by accident (an empty file, a
+  # file of comments). A release with no known bugs says so explicitly.
   if (( ${#BUG_CLASS[@]} == 0 )) && [[ ${EMPTY_KNOWN_BUGS_OK:-} != 1 ]]; then
-    echo "$KNOWN_BUGS: missing or no 'bug' entries (set EMPTY_KNOWN_BUGS_OK=1 if there are no known bugs)" >&2; exit 2
+    echo "$KNOWN_BUGS: no 'bug' entries (set EMPTY_KNOWN_BUGS_OK=1 if there are no known bugs)" >&2; exit 2
   fi
   if [[ -f $KNOWN_BUG_IDS ]]; then
     while read -r a b; do [[ -z $a || $a == \#* ]] || BUG_IDS[$a]=$b; done < "$KNOWN_BUG_IDS"
@@ -163,13 +166,13 @@ rule_requirements_met() {
     [[ ,${MATCHED_OF[${req%|*}]:-}, == *",${req#*|},"* ]] || return 1
   done
 }
-# known_bugs_matching <check> <signatures>: the listed bugs that explain the failure, or nothing
-# unless every signature line matches at least one of the check's bug regexes.
 # only_limitations <bug,...>: every bug is of class limitation (such an XFAIL doesn't fail the gate).
 only_limitations() {
   local b
   for b in ${1//,/ }; do [[ ${BUG_CLASS[$b]:-} == limitation ]] || return 1; done
 }
+# known_bugs_matching <check> <signatures>: the listed bugs that explain the failure, or nothing
+# unless every signature line matches at least one of the check's bug regexes.
 known_bugs_matching() {
   local rules=${KNOWN_RULES[$1]:-} sig bug re hit bugs=""
   [[ -n $rules ]] || return 0
@@ -380,7 +383,7 @@ worker_errors() {
   local pids line site
   pids=$(sed -nE 's/.*background worker "moonlink" \(PID ([0-9]+)\) (exited|was terminated).*/\1/p' "$OUT/postgres.log" 2>/dev/null | paste -sd'|' -)
   [[ -n $pids ]] || return 0
-  tail -n +"$(( ${1:-0} + 1 ))" "$OUT/postgres.log" | grep -E "\[($pids)\] (ERROR|FATAL): " | grep -v "$SHUTDOWN_FATAL" | while IFS= read -r line; do
+  tail -n +"$(( ${1:-0} + 1 ))" "$OUT/postgres.log" | grep -E "^[^]]*\[($pids)\] (ERROR|FATAL): " | grep -v "$SHUTDOWN_FATAL" | while IFS= read -r line; do
     site=$(grep -oE ' at /[^ ,]+:[0-9]+:[0-9]+' <<< "$line" | head -1 | sed -E 's/^ at //; s/:([0-9]+):[0-9]+$/:\1/'"$SITE_SED")
     # Only the message text (the log prefix, up to the first "] ERROR:" or "] FATAL:", would make
     # every occurrence distinct); absolute paths shortened like sites.
@@ -461,14 +464,17 @@ stop() {
   if ! pg_alive; then [[ -z $check ]] || result "$check" skip "postgres not running"; return 0; fi
   from=$(wc -l < "$OUT/postgres.log")
   "$BIN/pg_ctl" -D "$DATA" -m "$mode" -w -t 30 stop > /dev/null 2>&1; rc=$?
+  # Report before the fallback: once postgres is down, result would turn the failure into a SKIP.
+  if [[ -n $check ]]; then
+    if (( rc == 0 )); then result "$check" 0
+    else result "$check" 1 "pg_ctl stop -m $mode did not finish within 30s (continuing after -m immediate)"; fi
+  fi
   (( rc == 0 )) || "$BIN/pg_ctl" -D "$DATA" -m immediate -w stop > /dev/null 2>&1
   LAST_STOP_LINES="$from $(wc -l < "$OUT/postgres.log")"
   # A clean stop SIGTERMs the bgworker, which may exit with code 1 (see worker_exits). An immediate
   # stop sends SIGQUIT, and nothing is excused there.
   [[ $mode == fast ]] && ALLOWED_EXIT_LINES+=" $LAST_STOP_LINES"
-  [[ -z $check ]] && return 0
-  if (( rc == 0 )); then result "$check" 0
-  else result "$check" 1 "pg_ctl stop -m $mode did not finish within 30s (continuing after -m immediate)"; fi
+  return 0
 }
 
 new_cluster() {
@@ -802,19 +808,21 @@ SQL
   if poll_until 30 no_leftover_files; then result drop_all_files_removed 0
   else
     # The signature is the whole listing, so a known leftover can't hide another one.
-    local left; left=$(leftover_files | sed "s#^$DATA/##")
+    local left; left=$(leftover_files)
     result drop_all_files_removed 1 "$(echo "$left" | wc -l) left: $(echo "$left" | head -5 | one_line)" "$(echo "$left" | paste -sd' ' -)"
   fi
 
   end_cluster
 }
 no_files_matching() { [[ -z $(find "$DATA/pg_mooncake" -path "$1" 2>/dev/null | head -1) ]]; }
+# leftover_files: "<type> pg_mooncake/<path>" (find's %y: d directory, f file, ...) for everything
+# under pg_mooncake at any depth, except moonlink's own files at their place and the cache roots.
 leftover_files() {
-  # Everything under pg_mooncake, at any depth, except moonlink's own files and empty cache roots.
   local p=$DATA/pg_mooncake
-  find "$p" -mindepth 1 -not -path "$p/moonlink.sock" -not -path "$p/moonlink_metadata_store.sqlite*" \
-    -not -path "$p/temp" -not -path "$p/read_through_cache" -not -path "$p/_wal" -not -path "$p/postgres" \
-    -not -path "$p/*/indicator.text" 2>/dev/null | sort
+  [[ -d $p ]] || { echo "? pg_mooncake (missing: the data directory has no pg_mooncake)"; return; }
+  find "$p" -mindepth 1 -printf '%y %P\n' 2>/dev/null |
+    grep -vE '^(s moonlink\.sock|f moonlink_metadata_store\.sqlite(-wal|-shm|-journal)?|d (temp|read_through_cache|_wal|postgres)|f [^/]+/indicator\.text)$' |
+    sed 's#^\(.\) #\1 pg_mooncake/#' | sort -k2
 }
 no_leftover_files() { [[ -z $(leftover_files | head -1) ]]; }
 

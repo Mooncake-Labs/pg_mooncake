@@ -329,7 +329,7 @@ compare_core() {
   if (( rc >= 124 )); then
     CMP_DETAIL="mirror query timed out after the fence (WAL $FENCE_WAL) was applied; moonlink panics so far: $(panics_inline)"
   elif (( rc != 0 )); then
-    CMP_DETAIL="mirror query failed (rc=$rc): $(one_line 200 < "$m.err")"
+    CMP_DETAIL="mirror query failed (rc=$rc): $(one_line 400 < "$m.err")"
   elif ! diff -q "$h" "$m" > /dev/null; then
     CMP_DETAIL="data mismatch after the fence (WAL $FENCE_WAL) was applied: $(diff "$h" "$m" | head -4 | cut -c1-120 | one_line)"
   else
@@ -730,7 +730,7 @@ scenario_build() {
 TYPES=(
   "smallint|-32768, 0, 32767" "integer|-2147483648, 42" "bigint|-9223372036854775808, 9223372036854775807"
   "real|1.5, -0.25" "double precision|3.141592653589793, -1e300" "numeric(20,5)|123456789012345.12345, -0.00001"
-  "numeric|1.23456789012345678901234567890" "boolean|true, false" "text|'', 'hello', 'ünïcødé ✓'"
+  "numeric|1.23456789012345678901234567890" "numeric(38,10)|1234567890123456789012345678.1234567890, -0.0000000001" "boolean|true, false" "text|'', 'hello', 'ünïcødé ✓'"
   "varchar(10)|'abc'" "char(3)|'ab'" "bytea|'\\xdeadbeef'::bytea, ''::bytea" "date|'2024-02-29', '1970-01-01'"
   "time|'23:59:59.999999'" "timestamp|'2024-06-05 10:00:00.123456'" "timestamptz|'2024-06-05 10:00:00+02'"
   "interval|'1 year 2 days 03:04:05'" "uuid|'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'" "json|'{\"a\":1}'"
@@ -910,7 +910,7 @@ leftover_files() {
   local all
   all=$(find "$p" -mindepth 1 -printf '%y %P\n' 2>&1) || { echo "? find failed: $(echo "$all" | one_line 120)"; return; }
   echo "$all" |
-    grep -vE '^(s moonlink\.sock|f moonlink_metadata_store\.sqlite(-wal|-shm|-journal)?|d (temp|read_through_cache|_wal|postgres)|f [^/]+/indicator\.text)$' |
+    grep -vE '^(s moonlink\.sock|f moonlink_metadata_store\.sqlite(-wal|-shm|-journal)?|d (temp|read_through_cache|_wal|postgres|\.moonlink_atomic_tmp|source_fingerprints)|f [^/]+/indicator\.text)$' |
     sed 's#^\(.\) #\1 pg_mooncake/#' | sort -k2
 }
 no_leftover_files() { [[ -z $(leftover_files | head -1) ]]; }
@@ -1004,7 +1004,7 @@ scenario_persist() {
     c1=$(panic_count)
     if (( rc == 0 && c0 == c1 )); then result "type.$(type_check_name "$ty")" 0
     elif (( rc >= 124 )); then result "type.$(type_check_name "$ty")" 1 "create_snapshot did not return within ${PSQL_TIMEOUT}s; panics during it: $(panics_inline "$c0")"
-    else result "type.$(type_check_name "$ty")" 1 "rc=$rc, panics during it: $(panics_inline "$c0"): $(echo "$out" | one_line 160)"; fi
+    else result "type.$(type_check_name "$ty")" 1 "rc=$rc, panics during it: $(panics_inline "$c0"): $(echo "$out" | one_line 400)"; fi
   done
   for i in "${!TYPES[@]}"; do
     [[ -n ${created[$i]:-} ]] || continue

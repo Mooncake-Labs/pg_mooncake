@@ -179,6 +179,10 @@ Product behavior (fix with a test; don't paper over it):
 - Calls other than `DropTable` have no timeout: a hung moonlink blocks them until it answers.
 - Identifiers containing `.` are rejected (moonlink splits source names on `.`).
 
+End-to-end checks (`scripts/e2e-smoke.sh`, see TESTING.md): one `RESULT <scenario>.<check> PASS|FAIL|XFAIL(<bug>)|XPASS(<bug>)|SKIP`
+line per check, then `SUMMARY` and `GATE` lines. Expected failures are listed in `scripts/e2e-known-bugs.txt`, so read
+results from that file rather than from hand-kept counts. `XPASS` means a known bug no longer reproduces: remove its line.
+
 ## 8. Conventions
 
 - Rust: `make format` (`cargo fmt` + `cargo clippy`). duckdb_mooncake C++: `make -C duckdb_mooncake format-all`.

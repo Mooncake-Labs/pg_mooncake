@@ -161,6 +161,30 @@ check source_drop_restart.no_moonlink_panics sigterm-handler-off-main-thread pgr
 check config_reload.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
 check mirror_writes.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
 check roles.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+# A panic in the SIGTERM handler can also swallow the shutdown request: the worker never exits and
+# a clean stop hangs until the immediate fallback.
+check build.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
+check main.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
+check schema.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
+check restart_after_drop.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
+check persist.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
+check moonlink_down.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
+check ddl.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
+check ddl_drop.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
+check truncate.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
+check source_drop_restart.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
+check config_reload.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
+check mirror_writes.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
+check roles.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
+check big_txn_restart.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
+check crash.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
+check main.clean_stop_before_restart sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
+check restart_after_drop.clean_stop_before_restart sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
+check persist.clean_stop_before_restart sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
+check moonlink_down.clean_stop_before_restart sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
+check source_drop_restart.clean_stop_before_restart sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
+check roles.clean_stop_before_restart sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
+check big_txn_restart.clean_stop_before_restart sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
 check big_txn_restart.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
 check crash.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
 

@@ -460,14 +460,14 @@ start() { "$BIN/pg_ctl" -D "$DATA" -l "$OUT/postgres.log" -w -t 60 start > /dev/
 # hung shutdown is a bug in itself (a service manager would SIGKILL Postgres), e.g. a backend blocked
 # in a moonlink RPC ignores SIGTERM. The run then goes on after an immediate stop.
 stop() {
-  local mode=${1:-fast} check=${2:-} from rc
+  local mode=${1:-fast} check=${2:-} from rc mark
   if ! pg_alive; then [[ -z $check ]] || result "$check" skip "postgres not running"; return 0; fi
-  from=$(wc -l < "$OUT/postgres.log")
+  from=$(wc -l < "$OUT/postgres.log"); mark=$(panic_count)
   "$BIN/pg_ctl" -D "$DATA" -m "$mode" -w -t 30 stop > /dev/null 2>&1; rc=$?
   # Report before the fallback: once postgres is down, result would turn the failure into a SKIP.
   if [[ -n $check ]]; then
     if (( rc == 0 )); then result "$check" 0
-    else result "$check" 1 "pg_ctl stop -m $mode did not finish within 30s (continuing after -m immediate)"; fi
+    else result "$check" 1 "pg_ctl stop -m $mode did not finish within 30s (continuing after -m immediate); panics during the stop: $(panics_inline "$mark")"; fi
   fi
   (( rc == 0 )) || "$BIN/pg_ctl" -D "$DATA" -m immediate -w stop > /dev/null 2>&1
   LAST_STOP_LINES="$from $(wc -l < "$OUT/postgres.log")"

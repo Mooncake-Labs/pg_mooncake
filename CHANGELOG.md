@@ -56,6 +56,13 @@ upgrading**; see [Upgrading from 0.2](README.md#upgrading-from-02).
      memory. -->
 
 ### Known limitations
+- Every session that has queried a mirror crashes on a configuration reload (`pg_reload_conf()`, `pg_ctl reload`,
+  `SIGHUP`), even when nothing changed, and when a time zone change is undone at the end of its transaction
+  (`SET LOCAL TIME ZONE` then `COMMIT`, or `SET TIME ZONE` then `ROLLBACK`). Postgres then restarts every session. This
+  is a bug in the bundled pg_duckdb, fixed in later pg_duckdb releases. Restart instead of reloading.
+  <!-- RC: remove if the release ships with the pg_duckdb time zone fix. -->
+- Reading mirrors needs pg_duckdb's `duckdb.postgres_role` and membership in both `pg_read_server_files` and
+  `pg_write_server_files`, so in practice a superuser. `GRANT`/`REVOKE` on individual mirrors are not enforced.
 - `DROP EXTENSION pg_mooncake CASCADE` drops the mirror tables in Postgres but not in moonlink. Drop the mirrors first;
   a leftover is removed when a mirror with the same name is created again.
 - Identifiers containing `.` are rejected.

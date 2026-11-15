@@ -13,12 +13,22 @@
 #
 # A listed check reports XFAIL(<bug>) only when each of its failure signatures matches the regex
 # (bash ERE) of one of its listed bugs; any other failure is a plain FAIL. A check may list several
-# bugs, one line each. Signatures are the RESULT detail, or for no_moonlink_panics one "<file>:<line>"
-# per panic location and for bgworker_no_abnormal_exits / no_postgres_crash_restarts one line per
-# kind of exit. A "requires <check> <bug> <earlier check> <bug2>" line makes the check's <bug> rule
-# count only if the earlier check failed with <bug2>, for failures whose text alone doesn't name
-# the cause (a hung DROP, a missing fence mirror). Panic sites are pinned to file:line per moonlink
-# revision.
+# bugs, one line each. Bug names use only [A-Za-z0-9_.-]. Signatures, one per line:
+#   most checks                   the RESULT detail
+#   no_moonlink_panics            "<file>:<line> x<n>" per panic location
+#   bgworker_no_abnormal_exits    "exited with exit code <c> x<n>", "was terminated by signal <s> x<n>"
+#   no_postgres_crash_restarts    "<process kind> terminated by signal <s> x<n>", "reinitializing x<n>"
+#   no_worker_errors_*            "<file>:<line>: <innermost cause> x<n>", or "error: <text> x<n>" for
+#                                 an ERROR or FATAL without a source location (log prefix removed,
+#                                 absolute paths shortened)
+#   main.drop_all_files_removed   the whole leftover listing on one line: "<type> pg_mooncake/<path>"
+#                                 per entry, type as find's %y (d directory, f file, ...)
+#   session checks (config_reload, mirror_writes, roles)
+#                                 "backend crashed (signal <s>); TRAP: <assertion or none>", or
+#                                 "unexpected output: <stderr and stdout of the session>"
+# A "requires <check> <bug> <earlier check> <bug2>" line makes the check's <bug> rule count only if
+# the earlier check failed with <bug2>, for failures whose text alone doesn't name the cause (a hung
+# DROP, a missing fence mirror). Panic sites are pinned to file:line per moonlink revision.
 
 # ---- types --------------------------------------------------------------------------------------
 bug numeric-digits-shifted class=blocking Unconstrained numeric values come back with their digits shifted
@@ -29,13 +39,13 @@ bug decimal-stats-overflow-panic class=blocking Persisting a numeric column with
 
 check schema.type.numeric numeric-digits-shifted data mismatch.* > 1\|12345678901234567890\.1234567890
 check schema.type.char_3 char-padding-lost data mismatch.*< 1\|ab  --- > 1\|ab$
-check schema.type.interval interval-inet-unsupported type with oid 1186 .*is not supported
-check schema.type.inet interval-inet-unsupported type with oid 869 .*is not supported
+check schema.type.interval interval-inet-unsupported ^setup: ERROR: +mooncake\.create_table failed: .*type with oid 1186 .*is not supported
+check schema.type.inet interval-inet-unsupported ^setup: ERROR: +mooncake\.create_table failed: .*type with oid 869 .*is not supported
 check schema.type.integer_array arrays-come-back-empty data mismatch.* > 1\|\{\}$
 check schema.type.text_array arrays-come-back-empty data mismatch.* > 1\|\{\}$
 
-check persist.type.interval interval-inet-unsupported type with oid 1186 .*is not supported
-check persist.type.inet interval-inet-unsupported type with oid 869 .*is not supported
+check persist.type.interval interval-inet-unsupported ^setup: ERROR: +mooncake\.create_table failed: .*type with oid 1186 .*is not supported
+check persist.type.inet interval-inet-unsupported ^setup: ERROR: +mooncake\.create_table failed: .*type with oid 869 .*is not supported
 check persist.type.numeric decimal-stats-overflow-panic ^create_snapshot did not return within [0-9]+s; panics during it: .*rust_decimal-(1\.43\.0/src/decimal\.rs:2047|1\.39\.0/src/decimal\.rs:1982) x
 check persist.no_moonlink_panics decimal-stats-overflow-panic rust_decimal-(1\.43\.0/src/decimal\.rs:2047|1\.39\.0/src/decimal\.rs:1982) x
 check persist.type.numeric.after_snapshot numeric-digits-shifted data mismatch.* > 1\|12345678901234567890\.1234567890
@@ -57,7 +67,7 @@ check main.toast_unchanged_update unchanged-toast-overwritten data mismatch.*\|d
 check main.ryw_cross_table_after_restart ryw-scan-after-restart (did not return within [0-9]+s; moonlink panics during the check: none$|^expected \[[0-9]+\] got \[[0-9]+\]$)
 check main.ryw_cross_table_after_restart scan-commit-lsn-assert IO error .*moonlink panics during the check: .*union_read/read_state_manager\.rs:145 x
 check main.no_moonlink_panics scan-commit-lsn-assert union_read/read_state_manager\.rs:145 x
-check main.drop_all_files_removed initial-copy-dir-leak ^[^ ]*/pg_mooncake/initial_copy( [^ ]*/pg_mooncake/initial_copy/table_[0-9]+)*$
+check main.drop_all_files_removed initial-copy-dir-leak ^d pg_mooncake/initial_copy( d pg_mooncake/initial_copy/table_[0-9]+)*$
 
 # ---- restart after other mirrors were dropped -----------------------------------------------------
 bug mirror-lost-after-restart-after-drops class=blocking A mirror stops ingesting or comes back empty after a clean restart if other mirrors of the database were dropped before it
@@ -111,6 +121,31 @@ requires source_drop_restart.drop_orphaned_mirror dropped-source-crash-loop sour
 check source_drop_restart.orphaned_mirror_unlisted dropped-source-crash-loop ^after [0-9]+s, list_tables: .*[Ff]ailed to connect to moonlink
 requires source_drop_restart.orphaned_mirror_unlisted dropped-source-crash-loop source_drop_restart.no_worker_errors_after_restart dropped-source-crash-loop
 
+# ---- sessions that crash the backend (pg_duckdb 7daa8e5) ------------------------------------------
+bug pgduckdb-timezone-hook-crash class=blocking After any DuckDB query in a session, a config reload or a TimeZone reset at transaction end (SET LOCAL ... COMMIT, SET ... ROLLBACK) runs pg_duckdb's TimeZone hook outside a transaction and crashes the backend (crash recovery for the whole server)
+bug mirror-write-multiassign-crash class=blocking UPDATE or INSERT ... ON CONFLICT DO UPDATE of a mirror with SET (...) = (SELECT ...) crashes the backend in pg_duckdb's deparser instead of failing (crash recovery for the whole server)
+
+check config_reload.reload_after_mirror_read pgduckdb-timezone-hook-crash ^backend crashed \(server process, signal 6, cassert=yes\) running \[SELECT count\(\*\) FROM t_mc\]; TRAP: failed Assert\("IsTransactionState\(\)"\), File: "relcache\.c", Line: 2052$
+check config_reload.reload_after_mirror_read pgduckdb-timezone-hook-crash ^backend crashed \(server process, signal 11, cassert=no\) running \[SELECT count\(\*\) FROM t_mc\]; TRAP: none$
+check config_reload.set_local_time_zone_commit pgduckdb-timezone-hook-crash ^backend crashed \(server process, signal 6, cassert=yes\) running \[COMMIT\]; TRAP: failed Assert\("IsTransactionState\(\)"\), File: "relcache\.c", Line: 2052$
+check config_reload.set_local_time_zone_commit pgduckdb-timezone-hook-crash ^backend crashed \(server process, signal 11, cassert=no\) running \[COMMIT\]; TRAP: none$
+check config_reload.set_time_zone_rollback pgduckdb-timezone-hook-crash ^backend crashed \(server process, signal 6, cassert=yes\) running \[ROLLBACK\]; TRAP: failed Assert\("IsTransactionState\(\)"\), File: "relcache\.c", Line: 2052$
+check config_reload.set_time_zone_rollback pgduckdb-timezone-hook-crash ^backend crashed \(server process, signal 11, cassert=no\) running \[ROLLBACK\]; TRAP: none$
+check config_reload.no_postgres_crash_restarts pgduckdb-timezone-hook-crash ^(server process terminated by signal (6|11)|reinitializing) x[1-3]$
+requires config_reload.no_postgres_crash_restarts pgduckdb-timezone-hook-crash config_reload.reload_after_mirror_read pgduckdb-timezone-hook-crash
+check mirror_writes.update_multiassign_rejected mirror-write-multiassign-crash ^backend crashed \(server process, signal 6, cassert=yes\) running \[UPDATE ups_mc SET \(b, a\) = \(SELECT .z., 1\)\]; TRAP: failed Assert\("\(\(Param \*\) expr\)->paramid == \(\(cur_ma_sublink->subLinkId << 16\) \| 1\)"\), File: "src/vendor/pg_ruleutils_17\.c", Line: 7053$
+check mirror_writes.upsert_multiassign_rejected mirror-write-multiassign-crash ^backend crashed \(server process, signal 6, cassert=yes\) running \[INSERT INTO ups_mc VALUES \(1, .Bar.\) ON CONFLICT \(a\) DO UPDATE SET \(b, a\) = \(SELECT .q., 1\)\]; TRAP: failed Assert\("\(\(Param \*\) expr\)->paramid == \(\(cur_ma_sublink->subLinkId << 16\) \| 1\)"\), File: "src/vendor/pg_ruleutils_17\.c", Line: 7053$
+check mirror_writes.no_postgres_crash_restarts mirror-write-multiassign-crash ^(server process terminated by signal 6|reinitializing) x[1-2]$
+requires mirror_writes.no_postgres_crash_restarts mirror-write-multiassign-crash mirror_writes.update_multiassign_rejected mirror-write-multiassign-crash
+
+# ---- roles and privileges -------------------------------------------------------------------------
+bug mirror-read-needs-server-file-roles class=limitation A role with duckdb.postgres_role but without pg_read_server_files cannot read mirrors (DuckDB's local file system is disabled for it); documented in the release notes
+bug mirror-privileges-not-enforced class=blocking Postgres privileges are not checked on mirrors: a role that can read mirrors reads every mirror, without a grant and after REVOKE ALL
+
+check roles.postgres_role_reads_granted_mirror mirror-read-needs-server-file-roles ^unexpected output: \[SELECT count\(\*\) FROM t_mc;\] stderr: \[ERROR: +\(PGDuckDB/Duckdb_ExecCustomScan_Cpp\) Permission Error: File system LocalFileSystem has been disabled by configuration\]$
+check roles.mirror_without_grant_denied mirror-privileges-not-enforced ^unexpected output: \[SELECT \* FROM secret_mc; 42\] stderr: \[\]$
+check roles.mirror_after_revoke_all_denied mirror-privileges-not-enforced ^unexpected output: \[SELECT \* FROM revoked_mc; 7\] stderr: \[\]$
+
 # ---- any scenario -------------------------------------------------------------------------------
 bug sigterm-handler-off-main-thread class=blocking Intermittent: SIGTERM delivered to a tokio thread of the moonlink bgworker panics in pgrx's signal handler (postgres FFI from another thread); a run without it does not prove it FIXED
 check build.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
@@ -123,6 +158,33 @@ check ddl.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/b
 check ddl_drop.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
 check truncate.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
 check source_drop_restart.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+check config_reload.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+check mirror_writes.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+check roles.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
+# A panic in the SIGTERM handler can also swallow the shutdown request: the worker never exits and
+# a clean stop hangs until the immediate fallback.
+check build.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check main.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check schema.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check restart_after_drop.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check persist.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check moonlink_down.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check ddl.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check ddl_drop.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check truncate.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check source_drop_restart.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check config_reload.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check mirror_writes.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check roles.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check big_txn_restart.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check crash.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check main.clean_stop_before_restart sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check restart_after_drop.clean_stop_before_restart sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check persist.clean_stop_before_restart sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check moonlink_down.clean_stop_before_restart sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check source_drop_restart.clean_stop_before_restart sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check roles.clean_stop_before_restart sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check big_txn_restart.clean_stop_before_restart sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
 check big_txn_restart.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
 check crash.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
 
@@ -142,6 +204,8 @@ check big_txn_restart.fresh_fence_setup restart-crash-loop [Ff]ailed to connect 
 requires big_txn_restart.fresh_fence_setup restart-crash-loop big_txn_restart.no_panics_after_restart restart-crash-loop
 check big_txn_restart.resnapshot_recreate restart-crash-loop [Ff]ailed to connect to moonlink
 requires big_txn_restart.resnapshot_recreate restart-crash-loop big_txn_restart.no_panics_after_restart restart-crash-loop
+check big_txn_restart.resnapshot_recreate drop-of-dead-table-breaks-mirror ^rc=[0-9]+ ERROR: +mooncake\.create_table failed: .*Duplicate table added to replication: postgres\.public\.b_mc
+requires big_txn_restart.resnapshot_recreate drop-of-dead-table-breaks-mirror big_txn_restart.no_panics_after_restart restart-crash-loop
 check big_txn_restart.resnapshot_matches_heap restart-crash-loop ([Ff]ailed to connect to moonlink|fence mirror e2e_fence_[0-9]+_mc missing)
 requires big_txn_restart.resnapshot_matches_heap restart-crash-loop big_txn_restart.no_panics_after_restart restart-crash-loop
 check big_txn_restart.resnapshot_matches_heap replay-regresses-flush-lsn data mismatch.*1000000\|last-before-restart
@@ -168,6 +232,8 @@ check crash.fresh_fence_setup restart-crash-loop [Ff]ailed to connect to moonlin
 requires crash.fresh_fence_setup restart-crash-loop crash.no_panics_after_crash restart-crash-loop
 check crash.resnapshot_recreate restart-crash-loop [Ff]ailed to connect to moonlink
 requires crash.resnapshot_recreate restart-crash-loop crash.no_panics_after_crash restart-crash-loop
+check crash.resnapshot_recreate drop-of-dead-table-breaks-mirror ^rc=[0-9]+ ERROR: +mooncake\.create_table failed: .*Duplicate table added to replication: postgres\.public\.c_mc
+requires crash.resnapshot_recreate drop-of-dead-table-breaks-mirror crash.no_panics_after_crash restart-crash-loop
 check crash.resnapshot_matches_heap restart-crash-loop ([Ff]ailed to connect to moonlink|fence mirror e2e_fence_[0-9]+_mc missing)
 requires crash.resnapshot_matches_heap restart-crash-loop crash.no_panics_after_crash restart-crash-loop
 check crash.resnapshot_matches_heap replay-regresses-flush-lsn data mismatch.*1000000\|pre-crash

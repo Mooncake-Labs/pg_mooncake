@@ -1,22 +1,23 @@
 ## 0.3.0 (unreleased) <!-- RC: set the date -->
 
-pg_mooncake 0.3.0 runs on a slimmed-down moonlink. **Mirrors created with 0.2.x must be dropped and re-created after
-upgrading**; see [Upgrading from 0.2](README.md#upgrading-from-02).
+pg_mooncake 0.3.0 runs on a slimmed-down moonlink. <!-- RC: post-bump: true only with the moonlink submodule bump. -->
+**Mirrors created with 0.2.x must be dropped and re-created after upgrading**; see [Upgrading from 0.2](README.md#upgrading-from-02).
 
 ### Changed
-<!-- RC: the moonlink items below come from branches that are not merged yet; re-check each against the final
-     moonlink commit. -->
 - Moonlink no longer keeps its own write-ahead log. The replication slot is acknowledged only up to what is persisted
   in Iceberg, and the rest is replayed from the slot after a restart. Postgres retains more `pg_wal` as a result (idle
-  tables are force-snapshotted every 300 s).
+  tables are force-snapshotted every 300 s). <!-- RC: post-bump: true only with the moonlink submodule bump. -->
 - A mirror that can no longer be kept in sync enters an errored state instead of silently diverging or stopping
   replication for other mirrors. Queries on it fail with
   `mirror <name> is out of sync: <reason>; drop and re-create it with mooncake.create_table`. The state survives restarts.
+  <!-- RC: post-bump: true only with the moonlink submodule bump. -->
 - `TRUNCATE` of a source table, and schema changes to a source table (for example `ALTER TABLE ... ADD COLUMN`), put
-  its mirrors into the errored state.
+  its mirrors into the errored state. <!-- RC: post-bump: true only with the moonlink submodule bump. -->
 - `mooncake.create_table` sets `REPLICA IDENTITY FULL` on the source table (and each partition of a partitioned table),
   so updates keep unchanged TOAST values. Changing it back puts the mirror into the errored state.
+  <!-- RC: post-bump: true only with the moonlink submodule bump. -->
 - Unsupported source columns are rejected by `mooncake.create_table` with an error instead of being mirrored wrongly.
+  <!-- RC: post-bump: true only with the moonlink submodule bump. -->
   <!-- RC: list the final rejected types/typmods (numeric precision, multi-dimensional arrays, inheritance parents). -->
 - Failures talking to moonlink are reported as regular Postgres errors (`mooncake.<procedure> failed: ...`), and the
   next call reconnects.
@@ -26,6 +27,11 @@ upgrading**; see [Upgrading from 0.2](README.md#upgrading-from-02).
 - `INSERT`, `UPDATE`, `DELETE` and `MERGE` on a mirror fail with `cannot modify mirror <name>` before pg_duckdb plans
   them. Before, some forms crashed the backend on assert-enabled builds (`UPDATE ... SET (a, b) = (SELECT ...)`) or
   raised DuckDB internal errors.
+- `TRUNCATE` and `COPY ... FROM` on a mirror fail with the same error.
+- A mirror cannot be renamed, moved to another schema (`ALTER TABLE ... SET SCHEMA`), or made a partition or an
+  inheritance child of another table, and a schema that contains mirrors cannot be renamed. moonlink keeps a mirror
+  under the name it was created with, so a renamed mirror would no longer match it; drop it and create it again under
+  the new name instead. Writes through a parent table would reach the mirror.
 
 ### Fixed
 - `DROP TABLE` and `DROP SCHEMA ... CASCADE` of regular tables no longer contact moonlink, so they work
@@ -39,7 +45,8 @@ upgrading**; see [Upgrading from 0.2](README.md#upgrading-from-02).
 - Re-creating a mirror whose earlier `DROP` moonlink never saw (moonlink was down, or `DROP EXTENSION ... CASCADE`)
   works and reads the new source: `mooncake.create_table` first removes the table moonlink kept under that name.
   Before, it failed, and the new mirror table returned the old mirror's rows.
-- A `mooncake.create_table` that moonlink rejects no longer leaves the empty mirror table behind.
+- A `mooncake.create_table` that moonlink rejects no longer leaves the empty mirror table behind. It drops only the
+  table it created, not one another session created under the same name in the meantime.
 - A fast shutdown no longer panics in the moonlink background worker, which could also make `pg_ctl stop -m fast` hang:
   shutdown signals are now handled only on the worker's main thread.
 - Building from source with the Rust toolchain pinned in `rust-toolchain.toml` works again: Cargo now prefers
@@ -49,7 +56,8 @@ upgrading**; see [Upgrading from 0.2](README.md#upgrading-from-02).
 
 ### Removed
 - `mooncake.load_files`.
-- From moonlink: its write-ahead log, the REST API, Kafka and REST event ingestion, OpenTelemetry ingestion and export,
+- From moonlink: <!-- RC: post-bump: true only with the moonlink submodule bump. -->
+  its write-ahead log, the REST API, Kafka and REST event ingestion, OpenTelemetry ingestion and export,
   standalone deployment, the DataFusion integration, Delta Lake output, REST and Glue Iceberg catalogs, and GCS
   storage. pg_mooncake stores mirrors on the local filesystem with a filesystem Iceberg catalog.
 
@@ -65,6 +73,7 @@ upgrading**; see [Upgrading from 0.2](README.md#upgrading-from-02).
   <!-- RC: remove if the release ships with the pg_duckdb time zone fix. -->
 - Reading mirrors needs pg_duckdb's `duckdb.postgres_role` and membership in both `pg_read_server_files` and
   `pg_write_server_files`, so in practice a superuser. `GRANT`/`REVOKE` on individual mirrors are not enforced.
+- Mirrors and the schemas that contain them cannot be renamed; drop and re-create the mirror instead.
 - `DROP EXTENSION pg_mooncake CASCADE` drops the mirror tables in Postgres but not in moonlink. Drop the mirrors first;
   a leftover is removed when a mirror with the same name is created again.
 - Identifiers containing `.` are rejected.

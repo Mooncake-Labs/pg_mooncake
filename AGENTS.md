@@ -94,6 +94,7 @@ when your local tests (with a locally built extension) pass.
 | Postgres CDC (slot, publication, confirmed-LSN feedback) | `moonlink/src/moonlink_connectors/src/pg_replicate*.rs`, `pg_replicate/` |
 | Table engine, WAL, Iceberg, union read **[pins]** | `moonlink/src/moonlink/src/{table_handler.rs,storage/,union_read/}` |
 | DuckDB side: catalog, scan, payload decoding, `dlsym`s, RPC client | `duckdb_mooncake/src/storage/*.cpp`, `src/include/pgmooncake.hpp`, `src/moonlink/moonlink.cpp`, `moonlink_ffi/src/lib.rs` |
+| Extension upgrade scripts | `sql/pg_mooncake--<old>--<new>.sql` |
 | Regression tests | `tests/pg_regress/{sql,expected}` |
 
 ## 4. Setup, build, test (standard toolchain)
@@ -168,8 +169,10 @@ and set `duckdb.allow_unsigned_extensions = true` and `duckdb.autoinstall_known_
    coordinated moonlink + duckdb_mooncake release, not a pg_mooncake change. If you do touch moonlink, the change has to
    land in the moonlink repo and the submodule pin has to move. An exhaustive `match` in `rpc_server.rs::handle_stream`
    and a `MoonlinkBackend` method go with every RPC.
-3. There are **no extension upgrade scripts** (`pg_mooncake.control`: `default_version = '@CARGO_VERSION@'`). SQL API
-   changes reach existing installs only via `DROP EXTENSION` + `CREATE EXTENSION`, which drops all mirrors. **[pins]**
+3. Every SQL API change needs an upgrade step in `sql/pg_mooncake--<old>--<new>.sql` (`cargo pgrx install` copies
+   files named `sql/pg_mooncake--*--*.sql` next to the generated install script). `default_version` in `pg_mooncake.control` follows
+   the Cargo version. Check the result by installing the previous release, creating a mirror, installing this build
+   and running `ALTER EXTENSION pg_mooncake UPDATE`; then compare `\dx+ pg_mooncake` with a fresh `CREATE EXTENSION`.
 4. Add a regress test (pitfall 6) and run `make test` for every supported major.
 
 ## 7. Known bugs at the current pins **[pins]**

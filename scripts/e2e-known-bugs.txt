@@ -87,15 +87,17 @@ check truncate.truncate_not_silent truncate-ignored data mismatch.* 1a2,101
 # ---- restart after a source table was dropped ------------------------------------------------------
 bug dropped-source-crash-loop After a restart while a mirror's source table is gone, moonlink recovery fails on the missing table and the bgworker restarts every 15s, so mooncake.* calls fail
 
-check source_drop_restart.service_up_after_restart dropped-source-crash-loop ^mooncake\.list_tables\(\) not answering within [0-9]+s; panics since restart: none; last error: .*[Ff]ailed to connect to moonlink.*; bgworker errors since restart: [^;]*moonlink_backend/src/recovery_utils\.rs:77 x
-check source_drop_restart.no_crash_loop_after_restart dropped-source-crash-loop ^crash loop: [^;]*; panics since restart: none; .*; bgworker errors since restart: [^;]*moonlink_backend/src/recovery_utils\.rs:77 x
-check source_drop_restart.no_worker_errors_after_restart dropped-source-crash-loop moonlink_backend/src/recovery_utils\.rs:77 x[0-9]+$
+check source_drop_restart.service_up_after_restart dropped-source-crash-loop ^mooncake\.list_tables\(\) not answering within [0-9]+s; panics since restart: none; last error: .*[Ff]ailed to connect to moonlink.*; bgworker errors since restart: [^;]*moonlink_backend/src/recovery_utils\.rs:77: [^;]*relation "public\.gone" does not exist x
+check source_drop_restart.no_crash_loop_after_restart dropped-source-crash-loop ^crash loop: [^;]*; panics since restart: none; .*; bgworker errors since restart: [^;]*moonlink_backend/src/recovery_utils\.rs:77: [^;]*relation "public\.gone" does not exist x
+check source_drop_restart.no_worker_errors_after_restart dropped-source-crash-loop moonlink_backend/src/recovery_utils\.rs:77: .*relation "public\.gone" does not exist x[0-9]+$
 check source_drop_restart.fresh_fence_setup dropped-source-crash-loop [Ff]ailed to connect to moonlink
 requires source_drop_restart.fresh_fence_setup dropped-source-crash-loop source_drop_restart.no_worker_errors_after_restart dropped-source-crash-loop
 check source_drop_restart.kept_cdc_after_restart dropped-source-crash-loop ([Ff]ailed to connect to moonlink|fence mirror e2e_fence_[0-9]+_mc missing)
 requires source_drop_restart.kept_cdc_after_restart dropped-source-crash-loop source_drop_restart.no_worker_errors_after_restart dropped-source-crash-loop
 check source_drop_restart.bgworker_no_abnormal_exits dropped-source-crash-loop ^exited with exit code 1 x[0-9]+$
 requires source_drop_restart.bgworker_no_abnormal_exits dropped-source-crash-loop source_drop_restart.no_worker_errors_after_restart dropped-source-crash-loop
+check source_drop_restart.drop_orphaned_mirror dropped-source-crash-loop ^rc=0 WARNING: +mirror public\.gone_mc was dropped, but moonlink did not drop it: [Ff]ailed to connect to moonlink
+requires source_drop_restart.drop_orphaned_mirror dropped-source-crash-loop source_drop_restart.no_worker_errors_after_restart dropped-source-crash-loop
 check source_drop_restart.orphaned_mirror_unlisted dropped-source-crash-loop ^after [0-9]+s, list_tables: .*[Ff]ailed to connect to moonlink
 requires source_drop_restart.orphaned_mirror_unlisted dropped-source-crash-loop source_drop_restart.no_worker_errors_after_restart dropped-source-crash-loop
 

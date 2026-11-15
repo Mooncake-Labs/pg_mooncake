@@ -334,16 +334,18 @@ panic_lines() {
     b
     :parsed'"$SITE_SED"
 }
-# worker_errors [n]: one "<site> x<count>" per distinct ERROR that a moonlink bgworker logged after
-# line n of postgres.log. A bgworker exits on ERROR, and pgrx reports a Rust unwrap() failure as an
-# ERROR, not a panic. The site is the error's first source location, or its text if it has none.
+# worker_errors [n]: one "<site>: <cause> x<count>" per distinct ERROR that a moonlink bgworker
+# logged after line n of postgres.log. A bgworker exits on ERROR, and pgrx reports a Rust unwrap()
+# failure as an ERROR, not a panic. The site is the error's first source location and the cause the
+# text of its innermost source; an error without a location is "error: <text>".
 worker_errors() {
   local pids line site
   pids=$(sed -nE 's/.*background worker "moonlink" \(PID ([0-9]+)\) (exited|was terminated).*/\1/p' "$OUT/postgres.log" 2>/dev/null | paste -sd'|' -)
   [[ -n $pids ]] || return 0
   tail -n +"$(( ${1:-0} + 1 ))" "$OUT/postgres.log" | grep -E "\[($pids)\] ERROR: " | while IFS= read -r line; do
     site=$(grep -oE ' at /[^ ,]+:[0-9]+:[0-9]+' <<< "$line" | head -1 | sed -E 's/^ at //; s/:([0-9]+):[0-9]+$/:\1/'"$SITE_SED")
-    echo "${site:-error: $(sed -E 's/.*ERROR: +//' <<< "$line" | cut -c1-80)}"
+    if [[ -n $site ]]; then echo "$site: $(sed -E 's/.*source: //; s/[,;]/ /g' <<< "$line" | cut -c1-100)"
+    else echo "error: $(sed -E 's/.*ERROR: +//; s/[,;]/ /g' <<< "$line" | cut -c1-80)"; fi
   done | sort | uniq -c | awk '{c = $1; $1 = ""; print substr($0, 2) " x" c}'
 }
 worker_errors_inline() { local p; p=$(worker_errors "${1:-0}" | paste -sd, - | sed 's/,/, /g'); echo "${p:-none}"; }
@@ -433,6 +435,8 @@ duckdb.allow_unsigned_extensions = true
 duckdb.autoinstall_known_extensions = false
 duckdb.extension_directory = '$EXTDIR'
 lc_messages = 'C'
+# worker_errors finds bgworker lines by "[<pid>] ".
+log_line_prefix = '%m [%p] '
 EOF
   start || { result start 1 "$(tail -3 "$OUT/postgres.log")"; return 1; }
   run create_extension -c "CREATE EXTENSION pg_mooncake CASCADE"
@@ -522,7 +526,8 @@ scenario_build() {
   else result duckdb_mooncake_pin_is_community_build 1 "pin [$pin], community build for DuckDB v1.4.1 is $COMMUNITY_DUCKDB_MOONCAKE_REF"; fi
   # The next checks read the duckdb_mooncake checkout. An uninitialized submodule would resolve to
   # the superproject, so it is detected and the checks are skipped with a hint.
-  if [[ $(git -C "$dm" rev-parse --show-toplevel 2>/dev/null) != "$(cd "$dm" 2>/dev/null && pwd -P)" ]]; then
+  local top; top=$(git -C "$dm" rev-parse --show-toplevel 2>/dev/null)
+  if [[ -z $top || $top != "$(cd "$dm" 2>/dev/null && pwd -P)" ]]; then
     local hint="duckdb_mooncake submodule not checked out in $BUILD_SRC; run: git -C $BUILD_SRC submodule update --init duckdb_mooncake"
     result duckdb_mooncake_is_pinned_commit skip "$hint"
     result duckdb_mooncake_moonlink_rpc_rev skip "$hint"
@@ -1099,6 +1104,7 @@ restart_gate() {
 # Clean restart while a mirror's source table is gone: moonlink must recover without a crash loop,
 # the other mirror must keep ingesting, and the orphaned mirror must stay droppable.
 scenario_source_drop_restart() {
+  local rc
   new_cluster source_drop_restart || return
   run setup <<'SQL'
 CREATE TABLE gone (id int PRIMARY KEY, v text);
@@ -1115,7 +1121,10 @@ SQL
   fresh_fence fresh_fence_setup
   run kept_workload -c "INSERT INTO kept VALUES (2, 'b')" -c "UPDATE kept SET v = 'u' WHERE id = 1"
   compare kept_cdc_after_restart kept kept_mc
-  run drop_orphaned_mirror -c "DROP TABLE gone_mc"
+  # moonlink is up again, so the DROP must reach it: no "did not drop" WARNING.
+  raw_psql 60 "$OUT/drop_orphaned_mirror.out" "$OUT/drop_orphaned_mirror.err" -c "DROP TABLE gone_mc"; rc=$?
+  if (( rc == 0 )) && ! grep -q 'ERROR:\|WARNING:.*did not drop' "$OUT/drop_orphaned_mirror.err"; then result drop_orphaned_mirror 0
+  else result drop_orphaned_mirror 1 "rc=$rc $(one_line 240 < "$OUT/drop_orphaned_mirror.err")"; fi
   local q="SELECT count(*) FROM mooncake.list_tables() WHERE \"table\" = 'public.gone_mc'"
   if poll_until 30 sql_is "$q" 0; then result orphaned_mirror_unlisted 0
   else result orphaned_mirror_unlisted 1 "after 30s, list_tables: $(psqlq -c "$q" 2>&1 | one_line 160)"; fi

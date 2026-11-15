@@ -185,7 +185,8 @@ End-to-end checks (`scripts/e2e-smoke.sh`, see TESTING.md): one
 Expected failures are listed in `scripts/e2e-known-bugs.txt`, each as `class=blocking` (must be fixed for a release;
 while one is listed the gate reports `BLOCKED` at best) or `class=limitation` (documented; its XFAILs don't fail the
 gate). Read results from that file rather than from hand-kept counts. `XPASS` means a known bug no longer reproduces:
-remove its lines.
+remove its lines, except for a bug whose description starts with `Intermittent:`, where XPASS (`KNOWN ... NOT-SEEN`)
+only means this run didn't hit it; keep that entry until its fix is in.
 
 ## 8. Conventions
 

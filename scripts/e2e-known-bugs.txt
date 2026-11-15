@@ -125,26 +125,26 @@ requires source_drop_restart.orphaned_mirror_unlisted dropped-source-crash-loop 
 bug pgduckdb-timezone-hook-crash class=blocking After any DuckDB query in a session, a config reload or a TimeZone reset at transaction end (SET LOCAL ... COMMIT, SET ... ROLLBACK) runs pg_duckdb's TimeZone hook outside a transaction and crashes the backend (crash recovery for the whole server)
 bug mirror-write-multiassign-crash class=blocking UPDATE or INSERT ... ON CONFLICT DO UPDATE of a mirror with SET (...) = (SELECT ...) crashes the backend in pg_duckdb's deparser instead of failing (crash recovery for the whole server)
 
-check config_reload.reload_after_mirror_read pgduckdb-timezone-hook-crash ^backend crashed \(signal 6\); TRAP: failed Assert\("IsTransactionState\(\)"\), File: "relcache\.c", Line: 2052$
-check config_reload.reload_after_mirror_read pgduckdb-timezone-hook-crash ^backend crashed \(signal 11\); TRAP: none$
-check config_reload.set_local_time_zone_commit pgduckdb-timezone-hook-crash ^backend crashed \(signal 6\); TRAP: failed Assert\("IsTransactionState\(\)"\), File: "relcache\.c", Line: 2052$
-check config_reload.set_local_time_zone_commit pgduckdb-timezone-hook-crash ^backend crashed \(signal 11\); TRAP: none$
-check config_reload.set_time_zone_rollback pgduckdb-timezone-hook-crash ^backend crashed \(signal 6\); TRAP: failed Assert\("IsTransactionState\(\)"\), File: "relcache\.c", Line: 2052$
-check config_reload.set_time_zone_rollback pgduckdb-timezone-hook-crash ^backend crashed \(signal 11\); TRAP: none$
-check config_reload.no_postgres_crash_restarts pgduckdb-timezone-hook-crash ^(server process terminated by signal (6|11)|reinitializing) x[0-9]+$
+check config_reload.reload_after_mirror_read pgduckdb-timezone-hook-crash ^backend crashed \(server process, signal 6, cassert=yes\) running \[SELECT count\(\*\) FROM t_mc\]; TRAP: failed Assert\("IsTransactionState\(\)"\), File: "relcache\.c", Line: 2052$
+check config_reload.reload_after_mirror_read pgduckdb-timezone-hook-crash ^backend crashed \(server process, signal 11, cassert=no\) running \[SELECT count\(\*\) FROM t_mc\]; TRAP: none$
+check config_reload.set_local_time_zone_commit pgduckdb-timezone-hook-crash ^backend crashed \(server process, signal 6, cassert=yes\) running \[COMMIT\]; TRAP: failed Assert\("IsTransactionState\(\)"\), File: "relcache\.c", Line: 2052$
+check config_reload.set_local_time_zone_commit pgduckdb-timezone-hook-crash ^backend crashed \(server process, signal 11, cassert=no\) running \[COMMIT\]; TRAP: none$
+check config_reload.set_time_zone_rollback pgduckdb-timezone-hook-crash ^backend crashed \(server process, signal 6, cassert=yes\) running \[ROLLBACK\]; TRAP: failed Assert\("IsTransactionState\(\)"\), File: "relcache\.c", Line: 2052$
+check config_reload.set_time_zone_rollback pgduckdb-timezone-hook-crash ^backend crashed \(server process, signal 11, cassert=no\) running \[ROLLBACK\]; TRAP: none$
+check config_reload.no_postgres_crash_restarts pgduckdb-timezone-hook-crash ^(server process terminated by signal (6|11)|reinitializing) x[1-3]$
 requires config_reload.no_postgres_crash_restarts pgduckdb-timezone-hook-crash config_reload.reload_after_mirror_read pgduckdb-timezone-hook-crash
-check mirror_writes.update_multiassign_rejected mirror-write-multiassign-crash ^backend crashed \(signal 6\); TRAP: failed Assert\("\(\(Param \*\) expr\)->paramid == \(\(cur_ma_sublink->subLinkId << 16\) \| 1\)"\), File: "src/vendor/pg_ruleutils_17\.c", Line: 7053$
-check mirror_writes.upsert_multiassign_rejected mirror-write-multiassign-crash ^backend crashed \(signal 6\); TRAP: failed Assert\("\(\(Param \*\) expr\)->paramid == \(\(cur_ma_sublink->subLinkId << 16\) \| 1\)"\), File: "src/vendor/pg_ruleutils_17\.c", Line: 7053$
-check mirror_writes.no_postgres_crash_restarts mirror-write-multiassign-crash ^(server process terminated by signal 6|reinitializing) x[0-9]+$
+check mirror_writes.update_multiassign_rejected mirror-write-multiassign-crash ^backend crashed \(server process, signal 6, cassert=yes\) running \[UPDATE ups_mc SET \(b, a\) = \(SELECT .z., 1\)\]; TRAP: failed Assert\("\(\(Param \*\) expr\)->paramid == \(\(cur_ma_sublink->subLinkId << 16\) \| 1\)"\), File: "src/vendor/pg_ruleutils_17\.c", Line: 7053$
+check mirror_writes.upsert_multiassign_rejected mirror-write-multiassign-crash ^backend crashed \(server process, signal 6, cassert=yes\) running \[INSERT INTO ups_mc VALUES \(1, .Bar.\) ON CONFLICT \(a\) DO UPDATE SET \(b, a\) = \(SELECT .q., 1\)\]; TRAP: failed Assert\("\(\(Param \*\) expr\)->paramid == \(\(cur_ma_sublink->subLinkId << 16\) \| 1\)"\), File: "src/vendor/pg_ruleutils_17\.c", Line: 7053$
+check mirror_writes.no_postgres_crash_restarts mirror-write-multiassign-crash ^(server process terminated by signal 6|reinitializing) x[1-2]$
 requires mirror_writes.no_postgres_crash_restarts mirror-write-multiassign-crash mirror_writes.update_multiassign_rejected mirror-write-multiassign-crash
 
 # ---- roles and privileges -------------------------------------------------------------------------
 bug mirror-read-needs-server-file-roles class=limitation A role with duckdb.postgres_role but without pg_read_server_files cannot read mirrors (DuckDB's local file system is disabled for it); documented in the release notes
 bug mirror-privileges-not-enforced class=blocking Postgres privileges are not checked on mirrors: a role that can read mirrors reads every mirror, without a grant and after REVOKE ALL
 
-check roles.postgres_role_reads_granted_mirror mirror-read-needs-server-file-roles ^unexpected output: ERROR: +\(PGDuckDB/Duckdb_ExecCustomScan_Cpp\) Permission Error: File system LocalFileSystem has been disabled by configuration SELECT count\(\*\) FROM t_mc;$
-check roles.mirror_without_grant_denied mirror-privileges-not-enforced ^unexpected output: SELECT \* FROM secret_mc; 42$
-check roles.mirror_after_revoke_all_denied mirror-privileges-not-enforced ^unexpected output: SELECT \* FROM secret_mc; 42$
+check roles.postgres_role_reads_granted_mirror mirror-read-needs-server-file-roles ^unexpected output: \[SELECT count\(\*\) FROM t_mc;\] stderr: \[ERROR: +\(PGDuckDB/Duckdb_ExecCustomScan_Cpp\) Permission Error: File system LocalFileSystem has been disabled by configuration\]$
+check roles.mirror_without_grant_denied mirror-privileges-not-enforced ^unexpected output: \[SELECT \* FROM secret_mc; 42\] stderr: \[\]$
+check roles.mirror_after_revoke_all_denied mirror-privileges-not-enforced ^unexpected output: \[SELECT \* FROM revoked_mc; 7\] stderr: \[\]$
 
 # ---- any scenario -------------------------------------------------------------------------------
 bug sigterm-handler-off-main-thread class=blocking Intermittent: SIGTERM delivered to a tokio thread of the moonlink bgworker panics in pgrx's signal handler (postgres FFI from another thread); a run without it does not prove it FIXED
@@ -163,28 +163,28 @@ check mirror_writes.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.1
 check roles.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
 # A panic in the SIGTERM handler can also swallow the shutdown request: the worker never exits and
 # a clean stop hangs until the immediate fallback.
-check build.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
-check main.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
-check schema.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
-check restart_after_drop.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
-check persist.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
-check moonlink_down.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
-check ddl.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
-check ddl_drop.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
-check truncate.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
-check source_drop_restart.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
-check config_reload.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
-check mirror_writes.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
-check roles.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
-check big_txn_restart.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
-check crash.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
-check main.clean_stop_before_restart sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
-check restart_after_drop.clean_stop_before_restart sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
-check persist.clean_stop_before_restart sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
-check moonlink_down.clean_stop_before_restart sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
-check source_drop_restart.clean_stop_before_restart sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
-check roles.clean_stop_before_restart sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
-check big_txn_restart.clean_stop_before_restart sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s .*; panics during the stop: ([^;]*, )?pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+(, [^;]*)?$
+check build.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check main.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check schema.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check restart_after_drop.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check persist.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check moonlink_down.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check ddl.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check ddl_drop.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check truncate.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check source_drop_restart.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check config_reload.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check mirror_writes.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check roles.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check big_txn_restart.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check crash.clean_stop_at_end sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check main.clean_stop_before_restart sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check restart_after_drop.clean_stop_before_restart sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check persist.clean_stop_before_restart sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check moonlink_down.clean_stop_before_restart sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check source_drop_restart.clean_stop_before_restart sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check roles.clean_stop_before_restart sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
+check big_txn_restart.clean_stop_before_restart sigterm-handler-off-main-thread ^pg_ctl stop -m fast did not finish within [0-9]+s \(continuing after -m immediate\); still running: moonlink; panics during the stop: pgrx-0\.16\.1/src/bgworkers\.rs:324 x[0-9]+$
 check big_txn_restart.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
 check crash.no_moonlink_panics sigterm-handler-off-main-thread pgrx-0\.16\.1/src/bgworkers\.rs:324 x
 

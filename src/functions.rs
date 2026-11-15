@@ -1,24 +1,19 @@
-use crate::utils::{block_on, get_stream, DATABASE};
+use crate::drop_tracking::queue_drop;
+use crate::utils::{rpc, DATABASE};
 use core::ffi::CStr;
 use native_tls::TlsConnector;
 use pgrx::{direct_function_call, prelude::*};
 use postgres::Client;
 use postgres_native_tls::MakeTlsConnector;
-use regex::Regex;
 
 #[pg_extern(sql = "
 CREATE PROCEDURE mooncake.create_snapshot(dst text) LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
 ")]
 fn create_snapshot(dst: &str) {
-    let dst = parse_table(dst);
+    let dst = parse_table(dst).moonlink_name();
     let lsn = unsafe { pgrx::pg_sys::XactLastCommitEnd };
-    block_on(moonlink_rpc::create_snapshot(
-        &mut *get_stream(),
-        DATABASE.clone(),
-        dst,
-        lsn,
-    ))
-    .expect("create_snapshot failed");
+    rpc!(moonlink_rpc::create_snapshot, DATABASE.clone(), dst, lsn)
+        .unwrap_or_else(|e| error!("mooncake.create_snapshot failed: {e}"));
 }
 
 #[pg_extern(sql = "
@@ -29,17 +24,18 @@ fn create_table(dst: &str, src: &str, src_uri: Option<&str>, table_config: Optio
     let src = parse_table(src);
     let dst_uri = get_loopback_uri();
     let src_uri = src_uri.unwrap_or(&dst_uri).to_owned();
-    create_mooncake_table(&dst, &dst_uri, &src, &src_uri);
+    create_mooncake_table(&dst.quoted(), &dst_uri, &src.quoted(), &src_uri);
+    let (dst, src) = (dst.moonlink_name(), src.moonlink_name());
     let table_config = table_config.unwrap_or("{}").to_owned();
-    block_on(moonlink_rpc::create_table(
-        &mut *get_stream(),
+    rpc!(
+        moonlink_rpc::create_table,
         DATABASE.clone(),
         dst,
         src,
         src_uri,
-        table_config,
-    ))
-    .expect("create_table failed");
+        table_config
+    )
+    .unwrap_or_else(|e| error!("mooncake.create_table failed: {e}"));
 }
 
 #[pg_extern(sql = "
@@ -48,35 +44,16 @@ CREATE EVENT TRIGGER mooncake_drop_trigger ON sql_drop EXECUTE FUNCTION mooncake
 ")]
 fn drop_trigger() {
     Spi::connect(|client| {
-        let get_dropped_tables_query =
-            "SELECT quote_ident(schema_name) || '.' || quote_ident(object_name) FROM pg_event_trigger_dropped_objects() WHERE object_type = 'table'";
+        let get_dropped_tables_query = "SELECT objid::int8 FROM pg_event_trigger_dropped_objects() WHERE object_type = 'table'";
         let dropped_tables = client
             .select(get_dropped_tables_query, None, &[])
             .expect("error reading dropped objects");
         for dropped_table in dropped_tables {
-            let table: String = dropped_table
+            let relid: i64 = dropped_table
                 .get(1)
                 .expect("error reading dropped table")
                 .expect("error reading dropped table");
-            {
-                let table = table.clone();
-                pgrx::register_xact_callback(pgrx::PgXactCallbackEvent::PreCommit, move || {
-                    block_on(moonlink_rpc::drop_table(
-                        &mut *get_stream(),
-                        DATABASE.clone(),
-                        table,
-                    ))
-                    .expect("drop_table failed");
-                });
-            }
-            pgrx::register_xact_callback(pgrx::PgXactCallbackEvent::ParallelPreCommit, move || {
-                block_on(moonlink_rpc::drop_table(
-                    &mut *get_stream(),
-                    DATABASE.clone(),
-                    table,
-                ))
-                .expect("drop_table failed");
-            });
+            queue_drop(pg_sys::Oid::from(relid as u32));
         }
     });
 }
@@ -98,8 +75,8 @@ fn list_tables() -> TableIterator<
         name!(iceberg_warehouse_location, String),
     ),
 > {
-    let tables =
-        block_on(moonlink_rpc::list_tables(&mut *get_stream())).expect("list_tables failed");
+    let tables = rpc!(moonlink_rpc::list_tables)
+        .unwrap_or_else(|e| error!("mooncake.list_tables failed: {e}"));
     TableIterator::new(
         tables
             .into_iter()
@@ -116,50 +93,76 @@ fn list_tables() -> TableIterator<
 }
 
 #[pg_extern(sql = "
-CREATE PROCEDURE mooncake.load_files(dst text, files text[]) LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
-")]
-fn load_files(dst: &str, files: Vec<String>) {
-    let dst = parse_table(dst);
-    block_on(moonlink_rpc::load_files(
-        &mut *get_stream(),
-        DATABASE.clone(),
-        dst,
-        files,
-    ))
-    .expect("load_files failed");
-}
-
-#[pg_extern(sql = "
 CREATE PROCEDURE mooncake.optimize_table(dst text, mode text) LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
 ")]
 fn optimize_table(dst: &str, mode: &str) {
-    let dst = parse_table(dst);
-    block_on(moonlink_rpc::optimize_table(
-        &mut *get_stream(),
+    let dst = parse_table(dst).moonlink_name();
+    rpc!(
+        moonlink_rpc::optimize_table,
         DATABASE.clone(),
         dst,
-        mode.to_owned(),
-    ))
-    .expect("optimize_table failed");
+        mode.to_owned()
+    )
+    .unwrap_or_else(|e| error!("mooncake.optimize_table failed: {e}"));
 }
 
-fn parse_table(table: &str) -> String {
-    // https://www.postgresql.org/docs/current/sql-syntax-lexical.html#SQL-SYNTAX-IDENTIFIERS
-    let ident = r#"([\w$]+|"([^"]|"")+")"#;
-    let pattern = format!(r#"^((?<schema>{ident})\.)?(?<table>{ident})$"#);
-    let re = Regex::new(&pattern).unwrap();
-    let caps = re
-        .captures(table)
-        .unwrap_or_else(|| panic!("invalid input: {table}"));
-    let schema = caps.name("schema").map_or_else(
-        || {
+struct TableName {
+    schema: String,
+    table: String,
+}
+
+impl TableName {
+    /// Unquoted `schema.table`: the key moonlink registers the table under. duckdb_mooncake looks tables up
+    /// by unquoted `schema.table` too, and moonlink's Postgres connector splits source names on '.'.
+    fn moonlink_name(&self) -> String {
+        format!("{}.{}", self.schema, self.table)
+    }
+
+    /// Quoted form for SQL that pg_mooncake runs itself.
+    fn quoted(&self) -> String {
+        spi::quote_qualified_identifier(&self.schema, &self.table)
+    }
+}
+
+/// Parses a possibly qualified table name with Postgres' identifier rules: unquoted names are downcased (ASCII
+/// only, as Postgres does in multibyte encodings), quoted ones keep their case, and each part is truncated to
+/// NAMEDATALEN - 1 bytes. An unqualified name gets the current schema.
+fn parse_table(input: &str) -> TableName {
+    let parts: Vec<String> = unsafe {
+        direct_function_call(
+            pg_sys::parse_ident,
+            &[input.into_datum(), true.into_datum()],
+        )
+    }
+    .unwrap_or_else(|| error!("invalid table name: {input}"));
+    let mut parts = parts.into_iter().map(truncate_identifier);
+    let (schema, table) = match (parts.next(), parts.next(), parts.next()) {
+        (Some(table), None, None) => {
             let schema: &CStr =
                 unsafe { direct_function_call(pg_sys::current_schema, &[]).unwrap() };
-            schema.to_str().unwrap()
-        },
-        |m| m.as_str(),
-    );
-    spi::quote_qualified_identifier(schema, &caps["table"])
+            (schema.to_str().unwrap().to_owned(), table)
+        }
+        (Some(schema), Some(table), None) => (schema, table),
+        _ => error!("invalid table name, expected [schema.]table: {input}"),
+    };
+    // moonlink splits source names on '.'.
+    if schema.contains('.') || table.contains('.') {
+        error!("identifiers containing '.' are not supported: {input}");
+    }
+    TableName { schema, table }
+}
+
+/// Same as Postgres' truncate_identifier(): clip to NAMEDATALEN - 1 bytes on a character boundary.
+fn truncate_identifier(ident: String) -> String {
+    let max = pg_sys::NAMEDATALEN as usize - 1;
+    if ident.len() <= max {
+        return ident;
+    }
+    let len =
+        unsafe { pg_sys::pg_mbcliplen(ident.as_ptr().cast(), ident.len() as i32, max as i32) };
+    let truncated = ident[..len as usize].to_owned();
+    notice!("identifier \"{ident}\" will be truncated to \"{truncated}\"");
+    truncated
 }
 
 fn get_loopback_uri() -> String {

@@ -1,5 +1,6 @@
 #[cfg(feature = "bgworker")]
 mod bgworker;
+mod drop_tracking;
 mod duckdb_mooncake;
 mod functions;
 mod table;
@@ -15,4 +16,5 @@ extern "C-unwind" fn _PG_init() {
     #[cfg(feature = "bgworker")]
     bgworker::init();
     table::init();
+    drop_tracking::init();
 }

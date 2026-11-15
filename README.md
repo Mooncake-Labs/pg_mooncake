@@ -122,8 +122,20 @@ SELECT avg(price) FROM trades_iceberg WHERE symbol = 'AMZN';
 
 ## Self-Hosting
 
-**Roles.** The examples here run as a superuser. Creating the extension requires one, and pg_duckdb lets only
-superusers, or members of the role set in `duckdb.postgres_role`, run DuckDB queries, which includes reading mirrors.
+**Roles.** Creating the extension and calling `mooncake.create_table` require a superuser, and in practice so does
+reading mirrors:
+
+- Mirrors are read by DuckDB through pg_duckdb, so a role needs pg_duckdb's `duckdb.postgres_role` (set it in
+  `postgresql.conf`, restart, then `GRANT <that role> TO <user>`). `GRANT SELECT` on the mirror alone is not enough:
+  queries fail with `DuckDB execution is not allowed because you have not been granted the duckdb.postgres_role`.
+- Mirrors are local Parquet files, and pg_duckdb blocks DuckDB's local file access for roles that are not members of
+  both `pg_read_server_files` and `pg_write_server_files`. Without them, reads fail with
+  `File system LocalFileSystem has been disabled by configuration`. Those two roles let a user read and write any file
+  the Postgres server can, so grant them only to roles you would trust as superuser.
+- `GRANT` and `REVOKE` on a mirror are not enforced: a role that can read mirrors can read all of them.
+
+Run queries on mirrors as a superuser or as one trusted role that has all three, not as application roles that should
+see only some of the data. See [Security](#security).
 
 **Where data lives.** Mirrors are stored on the local filesystem under `$PGDATA/pg_mooncake/`. This includes the
 Iceberg tables (filesystem catalog; `mooncake.list_tables()` shows each table's location), moonlink's metadata, caches,
@@ -160,6 +172,16 @@ restoring Postgres from a backup, drop and re-create the mirrors.
 drop the mirror tables without telling moonlink, which keeps replicating them. Then `DROP EXTENSION pg_mooncake;`, remove it
 from `shared_preload_libraries`, restart Postgres, and delete `$PGDATA/pg_mooncake/`.
 
+## Security
+
+- **Grant `pg_read_server_files` and `pg_write_server_files` only to roles you trust like a superuser.** Reading mirrors
+  requires them (see [Roles](#self-hosting)), and they let a role read and write any file the Postgres server can,
+  through DuckDB as well as through `COPY`. That includes every mirror's data files.
+- **Mirrors don't honour `GRANT` and `REVOKE`.** Privileges on a mirror table are not checked when it is read, so a role
+  that can read one mirror can read all of them. Limit access by controlling who has the roles above, not with
+  privileges on individual mirrors.
+- The privileges of the source table still apply to the source table itself; only reads of mirrors bypass them.
+
 ## Durability and Recovery
 
 Moonlink acknowledges the replication slot only up to what is persisted in Iceberg and replays the rest from the slot
@@ -192,6 +214,19 @@ If you upgraded without dropping the mirrors first, `ALTER EXTENSION pg_mooncake
 them. Drop and re-create each one.
 
 `mooncake.load_files` was removed. See the [CHANGELOG](CHANGELOG.md) for all changes and known limitations.
+
+## Known Issues
+
+- **Reloading the configuration can crash the server.** Every session that has queried a mirror crashes when Postgres
+  reloads its configuration (`SELECT pg_reload_conf()`, `pg_ctl reload`, or `SIGHUP`, for example after
+  `ALTER SYSTEM`), even if nothing changed, and Postgres then restarts all sessions. The same happens in such a session
+  when a time zone change ends with its transaction: `SET LOCAL TIME ZONE ...` then `COMMIT`, or `SET TIME ZONE ...`
+  then `ROLLBACK`. This is a bug in the bundled pg_duckdb, fixed in later pg_duckdb releases. Until pg_mooncake ships
+  that fix, restart Postgres instead of reloading it, and set the time zone per session (`SET TIME ZONE ...` outside a
+  transaction, or `ALTER ROLE ... SET timezone`).
+  <!-- RC: drop this item if the release ships with the pg_duckdb time zone fix. -->
+- See [Roles](#self-hosting) for who can read mirrors, and the [CHANGELOG](CHANGELOG.md) for the other known
+  limitations.
 
 ## Contributing
 

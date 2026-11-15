@@ -183,6 +183,15 @@ and set `duckdb.allow_unsigned_extensions = true` and `duckdb.autoinstall_known_
 `scripts/e2e-known-bugs.txt` is the complete list, with a failure signature per check; keep it current rather than this
 summary. Product behavior (fix with a test; don't paper over it):
 - Restart after a large, logically streamed transaction: moonlink WAL monotonic-LSN assert, crash loop.
+- pg_duckdb **[pins]**: after any DuckDB query in a session, pg_duckdb's TimeZone assign hook runs outside a transaction
+  on every configuration reload (SIGHUP re-applies `timezone`, which initdb writes into `postgresql.conf`) and when a
+  time zone change is reverted at transaction end (`SET LOCAL TIME ZONE` + `COMMIT`, `SET TIME ZONE` + `ROLLBACK`):
+  assert failure on cassert builds, SIGSEGV/SIGABRT on release builds, server crash recovery either way.
+  Fixed upstream by pg_duckdb #981 (commit 75df0a6), which is only on branches with DuckDB >= 1.4.2; duckdb_mooncake
+  needs DuckDB 1.4.1. The commit cherry-picks cleanly onto the pin.
+- Reading mirrors as a non-superuser needs `duckdb.postgres_role` plus `pg_read_server_files` and
+  `pg_write_server_files` (pg_duckdb disables DuckDB's `LocalFileSystem` otherwise), and pg_duckdb does not check
+  Postgres privileges on relations it scans through the mooncake table AM, so per-mirror GRANTs are not enforced.
 - Wrong data without an error: unconstrained `numeric` (digits shifted), array columns (come back `{}`), `char(n)`
   (padding lost), an UPDATE that leaves a TOASTed column unchanged empties it in the mirror, and `TRUNCATE` of a source
   is ignored. `interval` and `inet` columns are rejected at `create_table`.

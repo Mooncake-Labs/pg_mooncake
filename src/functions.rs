@@ -26,6 +26,7 @@ fn create_table(dst: &str, src: &str, src_uri: Option<&str>, table_config: Optio
     let dst_uri = get_loopback_uri();
     let src_uri = src_uri.unwrap_or(&dst_uri).to_owned();
     let mut client = create_mooncake_table(&dst.quoted(), &dst_uri, &src.quoted(), &src_uri);
+    let created_oid = relation_oid(&mut client, &dst.quoted());
     let table_config = table_config.unwrap_or("{}").to_owned();
     let result = remove_orphans(&dst).and_then(|cleanup_error| {
         rpc!(
@@ -42,10 +43,19 @@ fn create_table(dst: &str, src: &str, src_uri: Option<&str>, table_config: Optio
         })
     });
     if let Err(e) = result {
-        // Otherwise the new mirror table stays readable while moonlink has no table, or a stale one, behind it.
-        if let Err(drop_error) = client.simple_query(&format!("DROP TABLE {}", dst.quoted())) {
+        // Otherwise the new mirror table stays readable while moonlink has no table, or a stale one, behind it. The
+        // table is created on a separate connection, so another session may have replaced it by now: drop it only if
+        // the name still refers to the table this call created.
+        if created_oid.is_some() && relation_oid(&mut client, &dst.quoted()) == created_oid {
+            if let Err(drop_error) = client.simple_query(&format!("DROP TABLE {}", dst.quoted())) {
+                warning!(
+                    "could not drop {} after the failed create_table: {drop_error}",
+                    dst.quoted()
+                );
+            }
+        } else {
             warning!(
-                "could not drop {} after the failed create_table: {drop_error}",
+                "did not drop {} after the failed create_table: it is not the table this call created",
                 dst.quoted()
             );
         }
@@ -258,6 +268,14 @@ fn uri_encode(input: &str) -> String {
         }
     }
     result
+}
+
+/// The oid `quoted_name` currently refers to on `client`'s server, if any.
+fn relation_oid(client: &mut Client, quoted_name: &str) -> Option<i64> {
+    client
+        .query_one("SELECT to_regclass($1)::oid::int8", &[&quoted_name])
+        .ok()
+        .and_then(|row| row.get(0))
 }
 
 /// Creates the Postgres mirror table and returns the connection it was created on.

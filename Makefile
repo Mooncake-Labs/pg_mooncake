@@ -41,5 +41,13 @@ pg_duckdb:
 run: pg_duckdb
 	@cargo pgrx run
 
+# cargo-pgrx 0.16 exits 0 when tests fail (it only fails in its auto-accept mode), and pg_regress leaves
+# regression.diffs behind only when a test failed.
 test:
+	@rm -f tests/pg_regress/regression.diffs
 	@cargo pgrx regress --resetdb
+	@if [ -e tests/pg_regress/regression.diffs ]; then \
+		cat tests/pg_regress/regression.diffs; \
+		echo "make test: pg_regress tests failed (see tests/pg_regress/regression.diffs)" >&2; \
+		exit 1; \
+	fi

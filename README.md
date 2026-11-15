@@ -25,6 +25,9 @@ For new users, we recommend using the Docker image to get started quickly:
 docker run --name mooncake --rm -e POSTGRES_PASSWORD=password mooncakelabs/pg_mooncake
 ```
 
+<!-- RC: the image is built on the moving pgduckdb/pgduckdb:18-main tag, whose pg_duckdb (and DuckDB) is not the
+     bundled one; pin the base image to the pg_duckdb this release ships with. -->
+
 This will start Postgres with pg_mooncake preinstalled. You can then connect to it using `psql` with the default user `postgres`:
 ```bash
 docker exec -it mooncake psql -U postgres
@@ -153,9 +156,12 @@ connection (for example with `trust` or `peer`).
 and dropped with the last mirror. Changes stay in `pg_wal` until they are persisted to Iceberg. To see how much WAL a
 slot retains:
 ```sql
-SELECT slot_name, pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn))
+SELECT slot_name,
+       pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), restart_lsn)) AS retained_wal,
+       pg_size_pretty(pg_wal_lsn_diff(pg_current_wal_lsn(), confirmed_flush_lsn)) AS not_yet_persisted
 FROM pg_replication_slots WHERE slot_name LIKE 'moonlink_slot%';
 ```
+`retained_wal` is what the slot keeps in `pg_wal`; `not_yet_persisted` is how far moonlink's Iceberg tables are behind.
 If you stop using pg_mooncake, drop all mirrors so that the slot is dropped and stops retaining WAL.
 
 **Mirroring from another server.** `mooncake.create_table` takes an optional connection string for the source:
@@ -184,6 +190,7 @@ from `shared_preload_libraries`, restart Postgres, and delete `$PGDATA/pg_moonca
 
 ## Durability and Recovery
 
+<!-- RC: this paragraph is true only with the moonlink submodule bump; re-check it against the final moonlink. -->
 Moonlink acknowledges the replication slot only up to what is persisted in Iceberg and replays the rest from the slot
 after a restart. Idle mirrors are persisted at least every 5 minutes, which bounds how much `pg_wal` they hold back.
 
@@ -200,30 +207,45 @@ created again under the same name, which removes it. After a crash, if a mirror 
 
 ## Upgrading from 0.2
 
+<!-- RC: the reason below is true only with the moonlink submodule bump; re-check it against the final moonlink. -->
 pg_mooncake 0.3 changed how moonlink persists data, so mirrors created with 0.2 must be re-created.
 
-1. Write down each mirror and its source table. `SELECT * FROM mooncake.list_tables();` lists the mirrors.
+1. Write down each mirror and its source table. moonlink keeps them in its metadata store, one row per mirror (the
+   `sqlite3` command-line tool reads it):
+   ```bash
+   sqlite3 -readonly "$PGDATA/pg_mooncake/moonlink_metadata_store.sqlite" \
+     'SELECT "database", "table" AS mirror, src_table_name AS source, src_table_uri FROM tables ORDER BY 1, 2'
+   ```
+   `src_table_uri` is the source connection string for mirrors of another server, and the local server otherwise.
 2. While still on 0.2, drop every mirror: `DROP TABLE <mirror>;`.
-3. Build and install pg_mooncake 0.3 and the pg_duckdb it ships with (see [Installation](#installation)), then restart
-   Postgres.
+3. Build and install pg_mooncake 0.3 and the pg_duckdb in its `pg_duckdb` submodule (see
+   [Installation](#installation)), then restart Postgres.
 4. In each database that has the extension, run `ALTER EXTENSION pg_mooncake UPDATE;`.
 5. Re-create the mirrors with `CALL mooncake.create_table(...)`.
 6. Optionally delete `$PGDATA/pg_mooncake/_wal/`. 0.3 no longer uses it.
+   <!-- RC: this step must not ship before the moonlink submodule bump: the pinned moonlink still writes _wal. -->
 
 If you upgraded without dropping the mirrors first, `ALTER EXTENSION pg_mooncake UPDATE` prints a warning that lists
 them. Drop and re-create each one.
+
+Installs of 0.1.x, and builds of 0.2.0 from before September 2025 (before pg_mooncake became a pg_duckdb
+subextension), cannot be upgraded with `ALTER EXTENSION`. Drop every mirror, then run
+`DROP EXTENSION pg_mooncake; CREATE EXTENSION pg_mooncake CASCADE;` in place of step 4.
 
 `mooncake.load_files` was removed. See the [CHANGELOG](CHANGELOG.md) for all changes and known limitations.
 
 ## Known Issues
 
-- **Reloading the configuration can crash the server.** Every session that has queried a mirror crashes when Postgres
-  reloads its configuration (`SELECT pg_reload_conf()`, `pg_ctl reload`, or `SIGHUP`, for example after
-  `ALTER SYSTEM`), even if nothing changed, and Postgres then restarts all sessions. The same happens in such a session
-  when a time zone change ends with its transaction: `SET LOCAL TIME ZONE ...` then `COMMIT`, or `SET TIME ZONE ...`
-  then `ROLLBACK`. This is a bug in the bundled pg_duckdb, fixed in later pg_duckdb releases. Until pg_mooncake ships
-  that fix, restart Postgres instead of reloading it, and set the time zone per session (`SET TIME ZONE ...` outside a
-  transaction, or `ALTER ROLE ... SET timezone`).
+- **Reloading the configuration can crash the server.** Every session that has run a DuckDB query, including any
+  query on a mirror, crashes when Postgres reloads its configuration, even if nothing changed, and Postgres then
+  restarts all sessions. Reloads come from `SELECT pg_reload_conf()`, `pg_ctl reload` and `SIGHUP`, for example after
+  `ALTER SYSTEM`, and also from tools that reload Postgres on their own: log rotation (logrotate), `systemctl reload`,
+  and package upgrade scripts. The same happens in such a session when a time zone change ends with its transaction:
+  `SET LOCAL TIME ZONE ...` then `COMMIT`, or `SET TIME ZONE ...` then `ROLLBACK`. This is a bug in the bundled
+  pg_duckdb. Later pg_duckdb releases fix it, but they need a newer DuckDB than the `mooncake` DuckDB extension is built
+  for, so upgrading pg_duckdb on its own does not help. Until pg_mooncake ships the fix, restart Postgres instead of
+  reloading it, turn off reloads by other tools (for example logrotate's `postrotate` reload), and set the time zone
+  per session (`SET TIME ZONE ...` outside a transaction, or `ALTER ROLE ... SET timezone`).
   <!-- RC: drop this item if the release ships with the pg_duckdb time zone fix. -->
 - See [Roles](#self-hosting) for who can read mirrors, and the [CHANGELOG](CHANGELOG.md) for the other known
   limitations.

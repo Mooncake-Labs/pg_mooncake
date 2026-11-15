@@ -19,10 +19,9 @@ crash loop, `mooncake.list_tables()` must answer, and dropping and re-creating t
 It also checks that the duckdb_mooncake that DuckDB loads is built from the submodule commit that the DuckDB
 community extension for DuckDB v1.4.1 uses, with the same moonlink wire protocol.
 
-Requirements: Linux, bash 4 or later, GNU coreutils, GNU find, procps, and a PostgreSQL install (tested with 17; 18 has
-not been run with this script yet) with pg_duckdb and pg_mooncake installed and the submodules checked out. The script
-checks its tool requirements before it starts. It runs about 20 minutes, creates clusters under `$E2E_DIR` on
-`$PGPORT`, and stops them when done.
+Requirements: Linux, bash 4 or later, GNU coreutils, GNU find, procps, and a PostgreSQL install (tested with 17 and 18)
+with pg_duckdb and pg_mooncake installed and the submodules checked out. The script checks its tool requirements before
+it starts. It runs about 20 minutes, creates clusters under `$E2E_DIR` on `$PGPORT`, and stops them when done.
 
 ```bash
 PG_PREFIX=/path/to/pg17 \
@@ -81,19 +80,25 @@ ERROR or FATAL. The one exception is the FATAL Postgres itself logs when it stop
 deaths, and the exits of an immediate stop (`-m immediate` sends SIGQUIT) always count.
 `no_worker_errors_during_final_stop` covers only the final stop: it fails if the worker logs an ERROR or FATAL while it
 shuts down. Errors before that are checked where they happen (for example `no_worker_errors_after_<restart|crash>`).
-A clean stop that doesn't finish within 30 s fails, and names the processes still running and the panics during it.
+A clean stop that doesn't finish within 30 s fails. The failure names the processes still running (walsenders are
+only counted, since Postgres keeps them until everything else has exited), whether moonlink logged that it got the
+SIGTERM (`moonlink saw SIGTERM: yes|no`), and the panics during the stop.
 
-Session checks (`config_reload`, `mirror_writes`, `roles`) run one psql session per case. A backend crash, seen in the
-server log or as a lost connection, fails the case and names the signal, the statement and the assertion. A session that
-lost its connection without a crash in the log is reported as `session lost its connection ...`, and a crash logged just
-after the session's last output (looked for 1.5 s later) as `a server process crashed after the session's last output`.
-`no_postgres_crash_restarts` also counts the server process crashes that no session check reported, so a crash elsewhere
-in the scenario isn't hidden behind a known one. The `config_reload` cases wait for the mirrors before each case, must
+Session checks (`config_reload`, `mirror_writes`, `roles`) run one psql session per case. A crash of any Postgres
+process other than a background worker, seen in the server log or as a lost connection, fails the case as `backend
+crashed (<kind>, <signal n | exit code n>, cassert=<yes|no|unknown>) running [<statement>]; TRAP: <...>`. The process
+kind is given in PostgreSQL 17 terms: PostgreSQL 18 names a backend by its type (`client backend`, `walsender`, ...),
+and those are reported as `server process`, so the known-bug rules match on every major. The log is looked at again 1.5
+s after a passing case, so a crash right after the session's last output is caught the same way. A session that lost its
+connection without a crash in the log is reported as `session lost its connection ...`. `no_postgres_crash_restarts`
+also counts the crashes that no session check reported, so a crash elsewhere in the scenario isn't hidden behind a known
+one. A crash during a stop ends it with `abnormal database system shutdown` instead of a restart, and `pg_ctl stop`
+still succeeds; that line counts as a crash too. The `config_reload` cases wait for the mirrors before each case, must
 read the mirror first (pg_duckdb's hook only runs once DuckDB is initialised) and then run without any error; the reload
 case also requires the backend's `pg_conf_load_time()` to advance. In `mirror_writes`, the contract a fix must meet for
-the multiple-assignment `UPDATE` and `INSERT ... ON CONFLICT DO UPDATE` is an ordinary
-`ERROR: cannot modify mirror ...` and no crash. No code emits that message yet; today plain writes fail with
-pg_duckdb's "not implemented" errors, which the plain-write controls accept as long as there is no crash.
+the multiple-assignment `UPDATE` and `INSERT ... ON CONFLICT DO UPDATE` is an ordinary `ERROR: cannot modify mirror ...`
+and no crash. No code emits that message yet; today plain writes fail with pg_duckdb's "not implemented" errors, which
+the plain-write controls accept as long as there is no crash.
 
 ### Release policy: blocking and limitation
 

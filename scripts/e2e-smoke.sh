@@ -84,7 +84,7 @@ BUILD_SRC=${BUILD_SRC:-$SCRIPT_DIR/..}
 CONVERGE_SECS=${CONVERGE_SECS:-30}
 GRACE_SECS=${GRACE_SECS:-5}
 PSQL_TIMEOUT=${PSQL_TIMEOUT:-60}
-KNOWN_BUGS=${KNOWN_BUGS:-$SCRIPT_DIR/e2e-known-bugs.txt}
+KNOWN_BUGS=${KNOWN_BUGS-$SCRIPT_DIR/e2e-known-bugs.txt}
 KNOWN_BUG_IDS=${KNOWN_BUG_IDS:-}
 DB_USER=${USER:-$(id -un)}
 export PGHOST=/tmp PGDATABASE=postgres PGPORT=${PGPORT:-$((5400 + MAJOR))}
@@ -109,7 +109,7 @@ pg_major_found=$("$BIN/pg_config" --version | sed -E 's/^PostgreSQL ([0-9]+).*/\
 # identify the cause (a hung DROP, a missing fence mirror).
 declare -A BUG_DESC=() BUG_CLASS=() KNOWN_RULES=() BUG_IDS=() RULE_REQUIRES=()
 load_known_bugs() {
-  local line kind a b rest other other_bug extra n=0
+  local line kind a b rest other other_bug extra n=0 rc
   # The file must exist (default or given); EMPTY_KNOWN_BUGS_OK only allows one without entries.
   if [[ ! -f $KNOWN_BUGS || ! -r $KNOWN_BUGS ]]; then echo "KNOWN_BUGS=$KNOWN_BUGS: missing or not a readable regular file" >&2; exit 2; fi
   while IFS= read -r line || [[ -n $line ]]; do
@@ -128,8 +128,10 @@ load_known_bugs() {
         if [[ -z $rest || -z ${BUG_DESC[$b]:-} ]]; then
           echo "$KNOWN_BUGS:$n: expected 'check <check> <declared bug> <regex>'" >&2; exit 2
         fi
-        [[ "" =~ $rest ]]
-        if (( $? == 2 )); then echo "$KNOWN_BUGS:$n: invalid regex: $rest" >&2; exit 2; fi
+        [[ "" =~ $rest ]]; rc=$?
+        if (( rc == 2 )); then echo "$KNOWN_BUGS:$n: invalid regex: $rest" >&2; exit 2; fi
+        # A regex that matches the empty string matches every signature.
+        if (( rc == 0 )); then echo "$KNOWN_BUGS:$n: regex matches the empty string: $rest" >&2; exit 2; fi
         KNOWN_RULES[$a]+="$b"$'\t'"$rest"$'\n' ;;
       requires)
         read -r kind a b other other_bug extra <<< "$line"
@@ -455,20 +457,29 @@ wait_ready() {
 }
 
 # ---- cluster lifecycle ---------------------------------------------------------------------------
+# pg_cassert: yes for a build with assertions (no pipe: grep -q would SIGPIPE pg_config under pipefail).
+pg_cassert() { if [[ $("$BIN/pg_config" --configure) == *enable-cassert* ]]; then echo yes; else echo no; fi; }
 start() { "$BIN/pg_ctl" -D "$DATA" -l "$OUT/postgres.log" -w -t 60 start > /dev/null 2>&1; }
-# stop <mode> [check]: with a check name, a stop that doesn't finish within 30s fails the check: a
-# hung shutdown is a bug in itself (a service manager would SIGKILL Postgres), e.g. a backend blocked
-# in a moonlink RPC ignores SIGTERM. The run then goes on after an immediate stop.
-# still_running: the postmaster's children that block a shutdown (not its auxiliary processes), by
-# process title ("moonlink", "client backend", ...), comma-separated, or "none".
+# still_running: the postmaster's children that block a fast shutdown, by process title ("moonlink",
+# "client backend", ...), comma-separated, or "none". Auxiliary processes and walsenders are left out:
+# Postgres keeps them until after every backend and background worker has exited.
 still_running() {
   local pm r
   pm=$(head -1 "$DATA/postmaster.pid" 2>/dev/null)
   [[ $pm =~ ^[0-9]+$ ]] || { echo "unknown (no postmaster.pid)"; return; }
   r=$(ps -o args= --ppid "$pm" 2>/dev/null | sed -E 's/^postgres: ([^ ]+: )?//; s/^(moonlink)( .*)?$/\1/' |
-    grep -vE '^(checkpointer|background writer|walwriter|logger|archiver|startup|walsummarizer|io worker)' | sort -u | paste -sd, -)
+    grep -vE '^(checkpointer|background writer|walwriter|logger|archiver|startup|walsummarizer|io worker|walsender)' | sort -u | paste -sd, -)
   echo "${r:-none}"
 }
+# moonlink_saw_sigterm <log line>: yes if the moonlink service logged that it got SIGTERM after that
+# line (it does when its handler runs), else no.
+moonlink_saw_sigterm() {
+  if tail -n +"$(( $1 + 1 ))" "$OUT/postgres.log" | grep -aq 'Received SIGTERM, shutting down'; then echo yes; else echo no; fi
+}
+# stop <mode> [check]: with a check name, a stop that doesn't finish within 30s fails the check: a
+# hung shutdown is a bug in itself (a service manager would SIGKILL Postgres), e.g. a backend blocked
+# in a moonlink RPC ignores SIGTERM. The run then goes on after an immediate stop. The failure names
+# what was still running, whether moonlink saw the SIGTERM, and the panics during the stop.
 stop() {
   local mode=${1:-fast} check=${2:-} from rc mark
   if ! pg_alive; then [[ -z $check ]] || result "$check" skip "postgres not running"; return 0; fi
@@ -477,7 +488,7 @@ stop() {
   # Report before the fallback: once postgres is down, result would turn the failure into a SKIP.
   if [[ -n $check ]]; then
     if (( rc == 0 )); then result "$check" 0
-    else result "$check" 1 "pg_ctl stop -m $mode did not finish within 30s (continuing after -m immediate); still running: $(still_running); panics during the stop: $(panics_inline "$mark")"; fi
+    else result "$check" 1 "pg_ctl stop -m $mode did not finish within 30s (continuing after -m immediate); still running: $(still_running); moonlink saw SIGTERM: $(moonlink_saw_sigterm "$from"); panics during the stop: $(panics_inline "$mark")"; fi
   fi
   (( rc == 0 )) || "$BIN/pg_ctl" -D "$DATA" -m immediate -w stop > /dev/null 2>&1
   LAST_STOP_LINES="$from $(wc -l < "$OUT/postgres.log")"
@@ -489,7 +500,7 @@ stop() {
 
 new_cluster() {
   SCEN=$1; DATA=$E2E_DIR/data-$MAJOR-$SCEN; OUT=$E2E_DIR/out-$MAJOR-$SCEN
-  FENCE_SRC=e2e_fence; FENCE_MC=e2e_fence_mc; FENCE_N=0; ALLOWED_EXIT_LINES=""; CLUSTER_STOPPED=0
+  FENCE_SRC=e2e_fence; FENCE_MC=e2e_fence_mc; FENCE_N=0; ALLOWED_EXIT_LINES=""; CLUSTER_STOPPED=0; SESSION_CRASHES=0
   [[ -f $DATA/postmaster.pid ]] && "$BIN/pg_ctl" -D "$DATA" -m immediate -w stop > /dev/null 2>&1
   rm -rf -- "$DATA" "$OUT"; mkdir -p "$OUT"
   "$BIN/initdb" -D "$DATA" -U "$DB_USER" > "$OUT/initdb.log" 2>&1 || { result initdb 1 "$(tail -2 "$OUT/initdb.log")"; return 1; }
@@ -545,6 +556,11 @@ end_cluster() {
   else result bgworker_no_abnormal_exits 0; fi
   # A crashed backend makes the postmaster restart every process; it then stays up, so check the log.
   crashes=$(crash_restarts)
+  # Crashes of server processes that no session case reported (the session checks count theirs).
+  if [[ -n $crashes ]]; then
+    local total; total=$(grep -acE 'LOG: +server process \(PID [0-9]+\) was terminated by signal' "$OUT/postgres.log")
+    crashes+=$'\n'"server process crashes not reported by a session check x$((total - SESSION_CRASHES))"
+  fi
   if [[ -n $crashes ]]; then
     result no_postgres_crash_restarts 1 "$(echo "$crashes" | paste -sd, - | sed 's/,/, /g')" "$crashes"
   else result no_postgres_crash_restarts 0; fi
@@ -556,8 +572,7 @@ build_info() {
   local libdir f
   local dirty=""
   [[ -n $(git -C "$SCRIPT_DIR" status --porcelain -- . 2>/dev/null) ]] && dirty=" (scripts/ has uncommitted changes)"
-  if [[ -f $KNOWN_BUGS ]]; then echo "BUILD known_bugs=$KNOWN_BUGS sha256=$(sha256 "$KNOWN_BUGS")"
-  else echo "BUILD known_bugs=none"; fi
+  echo "BUILD known_bugs=$KNOWN_BUGS sha256=$(sha256 "$KNOWN_BUGS")"
   echo "BUILD harness_commit=$(git -C "$SCRIPT_DIR" rev-parse HEAD 2>/dev/null || echo unknown)$dirty"
   local sub pin head
   echo "BUILD build_src=$BUILD_SRC commit=$(git -C "$BUILD_SRC" rev-parse HEAD 2>/dev/null || echo unknown)$([[ -n $(git -C "$BUILD_SRC" status --porcelain --untracked-files=no 2>/dev/null) ]] && echo ' (uncommitted changes)')"
@@ -567,7 +582,7 @@ build_info() {
     echo "BUILD checkout_${sub}_commit=${head:-unknown}${pin:+ pinned=$pin}$([[ -n $pin && $pin != "$head" ]] && echo ' (differs from pin)')"
   done
   echo "BUILD pg_version=$("$BIN/postgres" --version | one_line)"
-  echo "BUILD pg_cassert=$("$BIN/pg_config" --configure | grep -q enable-cassert && echo yes || echo no)"
+  echo "BUILD pg_cassert=$(pg_cassert)"
   libdir=$("$BIN/pg_config" --pkglibdir)
   for f in pg_mooncake pg_duckdb; do
     if [[ -f $libdir/$f.so ]]; then
@@ -779,7 +794,7 @@ SQL
   run drop_mirror -c "DROP TABLE t_mc"
   check_eq drop_list_tables "$(psqlq -c "SELECT count(*) FROM mooncake.list_tables() WHERE \"table\" = 'public.t_mc'" 2>&1)" "0"
   if poll_until 30 no_files_matching '*t_mc*'; then result drop_files_removed 0
-  else result drop_files_removed 1 "after 30s: $(find "$DATA/pg_mooncake" -path '*t_mc*' | head -5 | one_line)"; fi
+  else result drop_files_removed 1 "after 30s: $(files_matching '*t_mc*' | head -5 | one_line)"; fi
   local pubq="SELECT count(*) FROM pg_publication_tables WHERE schemaname = 'public' AND tablename = 't'"
   if poll_until 30 sql_is "$pubq" 0; then result drop_source_removed_from_publication 0
   else result drop_source_removed_from_publication 1 "count=$(psqlq -c "$pubq" 2>&1) after 30s"; fi
@@ -825,7 +840,14 @@ SQL
 
   end_cluster
 }
-no_files_matching() { [[ -z $(find "$DATA/pg_mooncake" -path "$1" 2>/dev/null | head -1) ]]; }
+# files_matching <find -path pattern>: matching paths under pg_mooncake, or "? find failed: ..." if find
+# fails (so a failure never reads as "no files").
+files_matching() {
+  local r
+  r=$(find "$DATA/pg_mooncake" -path "$1" 2>&1) || { echo "? find failed: $(echo "$r" | one_line 120)"; return; }
+  [[ -z $r ]] || echo "$r"
+}
+no_files_matching() { [[ -z $(files_matching "$1" | head -1) ]]; }
 # leftover_files: "<type> pg_mooncake/<path>" (find's %y: d directory, f file, ...) for everything
 # under pg_mooncake at any depth, except moonlink's own files at their place and the cache roots.
 leftover_files() {
@@ -1147,11 +1169,11 @@ SQL
 # with the statement Postgres names as running and the assertion of a cassert build (or "none").
 # After a lost connection the case waits for crash recovery, so the next case starts on a running
 # server.
-CASSERT=""
+CASSERT=""; SESSION_CRASHES=0
 session_case() {
   local check=$1 want_out=$2 want_err=$3 user=${4:-$DB_USER} want_log=${5:-} mark crash="" trap stmt t0 out err
   local o=$OUT/$1 lost=""
-  [[ -n $CASSERT ]] || CASSERT=$("$BIN/pg_config" --configure | grep -q enable-cassert && echo yes || echo no)
+  [[ -n $CASSERT ]] || CASSERT=$(pg_cassert)
   mark=$(wc -l < "$OUT/postgres.log")
   raw_psql 60 "$o.out" "$o.err" -U "$user" -a
   grep -qE 'server closed the connection unexpectedly|connection to server was lost|terminating connection because of crash' "$o.err" && lost=1
@@ -1164,8 +1186,16 @@ session_case() {
     stmt=$(tail -n +"$((mark + 1))" "$OUT/postgres.log" | grep -aE -m1 'DETAIL: +Failed process was running: ' | sed -E 's/.*Failed process was running: +//; s/[; ]+$//')
     wait_ready > /dev/null
     if [[ -n $crash ]]; then
+      SESSION_CRASHES=$((SESSION_CRASHES + 1))
       result "$check" 1 "backend crashed (server process, signal $crash, cassert=$CASSERT) running [${stmt:-unknown}]; TRAP: ${trap:-none}"
     else result "$check" 1 "session lost its connection, but no server process crash was logged: $(one_line 200 < "$o.err")"; fi
+    return
+  fi
+  # A backend can still crash after its last output (or as it exits): look again a moment later.
+  sleep 1.5
+  if tail -n +"$((mark + 1))" "$OUT/postgres.log" | grep -aqE 'LOG: +server process \(PID [0-9]+\) was terminated by signal [0-9]+'; then
+    SESSION_CRASHES=$((SESSION_CRASHES + 1)); wait_ready > /dev/null
+    result "$check" 1 "a server process crashed after the session's last output: $(tail -n +"$((mark + 1))" "$OUT/postgres.log" | grep -aE -m1 'was terminated by signal' | sed -E 's/^[^]]*\] LOG: +//' | one_line 160)"
     return
   fi
   out=$(tr '\n' ' ' < "$o.out" | sed -E 's/ +$//'); err=$(tr '\n' ' ' < "$o.err" | sed -E 's/ +$//')
@@ -1191,13 +1221,19 @@ CREATE TABLE t (id int PRIMARY KEY);
 INSERT INTO t VALUES (1);
 CALL mooncake.create_table('t_mc', 't');
 SQL
-  fence_check mirror_caught_up
-  session_case reload_after_mirror_read "$SESSION_OUT" "" "$DB_USER" 'received SIGHUP, reloading configuration files' <<SQL
+  # Each case starts on caught-up mirrors, also after the crash recovery of the case before it.
+  fence_check fence_before_reload
+  # The reload must be seen by this backend: pg_conf_load_time() advances. 'before reload' marks
+  # the last statement before it, so a crash in the reload is told apart from one in the read.
+  session_case reload_after_mirror_read '^SELECT count\(\*\) FROM t_mc; 1 .*SELECT .before . \|\| .reload.; before reload .*AS reloaded; t .*session survived$' "" <<SQL
 SELECT count(*) FROM t_mc;
+SELECT pg_conf_load_time() AS conf_t0 \gset
+SELECT 'before ' || 'reload';
 \! "$BIN/pg_ctl" -D "$DATA" reload > /dev/null; sleep 2
-SELECT 1;
+SELECT pg_conf_load_time() > :'conf_t0' AS reloaded;
 SELECT 'session ' || 'survived';
 SQL
+  fence_check fence_before_set_local
   session_case set_local_time_zone_commit "$SESSION_OUT" "" <<'SQL'
 SELECT count(*) FROM t_mc;
 BEGIN;
@@ -1205,6 +1241,7 @@ SET LOCAL TIME ZONE 'Europe/Paris';
 COMMIT;
 SELECT 'session ' || 'survived';
 SQL
+  fence_check fence_before_set_rollback
   session_case set_time_zone_rollback "$SESSION_OUT" "" <<'SQL'
 SELECT count(*) FROM t_mc;
 BEGIN;
@@ -1242,6 +1279,9 @@ SQL
 INSERT INTO ups_mc VALUES (1, 'Bar') ON CONFLICT (a) DO UPDATE SET (b, a) = (SELECT 'q', 1);
 SQL
   check_eq source_unchanged "$(psqlq -c "SELECT a || '|' || b FROM ups ORDER BY a" 2>&1)" "1|Foo"
+  # The mirror too, from a fresh session once caught up: a write that reached it must show here.
+  fence_check fence_after_writes
+  check_eq mirror_unchanged "$(psqlq -c "SELECT a || '|' || b FROM ups_mc ORDER BY a" 2>&1)" "1|Foo"
   end_cluster
 }
 

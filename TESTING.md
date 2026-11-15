@@ -81,7 +81,9 @@ ERROR or FATAL. The one exception is the FATAL Postgres itself logs when it stop
 deaths, and the exits of an immediate stop (`-m immediate` sends SIGQUIT) always count.
 `no_worker_errors_during_final_stop` covers only the final stop: it fails if the worker logs an ERROR or FATAL while it
 shuts down. Errors before that are checked where they happen (for example `no_worker_errors_after_<restart|crash>`).
-A clean stop that doesn't finish within 30 s fails, and names the processes still running and the panics during it.
+A clean stop that doesn't finish within 30 s fails. The failure names the processes still running (walsenders are
+only counted, since Postgres keeps them until everything else has exited), whether moonlink logged that it got the
+SIGTERM (`moonlink saw SIGTERM: yes|no`), and the panics during the stop.
 
 Session checks (`config_reload`, `mirror_writes`, `roles`) run one psql session per case. A backend crash, seen in the
 server log or as a lost connection, fails the case and names the signal, the statement and the assertion. A session that

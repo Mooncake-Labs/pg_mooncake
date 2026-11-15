@@ -245,7 +245,7 @@ SQL
 # check_mirror_scalar <check> <sql> <expected>: fence, then a fresh-session read (no read-your-writes
 # wait) polled for up to GRACE_SECS while the table applies the events it was handed.
 check_mirror_scalar() {
-  local got t0 rc
+  local got t0
   if ! fence_wait "$CONVERGE_SECS"; then result "$1" 1 "$FENCE_ERR"; return; fi
   t0=$(date +%s)
   while got=$(psqlq -c "$2" 2>&1); [[ $got != "$3" ]] && (( $(date +%s) - t0 < GRACE_SECS )); do sleep 0.3; done
@@ -374,7 +374,7 @@ crash_restarts() {
 }
 
 # no_crash_loop <check> [panic mark] [log line mark]: over a 20s window the bgworker pid is stable and
-# mooncake.list_tables() still answers (the user's "never crash-loop" criterion). Failures name the
+# mooncake.list_tables() still answers (the gate's "never crash-loop" criterion). Failures name the
 # panics after the mark, so a known bug can be told apart from a new cause.
 no_crash_loop() {
   local p1 p2 c1 c2 lt mark=${2:-0} errs=""
@@ -847,7 +847,7 @@ scenario_persist() {
 
 # ================================================================================================
 # moonlink unhealthy: what Postgres sessions see when the bgworker errors, dies or hangs. Mirrors
-# must always be droppable ("drop and re-create" is the user's recovery path), and errors must be
+# must always be droppable ("drop and re-create" is the documented recovery path), and errors must be
 # ordinary ERRORs that leave the session usable.
 
 # raw_psql <secs> <out> <err> <psql args...>: psql without ON_ERROR_STOP, so later statements still
@@ -855,6 +855,19 @@ scenario_persist() {
 raw_psql() {
   local secs=$1 out=$2 err=$3; shift 3
   timeout -k 5 "$secs" "$BIN/psql" -X -qAt -v ON_ERROR_STOP=0 "$@" > "$out" 2> "$err"
+}
+
+# drop_while_down <check> <mirror> <file prefix>: with the bgworker gone, DROP of a mirror succeeds
+# with a WARNING that moonlink did not drop it. The bgworker restarts 15s after it exits (if it
+# does), and the DROPs run a few seconds after the SIGTERM; one that would run after the restart
+# is SKIP, since it can't exercise this path.
+drop_while_down() {
+  local rc
+  if ! moonlink_gone; then result "$1" skip "moonlink bgworker was back (pid $(moonlink_pid)) before DROP TABLE $2"; return; fi
+  raw_psql 30 "$3.out" "$3.err" -c "DROP TABLE $2" -c "SELECT 'dropped=' || (to_regclass('$2') IS NULL)"; rc=$?
+  if (( rc == 0 )) && ! grep -q 'ERROR:' "$3.err" && grep -q 'WARNING:.*did not drop' "$3.err" && grep -qx 'dropped=true' "$3.out"; then
+    result "$1" 0 "$(grep -m1 'WARNING:' "$3.err" | cut -c1-160)"
+  else result "$1" 1 "rc=$rc $(one_line 240 < "$3.err") $(one_line 40 < "$3.out")"; fi
 }
 
 # recreate_after_warned_drop: s4_mc was dropped while moonlink was down, so moonlink still has
@@ -866,8 +879,20 @@ recreate_compare() {
   result recreate_not_bound_to_old_table "$CMP_OK" "$CMP_DETAIL"
 }
 recreate_after_warned_drop() {
-  local reg="SELECT count(*) FROM mooncake.list_tables() WHERE \"table\" = 'public.s4_mc'"
-  info orphan_listed_after_restart "public.s4_mc listed: $(psqlq -c "$reg" 2>&1 | one_line 80)"
+  local reg="SELECT count(*) FROM mooncake.list_tables() WHERE \"table\" = 'public.s4_mc'" why="" n c
+  # Only a mirror whose DROP warned, and whose table moonlink still lists, exercises this path.
+  if [[ ${STATUS_OF[$SCEN.drop_second_mirror_while_down]} != *PASS ]]; then
+    why="DROP TABLE s4_mc did not take the moonlink-down path"
+  else
+    n=$(psqlq -c "$reg" 2>&1)
+    [[ $n == 1 ]] || why="moonlink does not list public.s4_mc after the restart: [$(echo "$n" | one_line 80)]"
+  fi
+  if [[ -n $why ]]; then
+    for c in recreate_after_warned_drop recreate_not_bound_to_old_table recreate_single_registration cdc_into_recreated; do
+      result "$c" skip "not attempted: $why"
+    done
+    return
+  fi
   # A new source: a source that already has a mirror can't be mirrored again.
   run recreate_source_setup -c "CREATE TABLE s4b (id int PRIMARY KEY, v text)" -c "INSERT INTO s4b VALUES (10, 'new-10'), (11, 'new-11')"
   run recreate_after_warned_drop -c "CALL mooncake.create_table('s4_mc', 's4b')"
@@ -947,13 +972,9 @@ SQL
   raw_psql 30 "$o.dh.out" "$o.dh.err" -c "DROP TABLE h"; rc=$?
   if (( rc == 0 )) && ! grep -q 'ERROR:\|WARNING:' "$o.dh.err"; then result drop_heap_while_down 0
   else result drop_heap_while_down 1 "rc=$rc $(one_line 240 < "$o.dh.err")"; fi
-  raw_psql 30 "$o.dm.out" "$o.dm.err" -c "DROP TABLE s_mc" -c "SELECT 'dropped=' || (to_regclass('s_mc') IS NULL)"; rc=$?
-  if (( rc == 0 )) && ! grep -q 'ERROR:' "$o.dm.err" && grep -q 'WARNING:.*did not drop' "$o.dm.err" && grep -qx 'dropped=true' "$o.dm.out"; then
-    result drop_mirror_while_down 0 "$(grep -m1 'WARNING:' "$o.dm.err" | cut -c1-160)"
-  else result drop_mirror_while_down 1 "rc=$rc $(one_line 240 < "$o.dm.err") $(one_line 40 < "$o.dm.out")"; fi
+  drop_while_down drop_mirror_while_down s_mc "$o.dm"
   # s4_mc too, for the re-create checks after the restart (moonlink keeps its table).
-  raw_psql 30 "$o.d4.out" "$o.d4.err" -c "DROP TABLE s4_mc"
-  info drop_s4_mc_while_down "rc=$? $(one_line 160 < "$o.d4.err")"
+  drop_while_down drop_second_mirror_while_down s4_mc "$o.d4"
   raw_psql 30 "$o.lt.out" "$o.lt.err" -c "SELECT count(*) FROM mooncake.list_tables()"; rc=$?
   if grep -q 'ERROR:' "$o.lt.err" && ! grep -qi 'server closed the connection\|terminated abnormally' "$o.lt.err" && pg_alive; then
     result list_tables_errors_while_down 0 "$(grep -m1 'ERROR:' "$o.lt.err" | cut -c1-120)"
@@ -989,6 +1010,11 @@ SQL
   # documented cleanup is CREATE TABLE <same name> (id int) USING mooncake; DROP TABLE <same name>.
   local m listed="SELECT count(*) FROM mooncake.list_tables() WHERE \"table\" = 'public.s_mc'"
   for m in e2e_fence_mc e2e_probe_mc s3_mc s4_mc; do raw_psql 40 "$o.cl.out" "$o.cl.err" -c "DROP TABLE IF EXISTS $m"; done
+  # A create_table that failed without leaving a mirror leaves moonlink's public.s4_mc behind.
+  if [[ $(psqlq -c "SELECT count(*) FROM mooncake.list_tables() WHERE \"table\" = 'public.s4_mc'" 2>&1) != 0 ]]; then
+    raw_psql 40 "$o.c4.out" "$o.c4.err" -c "CREATE TABLE s4_mc (id int) USING mooncake" -c "DROP TABLE s4_mc"
+    info s4_mc_cleanup "rc=$? $(one_line 160 < "$o.c4.err")"
+  fi
   info orphan_before "list_tables: $(psqlq -c "SELECT string_agg(\"table\", ',') FROM mooncake.list_tables()" 2>&1 | one_line 160)"
   if [[ $(psqlq -c "SELECT to_regclass('s_mc') IS NULL" 2>&1) != t ]]; then
     result orphan_cleanup skip "s_mc still exists in Postgres (its DROP failed while moonlink was down)"
@@ -1090,6 +1116,9 @@ SQL
   run kept_workload -c "INSERT INTO kept VALUES (2, 'b')" -c "UPDATE kept SET v = 'u' WHERE id = 1"
   compare kept_cdc_after_restart kept kept_mc
   run drop_orphaned_mirror -c "DROP TABLE gone_mc"
+  local q="SELECT count(*) FROM mooncake.list_tables() WHERE \"table\" = 'public.gone_mc'"
+  if poll_until 30 sql_is "$q" 0; then result orphaned_mirror_unlisted 0
+  else result orphaned_mirror_unlisted 1 "after 30s, list_tables: $(psqlq -c "$q" 2>&1 | one_line 160)"; fi
   end_cluster
 }
 

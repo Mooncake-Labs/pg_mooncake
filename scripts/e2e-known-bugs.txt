@@ -96,6 +96,8 @@ check source_drop_restart.kept_cdc_after_restart dropped-source-crash-loop ([Ff]
 requires source_drop_restart.kept_cdc_after_restart dropped-source-crash-loop source_drop_restart.no_worker_errors_after_restart dropped-source-crash-loop
 check source_drop_restart.bgworker_no_abnormal_exits dropped-source-crash-loop ^exited with exit code 1 x[0-9]+$
 requires source_drop_restart.bgworker_no_abnormal_exits dropped-source-crash-loop source_drop_restart.no_worker_errors_after_restart dropped-source-crash-loop
+check source_drop_restart.orphaned_mirror_unlisted dropped-source-crash-loop ^after [0-9]+s, list_tables: .*[Ff]ailed to connect to moonlink
+requires source_drop_restart.orphaned_mirror_unlisted dropped-source-crash-loop source_drop_restart.no_worker_errors_after_restart dropped-source-crash-loop
 
 # ---- restart and crash --------------------------------------------------------------------------
 bug restart-crash-loop After a restart that follows a large (streamed) transaction, moonlink panics while recovering and the bgworker restarts every 15s, so mooncake.* calls fail

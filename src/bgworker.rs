@@ -21,34 +21,57 @@ extern "C-unwind" fn moonlink_main(_arg: pg_sys::Datum) {
     std::env::set_var("RUST_BACKTRACE", "1");
     BackgroundWorker::attach_signal_handlers(SignalWakeFlags::SIGTERM);
     // moonlink's own SIGTERM handling (tokio::signal) chains to the pgrx handler above, which calls into Postgres and
-    // panics on any thread but this one; the panic can also lose the shutdown request. Signals sent to the process go
-    // to a thread that doesn't block them, so block them in every runtime thread and leave only this thread open.
-    // Threads inherit the mask of the thread that creates them; on_thread_start also covers blocking-pool threads
-    // started later from runtime threads. SIGQUIT (immediate shutdown) stays deliverable everywhere.
-    set_shutdown_signal_mask(libc::SIG_BLOCK);
+    // panics on any thread but this one; the panic can also lose the shutdown request. A signal sent to the process
+    // goes to a thread that doesn't block it, so every moonlink thread blocks the shutdown signals and only this
+    // thread, which just waits for moonlink, receives them. Threads inherit the mask of the thread that creates them:
+    // the moonlink thread and the runtime's workers are created while this thread blocks the signals, and
+    // on_thread_start also covers blocking-pool threads started later. SIGQUIT (immediate shutdown) stays deliverable
+    // everywhere.
+    //
+    // moonlink keeps running under block_on, as it did on this thread before, rather than as a runtime task: as a task,
+    // fast stops crashed the worker far more often (moonlink's shutdown races play out differently).
+    let original_mask = block_shutdown_signals();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
-        .on_thread_start(|| set_shutdown_signal_mask(libc::SIG_BLOCK))
+        .on_thread_start(|| {
+            block_shutdown_signals();
+        })
         .build()
         .expect("failed to build the moonlink runtime");
-    set_shutdown_signal_mask(libc::SIG_UNBLOCK);
-    runtime.block_on(start());
+    let moonlink = std::thread::Builder::new()
+        .name("moonlink".to_owned())
+        .spawn(move || runtime.block_on(start_with_config(service_config())))
+        .expect("failed to start the moonlink thread");
+    set_signal_mask(&original_mask);
+    // An error is raised here, under pg_guard, so it is reported like any other worker error, as before.
+    match moonlink.join() {
+        Ok(result) => result.unwrap(),
+        Err(panic) => std::panic::resume_unwind(panic),
+    }
 }
 
-fn set_shutdown_signal_mask(how: libc::c_int) {
+/// Blocks SIGTERM, SIGHUP and SIGINT on the calling thread and returns its previous signal mask.
+fn block_shutdown_signals() -> libc::sigset_t {
     unsafe {
         let mut signals: libc::sigset_t = std::mem::zeroed();
         libc::sigemptyset(&mut signals);
         for signal in [libc::SIGTERM, libc::SIGHUP, libc::SIGINT] {
             libc::sigaddset(&mut signals, signal);
         }
-        let rc = libc::pthread_sigmask(how, &signals, std::ptr::null_mut());
+        let mut previous: libc::sigset_t = std::mem::zeroed();
+        let rc = libc::pthread_sigmask(libc::SIG_BLOCK, &signals, &mut previous);
         assert_eq!(rc, 0, "pthread_sigmask failed");
+        previous
     }
 }
 
-async fn start() {
-    let config = ServiceConfig {
+fn set_signal_mask(mask: &libc::sigset_t) {
+    let rc = unsafe { libc::pthread_sigmask(libc::SIG_SETMASK, mask, std::ptr::null_mut()) };
+    assert_eq!(rc, 0, "pthread_sigmask failed");
+}
+
+fn service_config() -> ServiceConfig {
+    ServiceConfig {
         base_path: "pg_mooncake".to_owned(),
         data_server_uri: None,
         rest_api_port: None,
@@ -56,6 +79,5 @@ async fn start() {
         tcp_port: None,
         log_directory: None,
         otel_export_target: None,
-    };
-    start_with_config(config).await.unwrap();
+    }
 }

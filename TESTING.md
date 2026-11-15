@@ -10,15 +10,18 @@ section 4 for the build and cluster setup.
 `scripts/e2e-smoke.sh` drives an installed pg_mooncake, pg_duckdb and duckdb_mooncake through mirrors on throwaway
 clusters: CDC bursts, every supported column type, unchanged TOAST values, identifiers, persistence after a snapshot
 and after a restart, moonlink being down or hung (and re-creating a mirror whose DROP only warned), source DDL and
-TRUNCATE, a clean restart after a mirror's source table was dropped, a clean restart after a large transaction, and a
-crash (`pg_ctl stop -m immediate`). After the crash, the moonlink background worker must come back without a
+TRUNCATE, a clean restart after a mirror's source table was dropped, sessions that must survive a config reload and
+TimeZone resets after a mirror read, writes to mirrors (which must fail with `cannot modify mirror`), who can read
+mirrors (`duckdb.postgres_role`, the server-file roles, GRANT and REVOKE ALL), a clean restart after a large
+transaction, and a crash (`pg_ctl stop -m immediate`). A statement that crashes a backend (and so restarts every
+Postgres process) fails its check. After the crash, the moonlink background worker must come back without a
 crash loop, `mooncake.list_tables()` must answer, and dropping and re-creating the mirror must give the heap contents.
 It also checks that the duckdb_mooncake that DuckDB loads is built from the submodule commit that the DuckDB
 community extension for DuckDB v1.4.1 uses, with the same moonlink wire protocol.
 
 Requirements: Linux, bash 4 or later, GNU coreutils, procps, and a PostgreSQL install (tested with 17; 18 has not
 been run with this script yet) with pg_duckdb and pg_mooncake installed and the submodules checked out. The script
-checks its tool requirements before it starts. It runs 20 to 35 minutes, creates clusters under `$E2E_DIR` on
+checks its tool requirements before it starts. It runs about 20 minutes, creates clusters under `$E2E_DIR` on
 `$PGPORT`, and stops them when done.
 
 ```bash
@@ -59,11 +62,32 @@ makes a listed check pass, it reports `XPASS(<bugs>)`, and `KNOWN <bug> FIXED` m
 passed: remove its lines in the same change. For a bug whose description starts with `Intermittent:`, a run in which
 every listed check passed reports `NOT-SEEN` instead of `FIXED`: passing runs don't show that an intermittent bug is
 gone, so its entry stays until its fix is in. A known-bugs file that is missing, empty or has no `bug` entries is a
-setup error (exit 2), and so is a bug declared twice; a release with no known bugs sets `EMPTY_KNOWN_BUGS_OK=1`.
+setup error (exit 2), and so is a bug declared twice or a name outside `[A-Za-z0-9_.-]`. `EMPTY_KNOWN_BUGS_OK=1`
+allows an existing file without entries, for a release with no known bugs; a missing file is always an error.
 
 After unsupported source DDL (`ddl`, `ddl_drop`), a mirror passes if it equals the source, or if its scans fail with
 one ERROR line that names the mirror, says `schema changes are not supported` and gives the `drop and re-create`
 remedy. Any other error, or a mirror that silently differs, fails.
+
+Every scenario ends by stopping its cluster (`pg_ctl stop -m fast`) and then checking the whole server log:
+`no_moonlink_panics`, `bgworker_no_abnormal_exits`, `no_postgres_crash_restarts` and
+`no_worker_errors_during_final_stop`. A clean stop SIGTERMs the moonlink background worker, which may exit with code
+1 so that Postgres restarts it when it is killed at other times. So each clean stop (and the SIGTERM test in
+`moonlink_down`) excuses one `exited with exit code 1` in its part of the log, but only from a worker that logged no
+ERROR or FATAL. The one exception is the FATAL Postgres itself logs when it stops a background worker at shutdown
+(`terminating background worker ... due to administrator command`), which never counts. Other exit codes, signal
+deaths, and the exits of an immediate stop (`-m immediate` sends SIGQUIT) always count.
+`no_worker_errors_during_final_stop` covers only the final stop: it fails if the worker logs an ERROR or FATAL while it
+shuts down. Errors before that are checked where they happen (for example `no_worker_errors_after_<restart|crash>`).
+A clean stop that doesn't finish within 30 s fails, and names the processes still running and the panics during it.
+
+Session checks (`config_reload`, `mirror_writes`, `roles`) run one psql session per case. A backend crash, seen in the
+server log or as a lost connection, fails the case and names the signal, the statement and the assertion. The
+`config_reload` cases must read the mirror first (pg_duckdb's hook only runs once DuckDB is initialised) and then run
+without any error; the reload case also requires `received SIGHUP` in the server log. In `mirror_writes`, the contract
+a fix must meet for the multiple-assignment `UPDATE` and `INSERT ... ON CONFLICT DO UPDATE` is an ordinary
+`ERROR: cannot modify mirror ...` and no crash. No code emits that message yet; today plain writes fail with
+pg_duckdb's "not implemented" errors, which the plain-write controls accept as long as there is no crash.
 
 ### Release policy: blocking and limitation
 
@@ -78,7 +102,7 @@ Every known bug is declared once with a class, `bug <name> class=blocking|class=
 
 The gate is:
 
-- `FAIL` if any check is FAIL, SKIP or XFAIL of a blocking bug;
+- `FAIL` if any check is FAIL, SKIP or XFAIL of a blocking bug, or if no check passed;
 - otherwise `BLOCKED` while the file lists any `class=blocking` bug, even one the run didn't hit (for example an
   intermittent one that reports `NOT-SEEN` or `UNKNOWN`); the `BLOCKING` line names them;
 - otherwise `INCOMPLETE` if not every scenario ran;

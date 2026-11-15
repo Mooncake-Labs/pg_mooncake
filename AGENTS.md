@@ -179,9 +179,14 @@ Product behavior (fix with a test; don't paper over it):
 - Calls other than `DropTable` have no timeout: a hung moonlink blocks them until it answers.
 - Identifiers containing `.` are rejected (moonlink splits source names on `.`).
 
-End-to-end checks (`scripts/e2e-smoke.sh`, see TESTING.md): one `RESULT <scenario>.<check> PASS|FAIL|XFAIL(<bug>)|XPASS(<bug>)|SKIP`
-line per check, then `SUMMARY` and `GATE` lines. Expected failures are listed in `scripts/e2e-known-bugs.txt`, so read
-results from that file rather than from hand-kept counts. `XPASS` means a known bug no longer reproduces: remove its line.
+End-to-end checks (`scripts/e2e-smoke.sh`, see TESTING.md): one
+`RESULT <scenario>.<check> PASS|FAIL|XFAIL(<bugs>)|XFAIL(limitation:<bugs>)|XPASS(<bugs>)|SKIP` line per check, then
+`SUMMARY`, a `BLOCKING` line naming the listed blocking bugs, and `GATE e2e-smoke PASS|FAIL|BLOCKED|INCOMPLETE`.
+Expected failures are listed in `scripts/e2e-known-bugs.txt`, each as `class=blocking` (must be fixed for a release;
+while one is listed the gate reports `BLOCKED` at best) or `class=limitation` (documented; its XFAILs don't fail the
+gate). Read results from that file rather than from hand-kept counts. `XPASS` means a known bug no longer reproduces:
+remove its lines, except for a bug whose description starts with `Intermittent:`, where XPASS (`KNOWN ... NOT-SEEN`)
+only means this run didn't hit it; keep that entry until its fix is in.
 
 ## 8. Conventions
 

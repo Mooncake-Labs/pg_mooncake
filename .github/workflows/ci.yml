@@ -69,7 +69,7 @@ jobs:
           echo "$CROARING_SHA256  croaring.tar.gz" | sha256sum -c -
           tar xzf croaring.tar.gz
           cmake -S "CRoaring-$CROARING_VERSION" -B croaring-build -G Ninja -DCMAKE_BUILD_TYPE=Release \
-            -DENABLE_ROARING_TESTS=OFF -DROARING_BUILD_STATIC=ON -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/croaring"
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DENABLE_ROARING_TESTS=OFF -DROARING_BUILD_STATIC=ON -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/croaring"
           cmake --build croaring-build --target install
 
       - name: Build duckdb_mooncake

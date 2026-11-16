@@ -3,6 +3,7 @@ mod bgworker;
 mod drop_tracking;
 mod duckdb_mooncake;
 mod functions;
+mod mirror_writes;
 mod table;
 mod utils;
 
@@ -17,4 +18,5 @@ extern "C-unwind" fn _PG_init() {
     bgworker::init();
     table::init();
     drop_tracking::init();
+    mirror_writes::init();
 }

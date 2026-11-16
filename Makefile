@@ -22,8 +22,12 @@ help:
 clean:
 	@cargo clean
 
+# DuckDB version duckdb_mooncake is built for; it must equal pg_duckdb's (DUCKDB_VERSION in pg_duckdb/Makefile), which
+# CI checks.
+DUCKDB_VERSION := v1.4.1
+
 duckdb_mooncake:
-	@$(MAKE) -C duckdb_mooncake GEN=ninja OVERRIDE_GIT_DESCRIBE=v1.4.1
+	@$(MAKE) -C duckdb_mooncake GEN=ninja OVERRIDE_GIT_DESCRIBE=$(DUCKDB_VERSION)
 
 format:
 	@cargo fmt
@@ -41,5 +45,13 @@ pg_duckdb:
 run: pg_duckdb
 	@cargo pgrx run
 
+# cargo-pgrx 0.16 exits 0 when tests fail (it only fails in its auto-accept mode), and pg_regress leaves
+# regression.diffs behind only when a test failed.
 test:
+	@rm -f tests/pg_regress/regression.diffs
 	@cargo pgrx regress --resetdb
+	@if [ -e tests/pg_regress/regression.diffs ]; then \
+		cat tests/pg_regress/regression.diffs; \
+		echo "make test: pg_regress tests failed (see tests/pg_regress/regression.diffs)" >&2; \
+		exit 1; \
+	fi

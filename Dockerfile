@@ -21,6 +21,8 @@ WORKDIR pg_mooncake
 COPY Cargo.toml Makefile pg_mooncake.control .
 COPY moonlink moonlink
 COPY src src
+# Extension upgrade scripts (pg_mooncake--<from>--<to>.sql); cargo pgrx package copies them from sql/.
+COPY sql sql
 
 RUN make package
 

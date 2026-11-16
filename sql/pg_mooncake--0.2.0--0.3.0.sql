@@ -3,7 +3,6 @@
 -- mooncake.load_files was removed. 0.2.0 builds from before it was added don't have it.
 DROP PROCEDURE IF EXISTS mooncake.load_files(text, text[]);
 
--- RC: the comment below is true only with the moonlink submodule bump; re-check it against the final moonlink.
 -- Mirrors created by 0.2.0 relied on moonlink's write-ahead log, which 0.3.0 no longer has, so they can be missing
 -- changes after the upgrade. Point at the ones that still need to be re-created.
 DO $$

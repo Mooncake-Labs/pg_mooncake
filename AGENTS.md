@@ -194,8 +194,6 @@ and set `duckdb.allow_unsigned_extensions = true` and `duckdb.autoinstall_known_
 
 `scripts/e2e-known-bugs.txt` is the complete list, with a failure signature per check; keep it current rather than this
 summary. Product behavior (fix with a test; don't paper over it):
-- A `numeric` value wider than 96 bits (for example 38 digits in `numeric(38,10)`) panics moonlink's statistics in the
-  first snapshot and errors that mirror; re-creating it hits the same value again.
 - `char(n)` comes back without its trailing padding (no error).
 - Composite and domain-over-composite columns come back as DuckDB STRUCT text (`{'f1': 1, 'f2': foo}`, not `(1,foo)`);
   field access (`(c).f1`) works, comparing the whole value with a row literal fails in DuckDB.

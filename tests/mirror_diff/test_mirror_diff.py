@@ -105,6 +105,17 @@ class Comparator(unittest.TestCase):
         self.assertNotEqual(c('{"a": 1, "a": 2}'), c('{"a": 2}'))
         self.assertEqual(c('{"a": 1, "a": 2}'), c('{"a":1,"a":2}'))
 
+    def test_struct_text_is_converted_and_compared(self):
+        c = compare.struct_to_row
+        self.assertEqual(c("{'f1': 1, 'f2': foo}"), "(1,foo)")
+        self.assertEqual(c("{'r': 11.0, 'i': NULL}"), "(11,)")
+        self.assertEqual(c('{"{\'if1\': NULL, \'if2\': [foo, bar]}"}'), '{"(,\\"{foo,bar}\\")"}')
+        self.assertIsNone(c("{'f1': 1, 'f2'"))
+        same = compare.divergence_events([("c", "comptype")], [["(1,foo)"]], [["{'f1': 1, 'f2': foo}"]])
+        self.assertEqual([e["kind"] for e in same], ["struct-text"])
+        wrong = compare.divergence_events([("c", "comptype")], [["(1,foo)"]], [["{'f1': 2, 'f2': foo}"]])
+        self.assertEqual([e["kind"] for e in wrong], ["value"])
+
     def test_divergence_events(self):
         ev = compare.divergence_events([("id", "integer"), ("c", "character(3)")],
                                        [["1", "ab "], ["2", "x  "]], [["1", "ab"], ["2", "x  "]])
@@ -417,6 +428,14 @@ class FalsePassScenarios(unittest.TestCase):
         quiet(h.begin, "run-f")
         quiet(h.end, "run", "f")
         self.assertEqual(statuses(h).get("panic.run.f"), "FAIL")
+
+    def test_composite_value_diff_is_not_the_struct_limitation(self):
+        h = stub_harness()
+        for heap, mirror in (("(1,foo)", "{'f1': 1, 'f2': foo}"), ("(1,foo)", "{'f1': 9, 'f2': foo}")):
+            ev = compare.divergence_events([("c1", "comptype")], [[heap]], [[mirror]])
+            quiet(h.rep.result, f"cdc.arrays.t{mirror[7]}", "FAIL", "x",
+                  events=[{"text": f"dml: {e['detail']} :: INSERT INTO t VALUES (1)"} for e in ev])
+        self.assertEqual(statuses(h), {"cdc.arrays.t1": "XFAIL_LIMITATION", "cdc.arrays.t9": "FAIL"})
 
     def test_data_type_rules_pinned_to_their_event(self):
         h = stub_harness()

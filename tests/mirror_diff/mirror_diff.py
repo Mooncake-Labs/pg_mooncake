@@ -676,10 +676,12 @@ class FileRun:
             self.rep.result(f"stmt.{self.name}.{m.group(2)}", "PASS" if good else "FAIL",
                             "" if good else f"{r.outcome()}: {r.message[:200]} :: {one_line(text, 160)}")
         if r.died and len(self.srv.backend_crashes()) > crashes:
-            self.h.crashes_seen = len(self.srv.backend_crashes())
-            line, trap = self.srv.backend_crashes()[-1]
+            # Every crash since the last one reported, not only this statement's.
+            new = self.srv.backend_crashes()[self.h.crashes_seen:]
+            self.h.crashes_seen += len(new)
             self.rep.result(f"backend.{self.name}.L{self.unit_line}", "FAIL",
-                            f"Postgres backend crashed (server crash recovery): {trap or line} during: {one_line(text, 160)}")
+                            "Postgres backend crashed (server crash recovery): "
+                            + " | ".join(trap or line for line, trap in new) + f" during: {one_line(text, 160)}")
         if r.died:
             self.rep.stat("session.restarted")
             self.new_session()
@@ -953,32 +955,7 @@ class FileRun:
             self.rep.stat(f"query.pass_{how}")
             self.queries.append(q)
             return
-        if how == "limit-unverifiable":
-            # Any rows of the unlimited result are a correct answer: check the mirror's are.
-            full_sql = compare.strip_top_level_limit(unit.sql)
-            full = self.run(full_sql + ";") if full_sql and not in_txn else None
-            if full is not None and full.ok and compare.rows_subset(mir.rows, full.rows, types):
-                q.update(status="PASS", how="limit-subset")
-                self.rep.stat("query.pass_limit-subset")
-            elif full is not None and full.ok:
-                # Classify like any other difference, with "is a subset of the unlimited result"
-                # standing in for "equals the heap result".
-                duck = self.shadow(unit, mirror=False, in_txn=in_txn)
-                duck_ran = self.ran_in_duckdb(unit, in_txn)
-                if duck_ran and duck.ok and compare.rows_subset(duck.rows, full.rows, types):
-                    q.update(status="FAIL", verdict="mooncake",
-                             reason="mirror rows are not in the heap's result without LIMIT; DuckDB on the heap tables' are")
-                elif duck_ran and duck.ok and mir.ok and compare.rows_match(duck.rows, mir.rows, types)[0]:
-                    q.update(status="ENGINE", verdict="engine",
-                             reason="DuckDB semantics (DuckDB on the heap tables gives the mirror's rows, outside the heap's result)")
-                else:
-                    q.update(status="FAIL", verdict="unclassified",
-                             reason="mirror rows are not in the heap's result without LIMIT")
-                q.update(sample=diff_sample(heap, mir), duck=duck.outcome() if duck_ran else "not-run-by-duckdb")
-            else:
-                q.update(status="SKIP", reason="LIMIT without a deterministic order picked different rows",
-                         sample=diff_sample(heap, mir))
-                self.rep.stat("query.limit_unverifiable")
+        if how == "limit-unverifiable" and self.limit_check(unit, q, heap, mir, types, in_txn):
             self.queries.append(q)
             return
         duck = self.shadow(unit, mirror=False, in_txn=in_txn)
@@ -991,6 +968,42 @@ class FileRun:
                  heap_error=heap.message[:300], mirror_error=mir.message[:300], duck_error=duck.message[:300],
                  duck_vs_mirror=match(duck, mir)[1], duck_vs_heap=match(duck, heap)[1])
         self.queries.append(q)
+
+    def limit_check(self, unit, q, heap, mir, types, in_txn):
+        """Rows a LIMIT may legitimately pick differently: any rows of the unlimited heap result
+        (with the same sort keys where they differ) are a correct answer, so the mirror's must
+        be in it. Returns False when the unlimited result can't be read; the caller classifies
+        the difference as usual then."""
+        full_sql = compare.strip_top_level_limit(unit.sql)
+        if not full_sql:
+            return False
+        if in_txn:
+            self.s.run("SAVEPOINT md_full;")
+        full = self.run(full_sql + ";")
+        if in_txn and self.s.alive():
+            self.s.run("ROLLBACK TO SAVEPOINT md_full;\nRELEASE SAVEPOINT md_full;")
+        if not full.ok:
+            q["full_error"] = f"{full.outcome()} {full.message[:200]}"
+            return False
+        if mir.ok and compare.rows_subset(mir.rows, full.rows, types):
+            q.update(status="PASS", how="limit-subset")
+            self.rep.stat("query.pass_limit-subset")
+            return True
+        # Classify like any other difference, with "is in the unlimited result" standing in for
+        # "equals the heap result".
+        duck = self.shadow(unit, mirror=False, in_txn=in_txn)
+        duck_ran = self.ran_in_duckdb(unit, in_txn)
+        if duck_ran and duck.ok and compare.rows_subset(duck.rows, full.rows, types):
+            q.update(status="FAIL", verdict="mooncake",
+                     reason="mirror rows are not in the heap's result without LIMIT; DuckDB on the heap tables' are")
+        elif duck_ran and duck.ok and mir.ok and compare.rows_match(duck.rows, mir.rows, types)[0]:
+            q.update(status="ENGINE", verdict="engine",
+                     reason="DuckDB semantics (DuckDB on the heap tables gives the mirror's rows, outside the heap's result)")
+        else:
+            q.update(status="FAIL", verdict="unclassified", reason="mirror rows are not in the heap's result without LIMIT")
+        q.update(sample=diff_sample(heap, mir), heap=heap.outcome(), mirror=mir.outcome(),
+                 duck=duck.outcome() if duck_ran else "not-run-by-duckdb")
+        return True
 
     def ran_in_duckdb(self, unit, in_txn):
         """duckdb.force_execution silently falls back to Postgres for queries DuckDB cannot plan."""
@@ -1491,9 +1504,10 @@ class Harness:
         r = run.q(f"CALL mooncake.create_table({qlit(dst)}, {qlit('public.' + src_name)});", timeout=self.args.ddl_timeout)
         if self.srv.panics() > before:
             p = self.srv.panic_lines()
+            sites = ", ".join(sorted({panic_site(ln) for ln in p[self.panics_seen:]}))
             self.panics_seen = len(p)
             run.recover()
-            return "crashed", f"create_table panicked moonlink at {panic_site(p[-1])}"
+            return "crashed", f"create_table panicked moonlink at {sites}"
         if not r.ok:
             if r.outcome() != "error":
                 run.recover()
@@ -1519,9 +1533,9 @@ class Harness:
             first = first or mir
             if self.srv.panics() > before or mir.died:
                 p = self.srv.panic_lines()
+                sites = ", ".join(sorted({panic_site(ln) for ln in p[self.panics_seen:]})) or "none"
                 self.panics_seen = len(p)
                 run.recover()
-                sites = ", ".join(sorted({panic_site(ln) for ln in p[before:]})) or "none"
                 return "crashed", f"mirror scan {mir.outcome()}; moonlink panicked at {sites}: {one_line(mir.message, 160)}"
             if mir.ok and compare.rows_match(heap.rows, mir.rows)[0]:
                 if mir is first:
@@ -1625,10 +1639,10 @@ class Harness:
         if self.srv.panics() > panics_before and overall != "crashed":
             # A panic in the source DML or create_snapshot steps, with a mirror that still matched.
             lines = self.srv.panic_lines()
+            sites = ", ".join(sorted({panic_site(ln) for ln in lines[min(self.panics_seen, panics_before):]}))
             self.panics_seen = len(lines)
             overall = "crashed"
-            steps["probe"] = ("crashed", "moonlink panicked at " +
-                              ", ".join(sorted({panic_site(ln) for ln in lines[panics_before:]})))
+            steps["probe"] = ("crashed", "moonlink panicked at " + sites)
         detail = "; ".join(f"{s}={v}" + (f" ({d})" if d and v != "exact" else "") for s, (v, d) in steps.items())
         if refused:
             reasons = sorted({r for _, r in refused})
@@ -1698,8 +1712,9 @@ class Harness:
         self.srv.setup(label)
         self.dbs = []
         self.template()
-        self.panics_seen = self.srv.panics()
-        self.crashes_seen = len(self.srv.backend_crashes())
+        # A throwaway cluster has a fresh log: everything in it belongs to this unit.
+        self.panics_seen = 0 if self.srv.managed else self.srv.panics()
+        self.crashes_seen = 0 if self.srv.managed else len(self.srv.backend_crashes())
 
     def sweep(self, kind, name):
         """Panics and crash restarts in the unit's server log that no check reported (they happened
@@ -1721,8 +1736,8 @@ class Harness:
 
     def end(self, kind, name):
         """No unreported panic or crash in the unit's log, and moonlink still answers after the
-        file (no crash loop); then tear down."""
-        self.sweep(kind, name)
+        file (no crash loop); then tear down. The log is swept last, so panics logged by the health
+        check or the shutdown are read too."""
         db = self.dbs[-1] if self.dbs else None
         if db is not None:
             why = []
@@ -1736,6 +1751,7 @@ class Harness:
         else:
             for db in list(self.dbs):
                 self.drop_db(db)
+        self.sweep(kind, name)
 
     def checkpoint(self, key):
         """Record a finished unit of work so --resume skips it (results are already in results.jsonl)."""

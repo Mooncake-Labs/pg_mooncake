@@ -4,9 +4,11 @@ database needed): python3 tests/mirror_diff/test_mirror_diff.py"""
 
 import contextlib
 import io
+import json
 import os
 import sys
 import tempfile
+import types
 import unittest
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -26,6 +28,9 @@ class R:
     @property
     def ok(self):
         return not (self.error or self.timed_out or self.died)
+
+    def outcome(self):
+        return "died" if self.died else "timeout" if self.timed_out else "error" if self.error else "ok"
 
 
 def match(a, b):
@@ -56,7 +61,8 @@ class Comparator(unittest.TestCase):
     def test_limit_last_tie_group_lenient_only_when_cut(self):
         a = [["1", "x"], ["2", "y"]]
         b = [["1", "x"], ["2", "w"]]
-        self.assertTrue(compare.rows_match(a, b, None, ["a"], ["a", "b"], limit=2)[0])
+        # The last group of a result LIMIT cut must be checked against the unlimited result.
+        self.assertEqual(compare.rows_match(a, b, None, ["a"], ["a", "b"], limit=2), (False, "limit-unverifiable"))
         self.assertFalse(compare.rows_match(a, b, None, ["a"], ["a", "b"], limit=5)[0])
         self.assertFalse(compare.rows_match(a, b, None, ["a"], ["a", "b"], limit=None)[0])
         self.assertEqual(compare.rows_match(a, b, None, ["a"], ["a", "b"], limit=-1), (False, "limit-unverifiable"))
@@ -245,6 +251,183 @@ class Splitter(unittest.TestCase):
         sqls = [u.sql for u in sqlsplit.split(text)]
         self.assertEqual(sqls[1], "SELECT 'a\\';b';")
         self.assertEqual(sqls[3:], ["SELECT 'c\\';", "SELECT 4;"])
+
+
+# ---- scenarios that passed wrongly at an earlier head; each must now fail the check ----------------
+HERE = os.path.dirname(os.path.abspath(__file__))
+
+
+class Srv:
+    def __init__(self, managed=False):
+        self.lines, self.crashes, self.managed = [], [], managed
+        self.on_health = None
+
+    def panics(self):
+        return len(self.lines)
+
+    def panic_lines(self):
+        return list(self.lines)
+
+    def backend_crashes(self):
+        return list(self.crashes)
+
+    def cancel(self, pid):
+        pass
+
+    def recover(self, db):
+        return True
+
+    def healthy(self, db, why=None):
+        if self.on_health:
+            self.on_health()
+        return True
+
+    def stop(self):
+        pass
+
+    def setup(self, label):
+        pass
+
+
+_REPORTERS = []
+
+
+def tearDownModule():
+    for rep in _REPORTERS:
+        rep.log.close()
+
+
+def stub_harness(managed=False):
+    d = tempfile.mkdtemp()
+    exp = mirror_diff.Expectations(os.path.join(HERE, "expected.txt"))
+    rep = mirror_diff.Reporter(exp, os.path.join(d, "r.jsonl"))
+    _REPORTERS.append(rep)
+    h = object.__new__(mirror_diff.Harness)
+    h.__dict__.update(
+        args=types.SimpleNamespace(converge_secs=0.6, stmt_timeout=5, ddl_timeout=5, file_timeout=999,
+                                   max_rejected_values=40, keep=False),
+        exp=exp, rep=rep, srv=Srv(managed), diverged_cols={}, crash_types={}, good_types=set(), panics_seen=0,
+        crashes_seen=0, last_events=[], dbs=["md_f"], probe_seq=0, last_verdict=None, seen=set())
+    h.dbname = lambda n, suffix="": "md_" + n
+    h.drop_db = lambda db: None
+    h.template = lambda: None
+    return h
+
+
+def statuses(h):
+    h.rep.log.flush()
+    with open(h.rep.log.name) as f:
+        return {json.loads(line)["check"]: json.loads(line)["status"] for line in f}
+
+
+def quiet(fn, *a, **kw):
+    with contextlib.redirect_stdout(io.StringIO()):
+        return fn(*a, **kw)
+
+
+def query_run(sql, heap, mirror, duck, full, names, typs):
+    """Run handle_query on stub sessions: heap/mirror/DuckDB-on-heap results and the heap result of
+    the statement without its LIMIT (None: that query errors)."""
+    h = stub_harness()
+    fr = mirror_diff.FileRun(h, "f")
+    fr.s = types.SimpleNamespace(run=lambda *a, **k: R(), alive=lambda: True, kill=lambda: None)
+    for name in ("t", "onek"):
+        fr.tables[name] = {"cols": [("a", "integer", "b", True, "N", 23)], "mirrored": True, "bad_cols": set(),
+                           "lossy_all": False}
+    fr.txn_state = lambda: (False, False)
+    unlimited = full if full is not None else R(error=True, sqlstate="57014", message="canceling statement")
+    fr.run = lambda text, timeout=None: heap if "LIMIT" in text.upper() else unlimited
+    fr.shadow = lambda unit, mirror=None, in_txn=None, _m=mirror: _m if mirror else duck
+    fr.ran_in_duckdb = lambda unit, in_txn: True
+    fr.describe = lambda unit, in_txn: (names, typs)
+    unit = sqlsplit.split(sql + "\n")[0]
+    quiet(fr.handle_query, unit)
+    quiet(fr.report)
+    return statuses(h)["query.f.L1"]
+
+
+class FalsePassScenarios(unittest.TestCase):
+    def test_unmapped_order_by_limit_is_not_a_subset_pass(self):
+        full = R([[str(i)] for i in range(1, 101)])
+        for sql in ("SELECT b FROM t ORDER BY a LIMIT 3;", "SELECT b FROM t ORDER BY -a LIMIT 3;"):
+            st = query_run(sql, R([["1"], ["2"], ["3"]]), R([["98"], ["99"], ["100"]]), R([["1"], ["2"], ["3"]]),
+                           full, ["b"], ["integer"])
+            self.assertEqual(st, "FAIL", sql)
+
+    def test_last_sort_group_under_limit_is_checked(self):
+        heap = R([["1", "a"], ["2", "b"], ["3", "c"]])
+        st = query_run("SELECT unique1, stringu1 FROM onek ORDER BY unique1 LIMIT 3;", heap,
+                       R([["1", "a"], ["2", "b"], ["3", "ZZ"]]), heap, R(heap.rows + [["4", "d"]]),
+                       ["unique1", "stringu1"], ["integer", "name"])
+        self.assertEqual(st, "FAIL")
+
+    def test_unreadable_unlimited_result_falls_back_to_classify(self):
+        st = query_run("SELECT a FROM t LIMIT 1;", R([["100"]]), R([["7"]]), R([["100"]]), None, ["a"], ["integer"])
+        self.assertEqual(st, "FAIL")
+
+    def test_composite_rejection_is_not_a_limitation(self):
+        h = stub_harness()
+        quiet(h.rep.result, "data.copy.f.t", "FAIL",
+              "rejected: types=[mycomp] column c type=mycomp typtype=c: type with oid 17001 in relation public.t is not supported")
+        quiet(h.rep.result, "cdc.f.t", "FAIL", "x", events=[{"text": "create: create_table rejected: column c type=mycomp "
+              "typtype=c: type with oid 17001 in relation public.t is not supported :: CREATE TABLE t (c mycomp);"}])
+        quiet(h.rep.result, "data.type.f.mycomp_array", "FAIL", "x", events=[{"text": "rejected: type=mycomp[] typtype=b "
+              "2 values (f); copy=rejected (column v type=mycomp[] typtype=b: type with oid 17002 in relation public.md_ps1 is not supported)"}])
+        quiet(h.rep.result, "data.copy.f.u", "FAIL", "rejected: types=[mycomp] type with oid 17001 in relation public.u is not supported")
+        self.assertEqual(set(statuses(h).values()), {"FAIL"})
+
+    def test_new_panic_site_not_hidden_by_a_listed_one(self):
+        h = stub_harness()
+        run = types.SimpleNamespace(recover=lambda: None)
+
+        def q(sql, timeout=None):
+            if "create_table" in sql:
+                h.srv.lines += ["thread 'x' panicked at moonlink/src/moonlink/src/new_site.rs:1:1:",
+                                "thread 'x' panicked at moonlink/src/moonlink/src/row/arrow_converter.rs:108:13:"]
+            return R()
+        run.q = q
+        verdict, detail = h.mirror_and_compare(run, "public.t", "t", "md.t", "a",
+                                               [("a", "integer[]", "b", True, "A", 1007)])
+        quiet(h.rep.result, "data.copy.arrays.t", "FAIL", f"{verdict}: types=[integer[]] {detail}")
+        self.assertEqual(statuses(h)["data.copy.arrays.t"], "FAIL")
+
+    def test_earlier_crash_not_hidden_by_a_listed_one(self):
+        h = stub_harness()
+        fr = mirror_diff.FileRun(h, "timestamptz")
+        listed = ('LOG:  server process (PID 2) was terminated by signal 6: Aborted',
+                  'TRAP: failed Assert("IsTransactionState()"), File: "relcache.c", Line: 2052, PID: 2')
+
+        def died(text, timeout=None, on_timeout=None):
+            h.srv.crashes += [("LOG:  server process (PID 1) was terminated by signal 11: Segmentation fault", ""), listed]
+            return R(died=True)
+        fr.s = types.SimpleNamespace(run=died, alive=lambda: True, kill=lambda: None)
+        fr.new_session = lambda: None
+        quiet(fr.run, "COMMIT;")
+        self.assertEqual(statuses(h)["backend.timestamptz.L0"], "FAIL")
+
+    def test_panic_during_health_check_or_shutdown_is_swept(self):
+        h = stub_harness()
+        h.srv.on_health = lambda: h.srv.lines.append("thread 'x' panicked at moonlink/src/moonlink/src/late.rs:1:1:")
+        quiet(h.end, "run", "f")
+        self.assertEqual(statuses(h).get("panic.run.f"), "FAIL")
+
+    def test_fresh_log_baseline_is_zero(self):
+        h = stub_harness(managed=True)
+        h.srv.lines.append("thread 'x' panicked at moonlink/src/moonlink/src/fixture_time.rs:1:1:")
+        quiet(h.begin, "run-f")
+        quiet(h.end, "run", "f")
+        self.assertEqual(statuses(h).get("panic.run.f"), "FAIL")
+
+    def test_data_type_rules_pinned_to_their_event(self):
+        h = stub_harness()
+        other = "cdc_delete=errored (mirror scan error: boom)"
+        for check, base in (("data.type.jsonb", "equivalent: type=jsonb typtype=b 5 values (jsonb)"),
+                            ("data.type.character_4", "lossy: type=character(4) typtype=b 4 values (char)"),
+                            ("data.type.integer_array", "crashed: type=integer[] typtype=b 3 values (arrays)")):
+            quiet(h.rep.result, check, "FAIL", "x", events=[{"text": f"{base}; {other}"}])
+        quiet(h.rep.result, "data.type.smallint_array", "FAIL", "x", events=[{"text": "crashed: type=smallint[] typtype=b "
+              "3 values (arrays); copy=crashed (create_table panicked moonlink at moonlink/src/moonlink/src/new_site.rs:1:1)"}])
+        self.assertEqual(set(statuses(h).values()), {"FAIL"})
 
 
 if __name__ == "__main__":

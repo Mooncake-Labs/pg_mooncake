@@ -209,8 +209,9 @@ def _multiset(rows):
 def rows_match(a_rows, b_rows, types=None, order_items=None, names=None, limit=None):
     """(equal, how). how: exact | float | multiset | ties | order-unverified | order | rows |
     limit-unverifiable. limit is as returned by top_level_order_by. limit-unverifiable means the
-    rows differ where a LIMIT may legitimately pick different rows: the caller can't call it
-    either way."""
+    rows differ only where a LIMIT may legitimately pick different rows (no ORDER BY at all, or
+    the last group of equal sort keys of a result the LIMIT cut): the caller must check the rows
+    against the unlimited result."""
     ra, rb = [tuple(r) for r in a_rows], [tuple(r) for r in b_rows]
     if ra == rb:
         return True, "exact"
@@ -223,8 +224,9 @@ def rows_match(a_rows, b_rows, types=None, order_items=None, names=None, limit=N
         if _multiset(ca) == _multiset(cb):
             # ORDER BY whose leading item isn't an output column: only the multiset is checked.
             return True, via or ("order-unverified" if order_items else "multiset")
-        # Without a usable sort key, LIMIT may keep any subset of that size.
-        return False, "limit-unverifiable" if limit is not None else "rows"
+        # Without ORDER BY, LIMIT may keep any subset of that size. An ORDER BY that can't be
+        # mapped to output columns still fixes which rows LIMIT keeps: a plain difference.
+        return False, "limit-unverifiable" if limit is not None and order_items is None else "rows"
     if ca == cb:
         return True, via or "exact"
     # Rows must come in the same ORDER BY key sequence; rows with equal keys may be permuted.
@@ -240,11 +242,11 @@ def rows_match(a_rows, b_rows, types=None, order_items=None, names=None, limit=N
         if _multiset(ca[i:j]) != _multiset(cb[i:j]):
             if j < len(ca) or limit is None:
                 return False, "rows"
-            # The last group of equal keys may be cut by LIMIT, but only if LIMIT cut the result.
-            if limit == -1:
+            # The last group of equal keys may be cut by LIMIT, but only if LIMIT cut the result;
+            # its rows must then come from the unlimited result.
+            if limit == -1 or len(ca) == limit:
                 return False, "limit-unverifiable"
-            if len(ca) != limit:
-                return False, "rows"
+            return False, "rows"
         i = j
     return True, "ties"
 

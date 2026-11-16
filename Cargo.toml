@@ -1,7 +1,9 @@
 [package]
 name = "pg_mooncake"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
+# Keep in sync with rust-toolchain.toml; .cargo/config.toml makes Cargo resolve dependencies that build with it.
+rust-version = "1.88"
 
 [lib]
 crate-type = ["cdylib", "lib"]
@@ -25,7 +27,8 @@ libc = "0.2"
 moonlink_rpc.path = "moonlink/src/moonlink_rpc"
 moonlink_service = { path = "moonlink/src/moonlink_service", optional = true }
 native-tls = "0.2"
-pgrx = "0.16.1"
+# Exact: cargo-pgrx (installed at this version by CI and the README) must match the pgrx crate.
+pgrx = "=0.16.1"
 postgres.git = "https://github.com/Mooncake-Labs/rust-postgres.git"
 postgres-native-tls.git = "https://github.com/Mooncake-Labs/rust-postgres.git"
 tokio = "1.48"

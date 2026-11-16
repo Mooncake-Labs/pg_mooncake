@@ -1,0 +1,233 @@
+name: CI
+
+on:
+  push:
+    branches: [main, v0.3-dev]
+    tags: ["v*"]
+  pull_request:
+    branches: [main, v0.3-dev]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
+env:
+  CARGO_TERM_COLOR: always
+  # Keeps file:line in panic backtraces at a fraction of the size of full debug info.
+  CARGO_PROFILE_DEV_DEBUG: line-tables-only
+  CROARING_VERSION: 4.3.11
+  CROARING_SHA256: acd3a17e6c95acf3154d60c38c90e927e6c531805bc740a040fa111819af380e
+
+jobs:
+  # Release notes carry markers for statements that must be checked or filled in at release time (TESTING.md).
+  release-markers:
+    name: No release markers left
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - run: scripts/check-release-markers.sh
+
+  fmt:
+    name: cargo fmt
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      # cargo fmt reads the moonlink path dependencies' manifests.
+      - name: Check out moonlink
+        run: git submodule update --init --depth 1 moonlink
+      - name: Install the Rust toolchain from rust-toolchain.toml
+        run: rustup toolchain install
+      - run: cargo fmt --check
+
+  duckdb_mooncake:
+    name: Build duckdb_mooncake
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Read the submodule commit
+        id: pin
+        run: echo "commit=$(git rev-parse HEAD:duckdb_mooncake)" >> "$GITHUB_OUTPUT"
+
+      # The extension only changes with the submodule commit, so a hit skips the whole build.
+      - uses: actions/cache@55cc8345863c7cc4c66a329aec7e433d2d1c52a9 # v6.1.0
+        id: cache
+        with:
+          path: dist/mooncake.duckdb_extension
+          key: duckdb_mooncake-${{ runner.os }}-${{ steps.pin.outputs.commit }}-croaring${{ env.CROARING_VERSION }}-${{ hashFiles('rust-toolchain.toml') }}
+
+      - name: Check out duckdb_mooncake
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: git submodule update --init --recursive --depth 1 duckdb_mooncake
+
+      - name: Install build dependencies
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          sudo apt-get update -q
+          sudo apt-get install -y -q build-essential cmake ninja-build pkg-config libssl-dev libcurl4-openssl-dev
+          rustup toolchain install
+
+      - uses: hendrikmuhs/ccache-action@dbeefd73e8e2ffc1bbc412570072735eb4db3607 # v1.2.25
+        if: steps.cache.outputs.cache-hit != 'true'
+        with:
+          key: duckdb_mooncake
+          max-size: 2G
+          create-symlink: true
+
+      # duckdb_mooncake needs CRoaring >= 1.x; Ubuntu 24.04's libroaring-dev (0.2.66) is too old.
+      - name: Build CRoaring
+        if: steps.cache.outputs.cache-hit != 'true'
+        run: |
+          cd "$RUNNER_TEMP"
+          curl -fsSL -o croaring.tar.gz "https://github.com/RoaringBitmap/CRoaring/archive/refs/tags/v$CROARING_VERSION.tar.gz"
+          echo "$CROARING_SHA256  croaring.tar.gz" | sha256sum -c -
+          tar xzf croaring.tar.gz
+          cmake -S "CRoaring-$CROARING_VERSION" -B croaring-build -G Ninja -DCMAKE_BUILD_TYPE=Release \
+            -DCMAKE_POSITION_INDEPENDENT_CODE=ON -DENABLE_ROARING_TESTS=OFF -DROARING_BUILD_STATIC=ON -DCMAKE_INSTALL_PREFIX="$RUNNER_TEMP/croaring"
+          cmake --build croaring-build --target install
+
+      - name: Build duckdb_mooncake
+        if: steps.cache.outputs.cache-hit != 'true'
+        env:
+          CMAKE_PREFIX_PATH: ${{ runner.temp }}/croaring
+        run: |
+          make duckdb_mooncake
+          mkdir -p dist
+          cp duckdb_mooncake/build/release/extension/mooncake/mooncake.duckdb_extension dist/
+
+      # DuckDB loads an extension only into the DuckDB version recorded in its metadata footer.
+      - name: Check the extension's DuckDB version
+        run: |
+          version=$(sed -n 's/^DUCKDB_VERSION := //p' Makefile)
+          tail -c 512 dist/mooncake.duckdb_extension | tr -d '\0' | grep -q -F "$version" ||
+            { echo "dist/mooncake.duckdb_extension was not built for DuckDB $version" >&2; exit 1; }
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: duckdb_mooncake
+          path: dist/mooncake.duckdb_extension
+          if-no-files-found: error
+          retention-days: 7
+
+  test:
+    name: make test (PostgreSQL ${{ matrix.pg }})
+    needs: duckdb_mooncake
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: [14, 15, 16, 17, 18]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      - name: Check out moonlink and pg_duckdb
+        run: git submodule update --init --recursive --depth 1 moonlink pg_duckdb
+
+      - uses: ./.github/actions/setup
+        with:
+          pg: ${{ matrix.pg }}
+
+      - name: make test
+        run: make test "PG_VERSION=pg${{ matrix.pg }}"
+
+      - name: cargo clippy
+        if: matrix.pg == 18 && !cancelled()
+        run: cargo clippy --no-default-features --features "bgworker pg${{ matrix.pg }}" -- -D warnings
+
+      - name: Show regression diffs and the server log
+        if: failure()
+        run: |
+          cat tests/pg_regress/regression.diffs || true
+          tail -n 300 "$HOME/.pgrx/${{ matrix.pg }}.log" || true
+
+  # Longer end-to-end gate (moonlink down/hung, restarts, crash, DDL; about 35 minutes per major). It reports known
+  # bugs (scripts/e2e-known-bugs.txt) as XFAIL, which makes the script's own GATE fail until they are fixed, so this
+  # job fails on unexpected failures (FAIL), on more skipped checks than the current baseline, or if nothing passed.
+  e2e:
+    name: e2e-smoke (PostgreSQL ${{ matrix.pg }})
+    if: github.event_name != 'pull_request'
+    needs: duckdb_mooncake
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    env:
+      # Checks the gate skips on a CI runner today; raise it only with a reason in the commit message.
+      E2E_MAX_SKIP: 6
+    strategy:
+      fail-fast: false
+      matrix:
+        pg: [17, 18]
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+
+      # duckdb_mooncake is checked out for the build-provenance checks only.
+      - name: Check out submodules
+        run: |
+          git submodule update --init --recursive --depth 1 moonlink pg_duckdb
+          git submodule update --init --depth 1 duckdb_mooncake
+
+      - uses: ./.github/actions/setup
+        with:
+          pg: ${{ matrix.pg }}
+
+      - name: Install pg_mooncake (release build)
+        run: make install "PG_VERSION=pg${{ matrix.pg }}"
+
+      # The gate's build checks require a record of which duckdb_mooncake checkout built the extension; the
+      # duckdb_mooncake job built it from this same submodule commit.
+      - name: Record duckdb_mooncake provenance
+        run: scripts/e2e-build-info.sh "$DUCKDB_EXTENSION_DIR/$DUCKDB_VERSION/linux_amd64/mooncake.duckdb_extension"
+
+      - name: Run scripts/e2e-smoke.sh
+        env:
+          PG: ${{ matrix.pg }}
+        run: |
+          set +eo pipefail
+          log=$RUNNER_TEMP/e2e-smoke.log
+          PG_PREFIX="/usr/lib/postgresql/$PG" E2E_DIR="$RUNNER_TEMP/e2e" BUILD_SRC="$GITHUB_WORKSPACE" \
+            scripts/e2e-smoke.sh "$PG" | tee "$log"
+          rc=${PIPESTATUS[0]}
+          summary=$(grep '^SUMMARY ' "$log")
+          {
+            echo '```'
+            echo "${summary:-no SUMMARY line; e2e-smoke.sh exited with $rc}"
+            grep -E '^(RESULT [^ ]+ (FAIL|XPASS)|KNOWN [^ ]+ FIXED|GATE )' "$log"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+          # Exit 2 is a usage or setup error. Known bugs, including blocking ones (GATE BLOCKED), are reported in the
+          # summary only.
+          count() { sed -n "s/.* $1=\([0-9]*\).*/\1/p" <<< "$summary"; }
+          if [[ $rc == 2 || -z $summary ]]; then
+            echo "e2e-smoke.sh did not run to a summary (exit $rc)" >&2; exit 1
+          fi
+          if (( $(count fail) > 0 )); then echo "unexpected failures: fail=$(count fail)" >&2; exit 1; fi
+          if (( $(count skip) > E2E_MAX_SKIP )); then
+            echo "skip=$(count skip) is above the baseline E2E_MAX_SKIP=$E2E_MAX_SKIP" >&2; exit 1
+          fi
+          if (( $(count pass) + $(count xpass) == 0 )); then echo "no check passed" >&2; exit 1; fi
+
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        if: always()
+        with:
+          name: e2e-smoke-pg${{ matrix.pg }}
+          path: |
+            ${{ runner.temp }}/e2e-smoke.log
+            ${{ runner.temp }}/e2e/out-*
+          if-no-files-found: ignore
+          retention-days: 14

@@ -1,5 +1,5 @@
-# Known failures of scripts/e2e-smoke.sh on this branch with its submodules (moonlink 0.3.0 RC1,
-# 46148c1b; pg_duckdb v1.0.0-mooncake 12b6de7).
+# Known failures of scripts/e2e-smoke.sh on this branch with its submodules (moonlink 0.3.0 RC2,
+# 2b397b78; pg_duckdb v1.0.0-mooncake 12b6de7).
 #
 #   bug <name> class=blocking|class=limitation <description>
 #   check <scenario.check> <bug> <regex>
@@ -41,18 +41,11 @@
 
 # ---- types --------------------------------------------------------------------------------------
 bug numeric-fraction-over-10-digits class=limitation An unconstrained numeric value with more than 10 fractional digits (mirrors store unconstrained numeric as decimal(38, 10)) errors that mirror, which must then be dropped and re-created
-bug decimal-stats-overflow-panic class=blocking Persisting a numeric value beyond 96 bits (e.g. numeric(38,10) with 29 or more digits) panics in the Iceberg statistics code and errors that mirror
 
 check schema.type.numeric numeric-fraction-over-10-digits ^mirror query failed \(rc=1\): ERROR: +\(PGDuckDB/(Duckdb_ExecCustomScan_Cpp|CreatePlan)\) (Prepared query returned an error: )?Error: mirror postgres\.public\.ty_[0-9]+_mc is out of sync: a change from the source table could not be applied: column c \(numeric\): cannot convert '[-0-9.]+': it has more than 10 fractional digits \(stored as decimal\(38, 10\)\); drop and re-create it
 check persist.type.numeric numeric-fraction-over-10-digits ^rc=1, panics during it: none: ERROR: +mooncake\.create_snapshot failed: mirror postgres\.public\.ty_[0-9]+_mc is out of sync: a change from the source table could not be applied: column c \(numeric\): cannot convert '[-0-9.]+': it has more than 10 fractional digits \(stored as decimal\(38, 10\)\); drop and re-create it
 check persist.type.numeric.after_snapshot numeric-fraction-over-10-digits ^mirror query failed \(rc=1\): ERROR: +\(PGDuckDB/(Duckdb_ExecCustomScan_Cpp|CreatePlan)\) (Prepared query returned an error: )?Error: mirror postgres\.public\.ty_[0-9]+_mc is out of sync: a change from the source table could not be applied: column c \(numeric\): cannot convert '[-0-9.]+': it has more than 10 fractional digits \(stored as decimal\(38, 10\)\); drop and re-create it
 check persist.type.numeric.after_restart numeric-fraction-over-10-digits ^mirror query failed \(rc=1\): ERROR: +\(PGDuckDB/(Duckdb_ExecCustomScan_Cpp|CreatePlan)\) (Prepared query returned an error: )?Error: mirror postgres\.public\.ty_[0-9]+_mc is out of sync: a change from the source table could not be applied: column c \(numeric\): cannot convert '[-0-9.]+': it has more than 10 fractional digits \(stored as decimal\(38, 10\)\); drop and re-create it
-check persist.type.numeric_38_10 decimal-stats-overflow-panic ^rc=1, panics during it: rust_decimal-1\.43\.0/src/decimal\.rs:2047 x1: ERROR: +mooncake\.create_snapshot failed: mirror postgres\.public\.ty_[0-9]+_mc is out of sync: internal error in iceberg persistence: called `Option::unwrap\(\)` on a `None` value; drop and re-create
-check persist.type.numeric_38_10.after_snapshot decimal-stats-overflow-panic ^mirror query failed \(rc=1\): ERROR: +\(PGDuckDB/(Duckdb_ExecCustomScan_Cpp|CreatePlan)\) (Prepared query returned an error: )?Error: mirror postgres\.public\.ty_[0-9]+_mc is out of sync: internal error in iceberg persistence: called `Option::unwrap\(\)` on a `None` value; drop and re-create
-requires persist.type.numeric_38_10.after_snapshot decimal-stats-overflow-panic persist.type.numeric_38_10 decimal-stats-overflow-panic
-check persist.type.numeric_38_10.after_restart decimal-stats-overflow-panic ^mirror query failed \(rc=1\): ERROR: +\(PGDuckDB/(Duckdb_ExecCustomScan_Cpp|CreatePlan)\) (Prepared query returned an error: )?Error: mirror postgres\.public\.ty_[0-9]+_mc is out of sync: internal error in iceberg persistence: called `Option::unwrap\(\)` on a `None` value; drop and re-create
-requires persist.type.numeric_38_10.after_restart decimal-stats-overflow-panic persist.type.numeric_38_10 decimal-stats-overflow-panic
-check persist.no_moonlink_panics decimal-stats-overflow-panic rust_decimal-1\.43\.0/src/decimal\.rs:2047 x1
 
 bug char-padding-lost class=limitation char(n) values come back without their trailing blank padding (Postgres ignores those blanks in char(n) comparisons and length(); only the displayed value differs)
 bug interval-inet-unsupported class=limitation interval and inet source columns are rejected by mooncake.create_table

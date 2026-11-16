@@ -122,8 +122,9 @@ pg_mooncake 0.3.0 runs on a slimmed-down moonlink.
   `char(n)` values and in `length()`, so only the displayed value differs.
 - Unconstrained `numeric` columns are stored as `decimal(38, 10)`. A value with more than 10 fractional digits puts the
   mirror into the errored state; give such a column an explicit precision and scale instead.
+- `interval` and `inet` columns cannot be mirrored: `mooncake.create_table` rejects a source table that has one.
+- Dropping a mirror leaves its empty directory under `pg_mooncake/initial_copy` in the data directory.
 - Moonlink calls other than the one made by `DROP TABLE` have no timeout.
-- `character(n)` values come back without their trailing padding.
 - If moonlink restarts within about half a second after `mooncake.create_table` returns (a fast server stop or restart,
   or the moonlink worker being stopped), the new mirror loses the rows of its initial copy, without an error. To avoid
   it, write to the source table and run `CALL mooncake.create_snapshot('<mirror>')` in the same session after
@@ -132,7 +133,6 @@ pg_mooncake 0.3.0 runs on a slimmed-down moonlink.
 - Composite and domain-over-composite columns read back from a mirror as DuckDB STRUCT values, e.g.
   `{'f1': 1, 'f2': 'foo'}` instead of `(1,foo)`. The values are preserved; compare or extract fields (`(c).f1`) rather
   than the row text. Comparing the whole value with a row (`c = ROW(1, 'foo')::t`) fails in DuckDB.
-<!-- RC: replace with the final list from the release-gate run. -->
 
 [ml-2353]: https://github.com/Mooncake-Labs/moonlink/pull/2353
 [ml-2356]: https://github.com/Mooncake-Labs/moonlink/pull/2356

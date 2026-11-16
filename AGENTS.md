@@ -2,7 +2,7 @@
 
 Guidance for AI coding agents and contributors. Architecture and the full wire format: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-Statements tagged **[pins]** describe the current submodule pins (moonlink `c1a99ef`, pg_duckdb `12b6de7` (`7daa8e5` plus the upstream TimeZone hook fix),
+Statements tagged **[pins]** describe the current submodule pins (moonlink `de5de558` (its v0.3-dev branch), pg_duckdb `12b6de7` (`7daa8e5` plus the upstream TimeZone hook fix),
 duckdb_mooncake `bd9e5f3`). Re-verify them whenever a submodule pin moves.
 
 ## 1. Contract with duckdb_mooncake: never change these
@@ -38,11 +38,12 @@ when your local tests (with a locally built extension) pass.
 ## 2. Other invariants
 
 1. **The moonlink background worker must not panic or error out.** **[pins]** Restart behavior:
-   - A panic in a spawned tokio task (per-table handler, per-connection RPC handler) does not exit the worker.
-     It surfaces as `early eof` on that connection or as a mirror that silently stops ingesting.
+   - A panic in a per-table handler puts that mirror into the errored state (a fallback loop keeps answering for it and
+     still performs its DROP); other mirrors keep replicating. A panic in a per-connection RPC handler surfaces as
+     `early eof` on that connection.
+   - A mirror that fails recovery at startup is errored (a transient failure is retried) instead of failing the worker.
    - An error or panic on the main path exits with status 1 and the worker restarts after 15 s
-     (`src/bgworker.rs` unwraps `start_with_config`'s result on the main thread). That includes a recovery error, so a table
-     that fails recovery crash-loops the worker every 15 s.
+     (`src/bgworker.rs` unwraps `start_with_config`'s result on the main thread).
    - moonlink returns only after SIGTERM. During a server shutdown (`stopping` in `postmaster.pid`) the worker exits
      with status 0. Any other SIGTERM (a `kill` of the worker; `pg_terminate_backend` can't reach it, since it has no
      database connection) exits with status 1, so Postgres restarts it after 15 s. Keep shutdowns at status 0: the e2e
@@ -56,7 +57,9 @@ when your local tests (with a locally built extension) pass.
 3. **`ServiceConfig` is built with a struct literal** in `src/bgworker.rs`. Adding or removing a field in
    `moonlink_service` needs a matching edit there. **[pins]**
 4. **On this path moonlink uses only the sqlite metadata store** (`$PGDATA/pg_mooncake/moonlink_metadata_store.sqlite`,
-   the recovery source of truth) **and the filesystem Iceberg catalog.** **[pins]**
+   the recovery source of truth) **and the filesystem Iceberg catalog.** It keeps no write-ahead log: the replication
+   slot is acknowledged only up to what every healthy mirror has persisted to Iceberg, and the rest is replayed from the
+   slot after a restart (docs/ARCHITECTURE.md, "Consistency model"). **[pins]**
 5. **User-level recovery is "drop and re-create the mirror"** (`DROP TABLE <mirror>; CALL mooncake.create_table(...)`).
    DROP must succeed no matter what state moonlink is in:
    - An `object_access_hook` (`src/drop_tracking.rs`) records which dropped relations are mooncake mirrors (by
@@ -102,7 +105,7 @@ when your local tests (with a locally built extension) pass.
 | RPC definitions and framing / server / service startup | `moonlink/src/moonlink_rpc/src/lib.rs`, `moonlink/src/moonlink_service/src/{rpc_server.rs,lib.rs}` |
 | Backend API, `table_config` JSON, recovery | `moonlink/src/moonlink_backend/src/{lib.rs,table_config.rs,config_utils.rs,recovery_utils.rs}` |
 | Postgres CDC (slot, publication, confirmed-LSN feedback) | `moonlink/src/moonlink_connectors/src/pg_replicate*.rs`, `pg_replicate/` |
-| Table engine, WAL, Iceberg, union read **[pins]** | `moonlink/src/moonlink/src/{table_handler.rs,storage/,union_read/}` |
+| Table engine, Iceberg, union read, errored state **[pins]** | `moonlink/src/moonlink/src/{table_handler.rs,storage/,union_read/}` |
 | DuckDB side: catalog, scan, payload decoding, `dlsym`s, RPC client | `duckdb_mooncake/src/storage/*.cpp`, `src/include/pgmooncake.hpp`, `src/moonlink/moonlink.cpp`, `moonlink_ffi/src/lib.rs` |
 | Extension upgrade scripts | `sql/pg_mooncake--<old>--<new>.sql` |
 | Regression tests | `tests/pg_regress/{sql,expected}` |
@@ -191,18 +194,16 @@ and set `duckdb.allow_unsigned_extensions = true` and `duckdb.autoinstall_known_
 
 `scripts/e2e-known-bugs.txt` is the complete list, with a failure signature per check; keep it current rather than this
 summary. Product behavior (fix with a test; don't paper over it):
-- Restart after a large, logically streamed transaction: moonlink WAL monotonic-LSN assert, crash loop.
+- A `numeric` value wider than 96 bits (for example 38 digits in `numeric(38,10)`) panics moonlink's statistics in the
+  first snapshot and errors that mirror; re-creating it hits the same value again.
+- `char(n)` comes back without its trailing padding (no error).
+- Unconstrained `numeric` is stored as `decimal(38,10)`: a value with more than 10 fractional digits errors the mirror.
+  `interval` and `inet` columns are rejected at `create_table`.
 - Reading mirrors as a non-superuser needs `duckdb.postgres_role` plus `pg_read_server_files` and
   `pg_write_server_files` (pg_duckdb disables DuckDB's `LocalFileSystem` otherwise), and pg_duckdb does not check
   Postgres privileges on relations it scans through the mooncake table AM, so per-mirror GRANTs are not enforced.
-- Wrong data without an error: unconstrained `numeric` (digits shifted), array columns (come back `{}`), `char(n)`
-  (padding lost), an UPDATE that leaves a TOASTed column unchanged empties it in the mirror, and `TRUNCATE` of a source
-  is ignored. `interval` and `inet` columns are rejected at `create_table`.
-- `ALTER TABLE <source> ADD COLUMN` panics moonlink and that mirror stops ingesting; after `DROP COLUMN`, every mirror
-  of the database stops.
-- Dropping any mirror deletes the moonlink WAL of every mirror (`WalManager::drop_wal` removes the shared `_wal`
-  directory). Rows of other mirrors that are not yet in an Iceberg snapshot are lost at the next restart; run
-  `CALL mooncake.create_snapshot(...)` on the remaining mirrors after dropping one.
+- Dropping the last mirror leaves `initial_copy/`, `.moonlink_atomic_tmp/` and `source_fingerprints/` entries behind
+  under `$PGDATA/pg_mooncake`.
 - Calls other than `DropTable` have no timeout: a hung moonlink blocks them until it answers.
 - Identifiers containing `.` are rejected (moonlink splits source names on `.`).
 

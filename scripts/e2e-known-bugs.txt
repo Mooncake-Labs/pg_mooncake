@@ -1,5 +1,5 @@
 # Known failures of scripts/e2e-smoke.sh on this branch with its submodules (moonlink 0.3.0 RC1,
-# 46148c1b; pg_duckdb 7daa8e5).
+# 46148c1b; pg_duckdb v1.0.0-mooncake 12b6de7).
 #
 #   bug <name> class=blocking|class=limitation <description>
 #   check <scenario.check> <bug> <regex>
@@ -70,21 +70,6 @@ check persist.type.char_3.after_restart char-padding-lost data mismatch.*< 1\|ab
 bug initial-copy-dir-leak class=limitation Dropping a mirror leaves its empty initial-copy directory under pg_mooncake/initial_copy
 
 check main.drop_all_files_removed initial-copy-dir-leak ^d pg_mooncake/initial_copy( d pg_mooncake/initial_copy/table_[0-9]+)*$
-
-# ---- sessions that crash the backend (pg_duckdb 7daa8e5) ------------------------------------------
-bug pgduckdb-timezone-hook-crash class=blocking After any DuckDB query in a session, a config reload or a TimeZone reset at transaction end (SET LOCAL ... COMMIT, SET ... ROLLBACK) runs pg_duckdb's TimeZone hook outside a transaction and crashes the backend (crash recovery for the whole server)
-# The relcache.c assertion moves between PostgreSQL minor releases, so only its text is pinned; the
-# sites in pg_duckdb's vendored ruleutils (pg_ruleutils_17.c:7053, pg_ruleutils_18.c:7355) depend
-# on the pg_duckdb pin only.
-
-check config_reload.reload_after_mirror_read pgduckdb-timezone-hook-crash ^backend crashed \(server process, signal 6, cassert=yes\) running \[SELECT 'before ' \|\| 'reload'\]; TRAP: failed Assert\("IsTransactionState\(\)"\), File: "relcache\.c", Line: [0-9]+$
-check config_reload.reload_after_mirror_read pgduckdb-timezone-hook-crash ^backend crashed \(server process, signal 11, cassert=no\) running \[SELECT 'before ' \|\| 'reload'\]; TRAP: none$
-check config_reload.set_local_time_zone_commit pgduckdb-timezone-hook-crash ^backend crashed \(server process, signal 6, cassert=yes\) running \[COMMIT\]; TRAP: failed Assert\("IsTransactionState\(\)"\), File: "relcache\.c", Line: [0-9]+$
-check config_reload.set_local_time_zone_commit pgduckdb-timezone-hook-crash ^backend crashed \(server process, signal 11, cassert=no\) running \[COMMIT\]; TRAP: none$
-check config_reload.set_time_zone_rollback pgduckdb-timezone-hook-crash ^backend crashed \(server process, signal 6, cassert=yes\) running \[ROLLBACK\]; TRAP: failed Assert\("IsTransactionState\(\)"\), File: "relcache\.c", Line: [0-9]+$
-check config_reload.set_time_zone_rollback pgduckdb-timezone-hook-crash ^backend crashed \(server process, signal 11, cassert=no\) running \[ROLLBACK\]; TRAP: none$
-check config_reload.no_postgres_crash_restarts pgduckdb-timezone-hook-crash ^((server process terminated by signal (6|11)|reinitializing) x[1-3]|server process crashes not reported by a session check x0)$
-requires config_reload.no_postgres_crash_restarts pgduckdb-timezone-hook-crash config_reload.reload_after_mirror_read pgduckdb-timezone-hook-crash
 
 # ---- roles and privileges -------------------------------------------------------------------------
 bug mirror-read-needs-server-file-roles class=limitation A role with duckdb.postgres_role but without pg_read_server_files cannot read mirrors (DuckDB's local file system is disabled for it); documented in the release notes

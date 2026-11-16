@@ -47,6 +47,9 @@ pg_mooncake 0.3.0 runs on a slimmed-down moonlink. <!-- RC: post-bump: true only
   Before, it failed, and the new mirror table returned the old mirror's rows.
 - A `mooncake.create_table` that moonlink rejects no longer leaves the empty mirror table behind. It drops only the
   table it created, not one another session created under the same name in the meantime.
+- The moonlink background worker is restarted 15 s after it is stopped with SIGTERM outside a server shutdown (for
+  example a `kill` of the worker). Before, it exited cleanly and was never restarted, so every mirror stayed down
+  until Postgres restarted.
 - A fast shutdown no longer panics in the moonlink background worker, which could also make `pg_ctl stop -m fast` hang:
   shutdown signals are now handled only on the worker's main thread.
 - Building from source with the Rust toolchain pinned in `rust-toolchain.toml` works again: Cargo now prefers
@@ -78,7 +81,6 @@ pg_mooncake 0.3.0 runs on a slimmed-down moonlink. <!-- RC: post-bump: true only
   a leftover is removed when a mirror with the same name is created again.
 - Identifiers containing `.` are rejected.
 - Moonlink calls other than the one made by `DROP TABLE` have no timeout.
-- The moonlink background worker is restarted after a crash, but not after it exits cleanly.
 <!-- RC: replace with the final list from the release-gate run. -->
 
 ## 0.1.2 (2025-02-11)

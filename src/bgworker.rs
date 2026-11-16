@@ -48,6 +48,30 @@ extern "C-unwind" fn moonlink_main(_arg: pg_sys::Datum) {
         Ok(result) => result.unwrap(),
         Err(panic) => std::panic::resume_unwind(panic),
     }
+    // moonlink returns only after SIGTERM. Postgres restarts a background worker only after a non-zero exit, so a
+    // SIGTERM outside a server shutdown (pg_terminate_backend, a stray kill) would otherwise leave every mirror
+    // without moonlink until the next server restart. A shutdown stays a clean exit.
+    if !postmaster_stopping() {
+        log!("moonlink stopped on SIGTERM outside a server shutdown; exiting with code 1 so that it is restarted");
+        unsafe { pg_sys::proc_exit(1) };
+    }
+}
+
+/// Whether the postmaster is shutting down. It records "stopping" in postmaster.pid (the PM_STATUS line) for smart,
+/// fast and immediate shutdowns before it signals any child, so a worker that got SIGTERM because of a shutdown
+/// always sees it. Unreadable counts as not stopping: an extra restart is better than a worker that stays down.
+fn postmaster_stopping() -> bool {
+    const LOCK_FILE_LINE_PM_STATUS: usize = 8;
+    let data_dir = unsafe { std::ffi::CStr::from_ptr(pg_sys::DataDir) }.to_string_lossy();
+    std::fs::read_to_string(std::path::Path::new(data_dir.as_ref()).join("postmaster.pid"))
+        .ok()
+        .and_then(|pid_file| {
+            pid_file
+                .lines()
+                .nth(LOCK_FILE_LINE_PM_STATUS - 1)
+                .map(|status| status.trim() == "stopping")
+        })
+        .unwrap_or(false)
 }
 
 /// Blocks SIGTERM, SIGHUP and SIGINT on the calling thread and returns its previous signal mask.

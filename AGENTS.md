@@ -43,7 +43,10 @@ when your local tests (with a locally built extension) pass.
    - An error or panic on the main path exits with status 1 and the worker restarts after 15 s
      (`src/bgworker.rs` unwraps `start_with_config`'s result on the main thread). That includes a recovery error, so a table
      that fails recovery crash-loops the worker every 15 s.
-   - A clean exit (e.g. the worker alone receives SIGTERM) exits with status 0, and Postgres never restarts it.
+   - moonlink returns only after SIGTERM. During a server shutdown (`stopping` in `postmaster.pid`) the worker exits
+     with status 0. Any other SIGTERM (a `kill` of the worker; `pg_terminate_backend` can't reach it, since it has no
+     database connection) exits with status 1, so Postgres restarts it after 15 s. Keep shutdowns at status 0: the e2e
+     gate's stop checks count abnormal worker exits.
 2. **Shutdown signals are handled only on the worker's main thread** (`src/bgworker.rs`). moonlink's `tokio::signal`
    handler chains to pgrx's SIGTERM handler, which calls into Postgres and panics on any other thread, so SIGTERM, SIGHUP
    and SIGINT are blocked in every moonlink thread: the main thread blocks them while it creates the runtime and the
@@ -203,7 +206,6 @@ summary. Product behavior (fix with a test; don't paper over it):
   is ignored. `interval` and `inet` columns are rejected at `create_table`.
 - `ALTER TABLE <source> ADD COLUMN` panics moonlink and that mirror stops ingesting; after `DROP COLUMN`, every mirror
   of the database stops.
-- The worker is not restarted after a clean exit (section 2, item 1).
 - Dropping any mirror deletes the moonlink WAL of every mirror (`WalManager::drop_wal` removes the shared `_wal`
   directory). Rows of other mirrors that are not yet in an Iceberg snapshot are lost at the next restart; run
   `CALL mooncake.create_snapshot(...)` on the remaining mirrors after dropping one.

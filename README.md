@@ -37,9 +37,10 @@ docker exec -it mooncake psql -U postgres
 
 pg_mooncake supports Postgres 14 to 18 and is built with [Rust][rust-install] and [pgrx][pgrx-install]. It depends on
 [pg_duckdb][pgduckdb-link], which is included as a submodule and built from source along with DuckDB. The submodule is
-the `v1.0.0-mooncake` branch of [Mooncake-Labs/pg_duckdb][pgduckdb-fork-link]: pg_duckdb 1.0.0 on DuckDB v1.4.1 plus the
-upstream fix for its TimeZone hook (pg_duckdb #981), without which a configuration reload crashes every session that
-has run a DuckDB query. Use this pg_duckdb rather than a separately installed one.
+the `v1.0.0-mooncake` branch of [Mooncake-Labs/pg_duckdb][pgduckdb-fork-link] (tag `v1.0.0-mooncake.1`): pg_duckdb
+1.0.0 on DuckDB v1.4.1 plus the upstream fix for its TimeZone hook (duckdb/pg_duckdb#981), without which a
+configuration reload crashes every session that has run a DuckDB query. Use this pg_duckdb rather than a separately
+installed one.
 <!-- RC: confirm the Postgres versions against the release test matrix. -->
 
 **Prerequisites.**
@@ -171,6 +172,14 @@ If you stop using pg_mooncake, drop all mirrors so that the slot is dropped and 
 `CALL mooncake.create_table('trades_iceberg', 'trades', 'postgresql://user@host/db')`. The source server needs
 `wal_level = logical`, and the user needs permission to replicate and to alter the source table.
 <!-- RC: src_uri is not covered by the release tests; test it or drop this paragraph. -->
+
+**Renames and schema changes.** moonlink keeps each mirror under the database, schema and table name it was created
+with. pg_mooncake rejects renaming a mirror, moving it to another schema, and renaming a schema that contains mirrors.
+It cannot see a rename of the database, which runs from another database: drop that database's mirrors before
+`ALTER DATABASE ... RENAME TO` and re-create them afterwards. Column changes on a source table (for example
+`ALTER TABLE ... ADD COLUMN` or `DROP COLUMN`) put its mirrors into the errored state; drop and re-create them (see
+[Durability and Recovery](#durability-and-recovery)).
+<!-- RC: the errored state on column changes is true only with the moonlink submodule bump. -->
 
 **Monitoring.** `SELECT * FROM mooncake.list_tables();` lists the mirrors with their commit and flush LSNs.
 

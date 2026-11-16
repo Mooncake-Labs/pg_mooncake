@@ -28,10 +28,11 @@ pg_mooncake 0.3.0 runs on a slimmed-down moonlink. <!-- RC: post-bump: true only
   them. Before, some forms crashed the backend on assert-enabled builds (`UPDATE ... SET (a, b) = (SELECT ...)`) or
   raised DuckDB internal errors.
 - `TRUNCATE` and `COPY ... FROM` on a mirror fail with the same error.
-- A mirror cannot be renamed, moved to another schema (`ALTER TABLE ... SET SCHEMA`), or made a partition or an
-  inheritance child of another table, and a schema that contains mirrors cannot be renamed. moonlink keeps a mirror
-  under the name it was created with, so a renamed mirror would no longer match it; drop it and create it again under
-  the new name instead. Writes through a parent table would reach the mirror.
+- A mirror cannot be renamed (with `ALTER TABLE` or `ALTER INDEX ... RENAME`, which Postgres also applies to tables),
+  moved to another schema (`ALTER TABLE ... SET SCHEMA`), turned into a regular table (`ALTER TABLE ... SET ACCESS
+  METHOD`), or made a partition or an inheritance child of another table, and a schema that contains mirrors cannot be
+  renamed. moonlink keeps a mirror under the name it was created with, so a renamed mirror would no longer match it;
+  drop it and create it again under the new name instead. Writes through a parent table would reach the mirror.
 
 ### Fixed
 - `DROP TABLE` and `DROP SCHEMA ... CASCADE` of regular tables no longer contact moonlink, so they work
@@ -52,9 +53,9 @@ pg_mooncake 0.3.0 runs on a slimmed-down moonlink. <!-- RC: post-bump: true only
   until Postgres restarted.
 - Configuration reloads (`pg_reload_conf()`, `pg_ctl reload`, `SIGHUP`, including reloads by logrotate, systemd or
   package scripts) and time zone changes undone at the end of a transaction no longer crash sessions that have run a
-  DuckDB query, such as a query on a mirror. The bundled pg_duckdb is now the `v1.0.0-mooncake` branch of
-  Mooncake-Labs/pg_duckdb, which carries the upstream fix for pg_duckdb's TimeZone hook (pg_duckdb #981) on the
-  DuckDB v1.4.1 that duckdb_mooncake needs. 0.2 has the same crash.
+  DuckDB query, such as a query on a mirror. The bundled pg_duckdb is now Mooncake-Labs/pg_duckdb `v1.0.0-mooncake.1`
+  (a tag on its `v1.0.0-mooncake` branch), which carries the upstream fix for pg_duckdb's TimeZone hook
+  (duckdb/pg_duckdb#981) on the DuckDB v1.4.1 that duckdb_mooncake needs. 0.2 has the same crash.
 - A fast shutdown no longer panics in the moonlink background worker, which could also make `pg_ctl stop -m fast` hang:
   shutdown signals are now handled only on the worker's main thread.
 - Building from source with the Rust toolchain pinned in `rust-toolchain.toml` works again: Cargo now prefers

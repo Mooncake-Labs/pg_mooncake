@@ -65,10 +65,12 @@ marker, so pointing `--workdir` at the wrong place cannot remove an unrelated cl
 | query | `query.<file>.L<line>` | Each SELECT that names a mirrored table runs again with `search_path = mc, ...` and is compared with the heap result. |
 | – | `panic.<file>.L<line>` | moonlink panicked while that statement ran (detail: the panic sites). |
 | – | `backend.<file>.L<line>` | a Postgres backend died and the server went through crash recovery (detail: the `TRAP` line). |
+| – | `panic.data.<file>`, `panic.run.<file>` | moonlink panics in the unit's server log that no other check reported (end-of-unit sweep). |
+| – | `backend.data.<file>`, `backend.run.<file>` | Postgres crash restarts in the unit's server log that no other check reported (end-of-unit sweep). |
 | – | `service.<file>.wedged` | mooncake RPCs kept timing out; the file's remaining mirrors are unverified. |
-| – | `service.<layer>.<file>` | moonlink still answers `mooncake.list_tables()` after the file. |
+| – | `service.data.<file>`, `service.run.<file>` | moonlink still answers `mooncake.list_tables()` after the data or run unit of the file. |
 | – | `stmt.<file>.<name>` | a `md:check` directive in the extra files (see below). |
-| – | `infra.*` | the harness itself could not do its job: fixtures failed to load, a file timed out or raised. |
+| – | `infra.data.<file>`, `infra.run.<file>`, `infra.<file>.file_timeout`, `infra.fixtures`, `infra.panic_detection` | the harness itself could not do its job: a unit raised, a file hit `--file-timeout`, fixtures failed to load, or `--host` ran without `--server-log`. |
 
 ### Comparison rules
 
@@ -77,9 +79,14 @@ marker, so pointing `--workdir` at the wrong place cannot remove an unrelated cl
   rounding to 6 and 12 significant digits. `numeric`, text, dates and everything else must match
   exactly, so `2.5` vs `2.5000000000000000` is a difference.
 - Row order is checked as far as the statement's top-level `ORDER BY` decides it: rows must come
-  in the same sequence of sort keys, and rows with equal keys may come in any order. Under
-  `LIMIT`, the last group of equal keys may hold different rows. Without a top-level `ORDER BY`,
-  rows are compared as multisets, and a `LIMIT` without `ORDER BY` only needs the same row count.
+  in the same sequence of sort keys, and rows with equal keys may come in any order. The last
+  group of equal keys may hold different rows only when a literal `LIMIT n` (or `FETCH FIRST n`)
+  actually cut the result to n rows. Without a top-level `ORDER BY`, rows are compared as
+  multisets. Sort keys are mapped to output columns by position or name; when the leading
+  `ORDER BY` item is an expression that isn't an output column, or `\gdesc` fails, only the
+  multiset is compared (the check passes as `order-unverified`).
+- When a `LIMIT` may legitimately pick different rows (no usable sort key, or a non-literal
+  limit) and the rows differ, the query is a SKIP: neither result can be called wrong.
 - If both the heap and the mirror query fail, they match only with the same SQLSTATE and the
   same message (after removing the pg_duckdb prefix and schema qualifiers). A timeout or a
   dead session never matches.
@@ -88,8 +95,15 @@ marker, so pointing `--workdir` at the wrong place cannot remove an unrelated cl
   that matches only when read again later counts as a stale read. A failed heap read, a failed
   mirror read, a rejected or crashed `create_table` and a failed mirror drop are all recorded as
   events of the table's `cdc` check, so none of them can pass silently.
-- `json` and `jsonb` cells are compared after JSON normalisation (compact, sorted keys) in the cdc
-  layer. The mirror's reformatting of JSON text is reported by the data layer (verdict `equivalent`).
+- `json` and `jsonb` cells are compared after JSON normalisation in the cdc layer: whitespace is
+  removed and object keys are sorted, while numbers keep their text and duplicate keys are kept.
+  The mirror's reformatting of JSON text is reported by the data layer (verdict `equivalent`).
+- In the data layer, every CDC step is read the same way (fence commit, then the mirror), so a
+  stale read is the verdict `stale`. A moonlink panic during a probe makes it `crashed` even if
+  the mirror still matches. `data.copy` and `data.type` checks carry one event per diverging
+  column, step or refused value, matched one by one like cdc events.
+- After every unit the server log is swept: a panic or crash restart that no check reported
+  fails `panic.<data|run>.<file>` or `backend.<data|run>.<file>`.
 - Each query difference is classified by a third run on the heap tables with
   `duckdb.force_execution = true`, used only when `EXPLAIN` shows DuckDB planned it:
   1. a mirror query that timed out or killed its session is a FAIL;
@@ -119,7 +133,8 @@ One `TYPE` line per type at the end of the run:
 | exact | identical in every step | PASS |
 | rejected | `create_table` refused the table with an error | FAIL (the column type is in the detail) |
 | rejected-values | `create_table` refused some values by name (for example `NaN`, an infinite timestamp or a multi-dimensional array); they are removed and listed, and the remaining values are exact | FAIL |
-| equivalent | only JSON formatting differs | FAIL |
+| equivalent | only JSON whitespace or key order differs | FAIL |
+| stale | the fenced read missed a write; the mirror matched only when read again | FAIL |
 | errored | the mirror errors on scan or snapshot | FAIL |
 | lossy | the mirror returns different data without an error (silent divergence) | FAIL |
 | crashed | moonlink panicked, or `create_table` hung | FAIL |
@@ -147,10 +162,17 @@ GATE mirror_diff PASS|FAIL|BLOCKED|INCOMPLETE
   [release policy](../../TESTING.md#release-policy-blocking-and-limitation): FAIL (exit 1) >
   BLOCKED (exit 4) > INCOMPLETE (exit 3, the run was limited by `--files` or `--layers`) >
   PASS (exit 0). `XFAIL(limitation:...)` does not count against the gate.
-- SKIPs are queries DuckDB cannot plan and volatile or side-effecting statements; they don't
-  count against the gate. The exception is an `unverified` SKIP: a mirror that could not be
-  checked because moonlink was wedged or the file timed out, or a `--host` run without
-  `--server-log`. Unless `expected.txt` lists it, it fails the gate like a FAIL.
+- Unlike the end-to-end gate, plain SKIPs don't count against this gate. They are queries that
+  can't be compared: DuckDB can't plan them, the session's role may not run DuckDB, they are
+  volatile or side-effecting, they ran inside a transaction with uncommitted writes, they read a
+  mirror whose initial copy is already known to be wrong (`reads lossy mirror`, see the table's
+  cdc check), or a `LIMIT` may pick different rows. The exception is an `unverified` SKIP: a
+  mirror that could not be checked because moonlink was wedged or the file timed out, or a
+  `--host` run without `--server-log`. Unless `expected.txt` lists it, it fails the gate like a
+  FAIL.
+- Known gaps: after `service.<file>.wedged`, later DML of the file is no longer compared, and a
+  mirrored table that the file drops after the wedge reports PASS instead of unverified (the
+  wedge check itself fails).
 - `--exit-regression` exits 0 iff no check FAILs and no check is unverified in a way
   `expected.txt` doesn't list, whatever bugs are still listed. Use it to check a change against
   the known differences.
@@ -177,8 +199,9 @@ engine <bug>
 - `<check-glob>` is an exact check name or an `fnmatch` glob. A `.vN` (repeated check) or `.sN`
   (later table state) suffix also matches the rule for the name without it.
 - The optional `<regex>` (Python syntax) is searched in the failure signature. For most checks
-  that is the RESULT detail. A `cdc` check is a list of events, one signature each,
-  `<stage>: <detail> :: <statement>`, for example
+  that is the RESULT detail. A `cdc`, `data.copy` or `data.type` check is a list of events, one
+  signature each (for cdc
+  `<stage>: <detail> :: <statement>`), for example
   `dml: value col=c type=character(3) heap-only: ab  || mirror-only: ab :: UPDATE ...`; the
   check reports XFAIL only if every event matches a rule, with the union of their bugs. Pin rules
   to what identifies the bug (the column type, the panic site `file.rs:line:col`, the TRAP

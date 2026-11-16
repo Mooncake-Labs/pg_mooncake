@@ -1,128 +1,150 @@
 # Known differences of tests/mirror_diff on this branch with its submodules (moonlink c1a99ef,
-# pg_duckdb 7daa8e5), measured on PostgreSQL 17. Same model as scripts/e2e-known-bugs.txt:
+# pg_duckdb 7daa8e5), measured on PostgreSQL 17. The bug classes and the gate are those of
+# scripts/e2e-known-bugs.txt (TESTING.md, "Release policy"); the rule syntax is in README.md:
 #
-#   bug <name> blocking|limitation <description>
+#   bug <name> class=blocking|class=limitation <description>
 #   check <check-glob> <bug>[,<bug>...] [<regex>]
 #   engine <bug>
 #
-# blocking: the bug can crash or wedge moonlink or Postgres, panic, lose or silently change mirrored
-# data, or make mirrors unusable; it must be fixed before a release, and while one is listed the
-# gate reports BLOCKED. limitation: a documented, loud or harmless restriction that ships in the
-# release notes.
-#
-# <check-glob> is an fnmatch pattern on the check name; <regex> (Python syntax) must be found in the
-# failure detail. The first matching check line wins. A failing check that matches reports
-# XFAIL(<bugs>); a passing check that matches a line without a regex reports XPASS(<bugs>): the bug
-# looks fixed, remove its lines. "engine" names the bug the classifier attaches to query
-# differences that DuckDB also produces on the heap tables. Types that mooncake.create_table rejects
-# are SKIPs and need no entry.
+# Rules are pinned to what identifies each bug: the column type and verdict of data checks, the
+# event kind and column type of cdc events, the moonlink panic site (file:line:col, per moonlink
+# revision), the assertion of a backend crash, or the statement text. A cdc check is XFAIL only if
+# every one of its events matches a rule.
 
 engine duckdb-semantics
 
 # ---- documented limitations --------------------------------------------------------------------
-bug duckdb-semantics limitation Queries on mirrors run in DuckDB and follow its semantics: integer division, char(n) padding, row order of unordered window frames, regex ~ full match, errors raised by only one engine
-bug json-text-normalised limitation json and jsonb values read back from a mirror in DuckDB's compact text form with keys reordered
+bug duckdb-semantics class=limitation Queries on mirrors run in DuckDB and follow its semantics: integer division, overflow errors, char(n) padding, regex ~ full match, errors raised by only one engine
+bug json-text-normalised class=limitation json and jsonb values read back from a mirror in DuckDB's compact text form with keys reordered
+bug unsupported-types class=limitation mooncake.create_table rejects tables with columns of types mirrors don't support: geometric types, interval, inet/cidr, macaddr/macaddr8, money, bit/varbit, timetz, pg_lsn, xml, tsvector/tsquery, ranges, domains, enums, numeric with precision above 38
+bug unsupported-table-shapes class=limitation create_table rejects unlogged tables
+bug window-row-order class=limitation Window queries whose result depends on physical row order (ROWS/GROUPS frames or order-sensitive functions over ties) can differ, because a mirror stores rows in a different order than its heap
 
 # ---- types ---------------------------------------------------------------------------------------
-bug char-padding-lost blocking char(n) values lose their trailing blank padding
-bug numeric-digits-shifted blocking Unconstrained numeric values come back with their digits shifted
-bug numeric-nan-inf-null blocking numeric NaN, Infinity and -Infinity read back as NULL
-bug numeric-typmod-panic blocking numeric with scale greater than precision or a negative scale panics moonlink in create_table
-bug numeric-beyond-i128-panic blocking A numeric value whose unscaled integer exceeds 128 bits panics the replication task
-bug decimal-stats-overflow-panic blocking Persisting a numeric column with values beyond 96 bits panics in the Iceberg statistics code
-bug date-out-of-range blocking date/timestamp values +-infinity, BC or after year 9999 panic the initial copy and silently drop the transaction in CDC
-bug arrays-come-back-empty blocking Array columns read back as empty arrays ({NULL} becomes {})
-bug multidim-arrays blocking Multi-dimensional or non-default-bound arrays panic the initial copy, are mangled, or drop the transaction in CDC
-bug keyless-nested-copy-panic blocking Initial copy of a table without a primary key that has an array or composite column panics the table handler
-bug composite-as-struct blocking Composite-type values read back as DuckDB STRUCT text instead of the Postgres row value
-bug range-array-panic blocking A range-array column (int8range[]) panics moonlink in create_table
+bug char-padding-lost class=blocking char(n) values lose their trailing blank padding
+bug numeric-digits-shifted class=blocking Unconstrained numeric values come back with their digits shifted
+bug numeric-nan-inf-null class=blocking numeric NaN, Infinity and -Infinity read back as NULL
+bug numeric-typmod-panic class=blocking numeric with scale greater than precision or a negative scale panics moonlink in create_table
+bug numeric-beyond-i128-panic class=blocking A numeric value whose unscaled integer exceeds 128 bits panics the replication task
+bug decimal-stats-overflow-panic class=blocking Persisting a numeric column with values beyond 96 bits panics in the Iceberg statistics code
+bug date-out-of-range class=blocking date/timestamp values +-infinity, BC or after year 9999 panic the initial copy and silently drop the transaction in CDC
+bug arrays-come-back-empty class=blocking Array columns read back as empty arrays ({NULL} becomes {})
+bug multidim-arrays class=blocking Multi-dimensional or non-default-bound arrays panic the initial copy, are mangled, or drop the transaction in CDC
+bug keyless-nested-copy-panic class=blocking Initial copy of a table without a primary key that has an array or composite column panics the table handler
+bug composite-as-struct class=blocking Composite-type values read back as DuckDB STRUCT text instead of the Postgres row value
+bug range-array-panic class=blocking A range-array column (int8range[]) panics moonlink in create_table
 
 # ---- CDC and table shapes ----------------------------------------------------------------------
-bug unchanged-toast-overwritten blocking An UPDATE that doesn't touch an out-of-line (TOASTed) column replaces that column with an empty value in the mirror
-bug truncate-ignored blocking TRUNCATE of a mirrored source is not applied to the mirror
-bug generated-column-breaks-mirror blocking Stored generated columns are part of the mirror definition but not replicated, so SELECT * on the mirror fails
-bug inheritance-children-ignored blocking Mirrors of inheritance parents miss later changes of child tables
-bug inheritance-recovery-crash-loop blocking With an inheritance parent and child both mirrored, moonlink crash-loops after a restart (child already in the publication)
-bug partition-ddl-ignored blocking DROP, DETACH or ATTACH PARTITION on a mirrored partitioned table is not reflected in the mirror
-bug partition-update-panics blocking UPDATE whose old row is missing (multi-level partitions, replica identity not FULL) panics the replication task
-bug relation-schema-assert blocking A Relation message for a table the CDC stream doesn't know panics the replication task (multi-level partitions)
-bug snapshot-hangs-after-xidless-wal blocking create_snapshot waits forever when the session's last transaction wrote WAL without an xid
+bug unchanged-toast-overwritten class=blocking An UPDATE that doesn't touch an out-of-line (TOASTed) column replaces that column with an empty value in the mirror
+bug truncate-ignored class=blocking TRUNCATE of a mirrored source is not applied to the mirror
+bug generated-column-breaks-mirror class=blocking Stored generated columns are part of the mirror definition but not replicated, so SELECT * on the mirror fails
+bug inheritance-children-ignored class=blocking Mirrors of inheritance parents miss later changes of child tables
+bug inheritance-recovery-crash-loop class=blocking With an inheritance parent and child both mirrored, moonlink crash-loops after a restart (child already in the publication)
+bug partition-ddl-ignored class=blocking DROP, DETACH or ATTACH PARTITION on a mirrored partitioned table is not reflected in the mirror
+bug partition-update-panics class=blocking UPDATE whose old row is missing (multi-level partitions, replica identity not FULL) panics the replication task
+bug relation-schema-assert class=blocking A Relation message for a table the CDC stream doesn't know panics the replication task (multi-level partitions)
+bug rejected-create-leaves-state class=blocking After create_table is rejected, mirroring a re-created source under the same mirror name fails with "error creating table"
+bug snapshot-hangs-after-xidless-wal class=blocking create_snapshot waits forever when the session's last transaction wrote WAL without an xid
 
 # ---- backend crashes (Postgres crash recovery) -----------------------------------------------------
-bug duckdb-timezone-commit-abort blocking After a DuckDB query in the session, SET LOCAL TIME ZONE + COMMIT aborts the backend (catalog access in the GUC hook at end of transaction)
-bug duckdb-multiassign-abort blocking UPDATE ... SET (a, b) = (SELECT ...) on a mirror aborts the backend in pg_duckdb's deparser
+bug duckdb-timezone-commit-abort class=blocking After a DuckDB query in the session, SET LOCAL TIME ZONE + COMMIT aborts the backend (catalog access in the GUC hook at end of transaction)
+bug duckdb-multiassign-abort class=blocking UPDATE ... SET (a, b) = (SELECT ...) on a mirror aborts the backend in pg_duckdb's deparser
 
-# ---- checks ---------------------------------------------------------------------------------------
-check stmt.extra_cdc.snapshot_after_xidless_wal snapshot-hangs-after-xidless-wal
-check cdc.extra_cdc.cdc_trunc truncate-ignored
-check cdc.extra_cdc.cdc_toast unchanged-toast-overwritten
-check cdc.extra_tables.shp_generated generated-column-breaks-mirror
-check cdc.extra_tables.shp_parent inheritance-children-ignored
-check query.extra_tables.L30 inheritance-children-ignored
-check stmt.extra_tables.multiassign_update_on_mirror duckdb-multiassign-abort
-check stmt.extra_tables.set_local_timezone_commit_after_duckdb duckdb-timezone-commit-abort
-check backend.extra_tables.* duckdb-timezone-commit-abort,duckdb-multiassign-abort
-check service.run.extra_tables inheritance-recovery-crash-loop
-check cdc.extra_tables.* inheritance-recovery-crash-loop mooncake_duckdb_cpp_init
-check query.aggregates.L430 inheritance-children-ignored
-check query.aggregates.L435 inheritance-children-ignored
-check cdc.insert_conflict.cities inheritance-children-ignored
-check cdc.merge.measurement inheritance-children-ignored
-check query.name.L50 duckdb-semantics
+# ---- unsupported types: clean rejections ---------------------------------------------------------
+check data.copy.* unsupported-types ^rejected: types=\[.*\] (column \S+ type=.+? typtype=[a-z]: )?type with oid \d+ in relation \S+ is not supported$
+check data.copy.* unsupported-types ^rejected: types=\[.*\] (column \S+ type=numeric\(\d+,\d+\) typtype=b: )?(Invalid => Failed to create decimal type, source: DataInvalid => )?Decimals with precision larger than 38 are not supported\b
+check data.type.* unsupported-types ^rejected: type=.+? typtype=[a-z] \d+ values \([^)]*\); copy=rejected \((column v type=.+? typtype=[a-z]: )?(type with oid \d+ in relation \S+ is not supported|(Invalid => Failed to create decimal type, source: DataInvalid => )?Decimals with precision larger than 38 are not supported\b)
+check cdc.* unsupported-types ^create: create_table rejected: (column \S+ type=.+? typtype=[a-z]: )?(type with oid \d+ in relation \S+ is not supported|(Invalid => Failed to create decimal type, source: DataInvalid => )?Decimals with precision larger than 38 are not supported\b)
+check cdc.* unsupported-table-shapes ^create: create_table rejected: not supported for unlogged tables\.
+check cdc.* rejected-create-leaves-state ^create: create_table rejected: (column \S+ type=.+? typtype=[a-z]: )?error creating table: mc\.\S+ ::
 
-check data.type.character_[0-9]* char-padding-lost
-check data.copy.* char-padding-lost ^lossy: types=\[(integer,)?character\(\d+\)\]
-check cdc.* char-padding-lost ^types=\[character\(\d+\)\]
-check data.type.int8range_array range-array-panic
-check data.copy.rangetypes.i8r_array range-array-panic
-check panic.rangetypes.* range-array-panic
-check data.type.*comptype* composite-as-struct
-check cdc.arrays.comptable composite-as-struct
-check data.type.*_array multidim-arrays,arrays-come-back-empty ^(crashed|lossy)
-check cdc.arrays.array_op_test arrays-come-back-empty
-check data.copy.arrays.* keyless-nested-copy-panic
-check panic.arrays.* keyless-nested-copy-panic
-check panic.aggregates.* keyless-nested-copy-panic
-check panic.insert.L78 keyless-nested-copy-panic
-check cdc.insert.inserttest keyless-nested-copy-panic
-check data.type.jsonb json-text-normalised ^equivalent
-check data.type.json json-text-normalised ^equivalent
-check data.copy.* json-text-normalised ^equivalent: types=\[(integer,)?jsonb?\]
+# ---- char(n), json -----------------------------------------------------------------------------
+check data.type.character_[0-9]* char-padding-lost ^lossy: type=character\(\d+\)(\[\])? typtype=b
+check data.copy.* char-padding-lost ^lossy: types=\[.*\] value col=\S+ type=character\(\d+\)(\[\])? heap-only
+check cdc.* char-padding-lost ^(copy|dml|commit|final): value col=\S+ type=character\(\d+\)(\[\])? heap-only
+check data.type.json json-text-normalised ^equivalent: type=json typtype=b
+check data.type.jsonb json-text-normalised ^equivalent: type=jsonb typtype=b
+check data.copy.* json-text-normalised ^equivalent: types=\[.*\] value col=\S+ type=jsonb? heap-only
 
-check data.type.numeric numeric-digits-shifted,numeric-nan-inf-null,numeric-beyond-i128-panic,decimal-stats-overflow-panic
-check data.type.numeric_* numeric-typmod-panic ^crashed
-check data.type.numeric_* numeric-nan-inf-null ^lossy
-check data.copy.numeric.num_typemod_test numeric-typmod-panic
-check panic.numeric.L1148 numeric-typmod-panic
-check panic.numeric.* numeric-beyond-i128-panic
-check data.copy.numeric.fract_only numeric-nan-inf-null
-check cdc.numeric.fract_only numeric-nan-inf-null
-check data.copy.* numeric-digits-shifted types=\[[^\]]*\bnumeric\b
-check cdc.* numeric-digits-shifted ^types=\[numeric\]
+# ---- numeric -----------------------------------------------------------------------------------
+check panic.numeric.* numeric-beyond-i128-panic,decimal-stats-overflow-panic at moonlink/src/moonlink_connectors/src/pg_replicate/util\.rs:355:61, rust_decimal-1\.43\.0/src/decimal\.rs:2047:1 during
+check panic.numeric.* numeric-typmod-panic at moonlink/src/moonlink/src/row/column_array_builder\.rs:193:22 during: CALL mooncake\.create_table
+check data.copy.numeric.* numeric-typmod-panic ^crashed: types=\[.*numeric\(\d+,-\d+\).*\] create_table (died|panicked moonlink at moonlink/src/moonlink/src/row/column_array_builder\.rs:193:22)$
+check data.type.numeric_* numeric-typmod-panic ^crashed: type=numeric\(\d+,-?\d+\) typtype=b .*copy=crashed \(create_table panicked moonlink at moonlink/src/moonlink(/src/row/column_array_builder\.rs:193:22|_connectors/src/pg_replicate\.rs:283:22)\)
+check cdc.* numeric-typmod-panic ^create: create_table (crashed|not attempted: column \S+ type=numeric\(\d+,-?\d+\) crashed) moonlink at moonlink/src/moonlink/src/row/column_array_builder\.rs:193:22
+check data.copy.numeric.* decimal-stats-overflow-panic ^crashed: types=\[numeric\] mirror scan ok; moonlink panicked at rust_decimal-1\.43\.0/src/decimal\.rs:2047:1
+check data.copy.numeric.* numeric-beyond-i128-panic ^crashed: types=\[numeric\] create_table panicked moonlink at moonlink/src/moonlink_connectors/src/pg_replicate\.rs:283:22$
+check data.type.numeric numeric-digits-shifted,numeric-nan-inf-null,numeric-beyond-i128-panic,decimal-stats-overflow-panic ^(crashed|lossy): type=numeric typtype=b
+check data.type.numeric_* numeric-nan-inf-null ^lossy: type=numeric\(\d+,\d+\) typtype=b .*heap-only: [^|]*\b(NaN|-?Infinity)\b[^|]*\|\| mirror-only: [^|]*§N§
+check data.copy.* numeric-nan-inf-null ^lossy: types=\[.*\] value col=\S+ type=numeric(\(\d+,\d+\))? heap-only: [^|]*\b(NaN|-?Infinity)\b[^|]*\|\| mirror-only: [^|]*§N§
+check cdc.* numeric-nan-inf-null ^(copy|dml|commit|final): value col=\S+ type=numeric(\(\d+,\d+\))? heap-only: [^|]*\b(NaN|-?Infinity)\b[^|]*\|\| mirror-only: [^|]*§N§
+check data.copy.* numeric-digits-shifted ^(lossy|equivalent): types=\[.*\] value col=\S+ type=numeric(\[\])? heap-only
+check cdc.* numeric-digits-shifted ^(copy|dml|commit|final): (value col=\S+ type=numeric(\[\])? heap-only|row-count heap=\d+ mirror=\d+ heap-only: .* \|\| mirror-only: [-\d.]+ :: <end of file>)
+check cdc.numeric.num_variance numeric-beyond-i128-panic ^(drop: drop mirror failed: timeout|create: create_table rejected: error creating table: mc\.num_variance)
 
-check data.type.date date-out-of-range
-check data.type.timestamp* date-out-of-range ^crashed
-check data.copy.date.* date-out-of-range ^crashed
-check data.copy.timestamp* date-out-of-range ^crashed
-check panic.date.* date-out-of-range
-check panic.timestamp.* date-out-of-range
-check panic.timestamptz.* date-out-of-range
-check cdc.date.date_tbl date-out-of-range
-check cdc.timestamp.timestamp_tbl date-out-of-range
-check cdc.timestamptz.timestamptz_tbl date-out-of-range
-check cdc.timestamptz.timestamptz_tst date-out-of-range
-check backend.timestamptz.* duckdb-timezone-commit-abort
+# ---- dates and timestamps ------------------------------------------------------------------------
+check panic.date.* date-out-of-range at moonlink/src/moonlink_connectors/src/pg_replicate\.rs:283:22 during: CALL mooncake\.create_table
+check panic.timestamp*.* date-out-of-range at moonlink/src/moonlink_connectors/src/pg_replicate\.rs:283:22 during: CALL mooncake\.create_table
+check data.copy.* date-out-of-range ^crashed: types=\[.*(date|timestamp).*\] create_table panicked moonlink at moonlink/src/moonlink_connectors/src/pg_replicate\.rs:283:22$
+check data.type.date date-out-of-range ^crashed: type=date typtype=b .*create_table panicked moonlink at moonlink/src/moonlink_connectors/src/pg_replicate\.rs:283:22
+check data.type.timestamp* date-out-of-range ^crashed: type=timestamp.*create_table panicked moonlink at moonlink/src/moonlink_connectors/src/pg_replicate\.rs:283:22
+check cdc.date.* date-out-of-range ^(create: create_table crashed moonlink at moonlink/src/moonlink_connectors/src/pg_replicate\.rs:283:22|dml: row-count heap=\d+ mirror=\d+ heap-only: [^|]*(infinity|BC)[^|]* \|\| mirror-only:  ::)
+check cdc.timestamp*.* date-out-of-range ^(create: create_table crashed moonlink at moonlink/src/moonlink_connectors/src/pg_replicate\.rs:283:22|dml: row-count heap=\d+ mirror=\d+ heap-only: .* \|\| mirror-only:  :: INSERT INTO TIMESTAMP(TZ)?_T(BL|ST) VALUES)
+check backend.timestamptz.* duckdb-timezone-commit-abort TRAP: failed Assert\("IsTransactionState\(\)"\), File: "relcache\.c", Line: \d+, PID: \d+ during: COMMIT;$
 
-check cdc.insert.list_parted partition-ddl-ignored
-check panic.insert.L491 relation-schema-assert
-check cdc.insert.mlparted relation-schema-assert
-check service.insert.wedged relation-schema-assert
-check service.run.insert relation-schema-assert
-check infra.insert.file_timeout relation-schema-assert
-check panic.insert_conflict.* partition-update-panics
-check cdc.insert_conflict.parted_conflict partition-update-panics
-check panic.update.* partition-update-panics
-check cdc.update.upsert_test partition-update-panics
-check service.update.wedged partition-update-panics
-check infra.update.file_timeout partition-update-panics
-check service.run.update partition-update-panics
+# ---- arrays and composites -----------------------------------------------------------------------
+check panic.arrays.* keyless-nested-copy-panic at (moonlink/src/moonlink/src/row/arrow_converter\.rs:108:13|parquet-55\.2\.0/src/arrow/mod\.rs:304:22) during: CALL mooncake\.create_table
+check panic.aggregates.* keyless-nested-copy-panic at moonlink/src/moonlink/src/row/arrow_converter\.rs:108:13 during: CALL mooncake\.create_table
+check panic.insert.* keyless-nested-copy-panic at parquet-55\.2\.0/src/arrow/mod\.rs:304:22 during: CALL mooncake\.create_table\('mc\.inserttest'
+check data.copy.* keyless-nested-copy-panic ^crashed: types=\[.*\] create_table panicked moonlink at (moonlink/src/moonlink/src/row/arrow_converter\.rs:108:13|parquet-55\.2\.0/src/arrow/mod\.rs:304:22)$
+check cdc.* keyless-nested-copy-panic ^create: create_table (crashed|not attempted: column \S+ type=\S+ crashed) moonlink at (moonlink/src/moonlink/src/row/arrow_converter\.rs:108:13|parquet-55\.2\.0/src/arrow/mod\.rs:304:22)
+check data.type.*_array multidim-arrays,arrays-come-back-empty ^(crashed|lossy): type=\S+( \S+)*\[\] typtype=b
+check cdc.* arrays-come-back-empty ^(copy|dml|commit|final): value col=\S+ type=\S+\[\] heap-only: .* \|\| mirror-only: [^|]*\{\}
+check data.copy.* composite-as-struct ^lossy: types=\[.*\] value col=\S+ type=\S+ heap-only: .* \|\| mirror-only: .*\{'\w+': 
+check data.type.* composite-as-struct ^lossy: type=\S+ typtype=[bcd] \d+ values .*mirror-only: .*\{'\w+': 
+check cdc.* composite-as-struct ^(copy|dml|commit|final): value col=\S+ type=\S+ heap-only: .* \|\| mirror-only: .*\{'\w+': 
+check panic.rangetypes.* range-array-panic at moonlink/src/moonlink_connectors/src/pg_replicate/util\.rs:151:13 during: CALL mooncake\.create_table
+check data.copy.rangetypes.* range-array-panic ^crashed: types=\[.*range\[\].*\] create_table panicked moonlink at moonlink/src/moonlink_connectors/src/pg_replicate/util\.rs:151:13$
+check data.type.*range_array range-array-panic ^crashed: type=\S+range\[\] typtype=b .*util\.rs:151:13
+check cdc.* range-array-panic ^create: create_table (crashed|not attempted: column \S+ type=\S+range\[\] crashed) moonlink at moonlink/src/moonlink_connectors/src/pg_replicate/util\.rs:151:13
+
+# ---- partitions and inheritance (regression files) -----------------------------------------------
+check panic.insert.* relation-schema-assert at moonlink/src/moonlink_connectors/src/pg_replicate/postgres_source\.rs:600:9 during
+check service.insert.wedged relation-schema-assert last moonlink panic at moonlink/src/moonlink_connectors/src/pg_replicate/postgres_source\.rs:600:9;
+check infra.insert.file_timeout relation-schema-assert last moonlink panic at moonlink/src/moonlink_connectors/src/pg_replicate/postgres_source\.rs:600:9$
+check service.run.insert relation-schema-assert last moonlink panic at moonlink/src/moonlink_connectors/src/pg_replicate/postgres_source\.rs:600:9$
+check cdc.insert.* relation-schema-assert ^(unverified: no mirror: moonlink wedged since line \d+: CALL mooncake\.create_table\('mc\.key_desc'|create: create_table died :: create table key_desc|dml: mirror read failed: died +:: insert into mlparted|drop: drop mirror failed: timeout .*:: insert into mlparted|create: create_table rejected: error creating table: mc\.mlparted ::)
+check cdc.insert.list_parted partition-ddl-ignored ^dml: row-count heap=\d+ mirror=\d+ heap-only:  \|\| mirror-only: .* :: insert into list_parted values
+check panic.update.* partition-update-panics at moonlink/src/moonlink_connectors/src/pg_replicate/moonlink_sink\.rs:301:65 during
+check panic.insert_conflict.* partition-update-panics at moonlink/src/moonlink_connectors/src/pg_replicate/(moonlink_sink\.rs:301:65|\.\./moonlink/src/table_handler\.rs:253:34) during
+check service.update.wedged partition-update-panics last moonlink panic at moonlink/src/moonlink_connectors/src/pg_replicate/moonlink_sink\.rs:301:65;
+check infra.update.file_timeout partition-update-panics last moonlink panic at moonlink/src/moonlink_connectors/src/pg_replicate/moonlink_sink\.rs:301:65$
+check service.run.update partition-update-panics last moonlink panic at moonlink/src/moonlink_connectors/src/pg_replicate/moonlink_sink\.rs:301:65$
+check cdc.update.* partition-update-panics ^(unverified: no mirror: moonlink wedged since line \d+: CALL mooncake\.create_table\('mc\.range_parted'|create: create_table died :: CREATE TABLE range_parted|dml: mirror read failed: died +:: WITH aaa AS|drop: drop mirror failed: timeout .*:: WITH aaa AS|create: create_table rejected: error creating table: mc\.upsert_test ::)
+check cdc.insert_conflict.parted_conflict* partition-update-panics ^(drop: drop mirror failed: error drop_table failed|create: create_table rejected: (create_table failed: Rpc|error creating table: mc\.parted_conflict))
+check cdc.insert_conflict.cities inheritance-children-ignored ^dml: (row-count heap=\d+ mirror=\d+ heap-only: .* \|\| mirror-only: |value col=population type=double precision heap-only: )
+check cdc.merge.measurement inheritance-children-ignored ^(dml|copy): row-count heap=\d+ mirror=\d+ heap-only: .* :: (INSERT INTO measurement VALUES|MERGE into measurement|<create_table: schema changed>)
+check cdc.merge.measurement_y2007m01 inheritance-children-ignored ^create: create_table rejected: create_table failed: Rpc
+check query.aggregates.* inheritance-children-ignored ^mirror differs; DuckDB on the heap tables agrees with the heap: .* :: select (distinct )?min\(f1\), max\(f1\) from minmaxtest
+
+# ---- CDC and table shapes (extra files) --------------------------------------------------------
+check stmt.extra_cdc.snapshot_after_xidless_wal snapshot-hangs-after-xidless-wal ^(died|timeout): .*create_snapshot
+check cdc.extra_cdc.cdc_toast unchanged-toast-overwritten ^dml: value col=(big|bin|doc) type=(text|bytea|jsonb) heap-only
+check cdc.extra_cdc.cdc_trunc truncate-ignored ^dml: row-count heap=\d+ mirror=\d+ .*:: INSERT INTO cdc_trunc VALUES \(1, 'after truncate'\)
+check data.copy.* unsupported-types ^rejected: types=\[.*numeric\((39|[4-9]\d|\d{3,}),\d+\)[^\]]*\] (column \S+ type=numeric\(\d+,\d+\) typtype=b: )?Invalid => Failed to create decimal type, source: DataInvalid => Decimals with precision larger than 38 are not supported
+check data.type.numeric_* unsupported-types ^rejected: type=numeric\((39|[4-9]\d|\d{3,}),\d+\) typtype=b \d+ values \([^)]*\); copy=rejected \(.*Decimals with precision larger than 38 are not supported\)$
+check cdc.* unsupported-types ^create: create_table rejected: column \S+ type=numeric\((39|[4-9]\d|\d{3,}),\d+\) typtype=b: Invalid => Failed to create decimal type, source: DataInvalid => Decimals with precision larger than 38 are not supported ::
+
+# ---- queries: row order and DuckDB semantics the classifier can't attribute ----------------------
+check query.window.* window-row-order ^mirror differs; DuckDB on the heap tables agrees with the heap: .* :: SELECT sum\(unique1\) over \(rows between [^)]*\), unique1, four FROM tenk1 WHERE unique1 < 10;$
+check query.window.* window-row-order ^heap, mirror and DuckDB-on-heap all differ: .* :: SELECT first_value\(unique1\) over w, nth_value\(unique1, 2\) over w AS nth_2, last_value\(unique1\) over w, unique1, four FROM tenk1 WHERE unique1 < 10 WINDOW w AS
+check query.aggregates.* duckdb-semantics ^heap, mirror and DuckDB-on-heap all differ: .* :: select sum\(1/ten\) filter \(where ten > 0\) from tenk1;$
+check query.name.* duckdb-semantics ^mirror differs and DuckDB did not run the query on the heap tables: .* :: SELECT c\.f1 FROM NAME_TBL c WHERE c\.f1 ~ '\[0-9\]';$
+check cdc.extra_tables.shp_generated generated-column-breaks-mirror ^copy: mirror read failed: error XX000 \(PGDuckDB/CreatePlan\) Prepared query returned an error: Binder Error
+check cdc.extra_tables.shp_parent inheritance-children-ignored ^(dml|final): row-count heap=\d+ mirror=\d+
+check query.extra_tables.* inheritance-children-ignored :: SELECT \* FROM shp_parent ORDER BY id;$
+check stmt.extra_tables.multiassign_update_on_mirror duckdb-multiassign-abort ^died: +:: UPDATE mc\.shp_ri_index SET \(v, id\) = \(SELECT
+check stmt.extra_tables.set_local_timezone_commit_after_duckdb duckdb-timezone-commit-abort ^died: +:: COMMIT;
+check backend.extra_tables.* duckdb-timezone-commit-abort,duckdb-multiassign-abort TRAP: failed Assert\("(IsTransactionState\(\)|\(\(Param \*\) expr\)->paramid == .*)"\), File: "[^"]+", Line: \d+, PID: \d+ during: (COMMIT;|UPDATE mc\.shp_ri_index SET \(v, id\))
+check service.run.extra_tables inheritance-recovery-crash-loop ^mooncake\.list_tables\(\) fails after the file: ERROR: Failed to connect to moonlink: .*Connection refused
+check cdc.extra_tables.* inheritance-recovery-crash-loop ^final: mirror read failed: error XX000 \(PGDuckDB/CreatePlan\) Invalid Input Error: Initialization function "mooncake_duckdb_cpp_init" from file

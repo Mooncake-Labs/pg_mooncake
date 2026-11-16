@@ -79,14 +79,16 @@ marker, so pointing `--workdir` at the wrong place cannot remove an unrelated cl
   rounding to 6 and 12 significant digits. `numeric`, text, dates and everything else must match
   exactly, so `2.5` vs `2.5000000000000000` is a difference.
 - Row order is checked as far as the statement's top-level `ORDER BY` decides it: rows must come
-  in the same sequence of sort keys, and rows with equal keys may come in any order. The last
-  group of equal keys may hold different rows only when a literal `LIMIT n` (or `FETCH FIRST n`)
-  actually cut the result to n rows. Without a top-level `ORDER BY`, rows are compared as
-  multisets. Sort keys are mapped to output columns by position or name; when the leading
-  `ORDER BY` item is an expression that isn't an output column, or `\gdesc` fails, only the
-  multiset is compared (the check passes as `order-unverified`).
-- When a `LIMIT` may legitimately pick different rows (no usable sort key, or a non-literal
-  limit) and the rows differ, the query is a SKIP: neither result can be called wrong.
+  in the same sequence of sort keys, and rows with equal keys may come in any order. Sort keys
+  are mapped to output columns by position or name. When the leading `ORDER BY` item is an
+  expression that isn't an output column, or `\gdesc` fails, only the multiset is compared (the
+  check passes as `order-unverified`, and a difference is classified as usual).
+- Rows a `LIMIT` may legitimately pick differently are checked against the heap's result
+  without the `LIMIT`/`OFFSET`: a query without `ORDER BY`, and the last group of equal sort keys
+  when a literal `LIMIT n` (or `FETCH FIRST n`) cut the result to n rows or the limit isn't a
+  literal. The mirror's rows must be a sub-multiset of that result (`limit-subset`). If they
+  aren't, DuckDB on the heap tables decides between a mirror bug and DuckDB semantics; if the
+  unlimited query can't be read, the difference is classified as usual.
 - If both the heap and the mirror query fail, they match only with the same SQLSTATE and the
   same message (after removing the pg_duckdb prefix and schema qualifiers). A timeout or a
   dead session never matches.
@@ -166,7 +168,7 @@ GATE mirror_diff PASS|FAIL|BLOCKED|INCOMPLETE
   can't be compared: DuckDB can't plan them, the session's role may not run DuckDB, they are
   volatile or side-effecting, they ran inside a transaction with uncommitted writes, they read a
   mirror whose initial copy is already known to be wrong (`reads lossy mirror`, see the table's
-  cdc check), or a `LIMIT` may pick different rows. The exception is an `unverified` SKIP: a
+  cdc check). The exception is an `unverified` SKIP: a
   mirror that could not be checked because moonlink was wedged or the file timed out, or a
   `--host` run without `--server-log`. Unless `expected.txt` lists it, it fails the gate like a
   FAIL.

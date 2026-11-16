@@ -56,34 +56,38 @@ bug duckdb-multiassign-abort class=blocking UPDATE ... SET (a, b) = (SELECT ...)
 # builtin types listed, a type a file defines (oid >= 10000), or an array of one. A rejection of
 # any other type is a FAIL.
 check data.copy.* unsupported-types ^rejected: types=\[.*\] column \S+ type=(point|lseg|path|box|polygon|line|circle|interval|inet|cidr|macaddr8?|money|bit\(\d+\)|bit varying(\(\d+\))?|time(\(\d\))? with time zone|pg_lsn|xml|tsvector|tsquery|pg_snapshot|txid_snapshot) typtype=b: type with oid (600|601|602|603|604|628|718|1186|869|650|829|774|790|1560|1562|1266|3220|142|3614|3615|5038|2970) in relation \S+ is not supported$
-check data.copy.* unsupported-types ^rejected: types=\[.*\] column \S+ type=\S+ typtype=[cde]: type with oid \d{5,} in relation \S+ is not supported$
+check data.copy.* unsupported-types ^rejected: types=\[.*\] column \S+ type=\S+ typtype=[de]: type with oid \d{5,} in relation \S+ is not supported$
 check data.copy.* unsupported-types ^rejected: types=\[.*\] column \S+ type=\S+ typtype=r: type with oid (3904|3906|3908|3910|3912|3926|\d{5,}) in relation \S+ is not supported$
-check data.copy.* unsupported-types ^rejected: types=\[.*\] column \S+ type=\S+\[\] typtype=b: type with oid \d{5,} in relation \S+ is not supported$
+check data.copy.* unsupported-types ^rejected: types=\[.*\] column \S+ type=(posint|vc4|dposinta|dcomptype|ddtest1)\[\] typtype=b: type with oid \d{5,} in relation \S+ is not supported$
 check data.copy.* unsupported-types ^rejected: types=\[.*\] column \S+ type=numeric\((39|[4-9]\d|\d{3,}),\d+\) typtype=b: (Invalid => Failed to create decimal type, source: DataInvalid => )?Decimals with precision larger than 38 are not supported\b
 check data.type.* unsupported-types ^rejected: type=.+? typtype=[a-z] \d+ values \([^)]*\); copy=rejected \(column v type=(point|lseg|path|box|polygon|line|circle|interval|inet|cidr|macaddr8?|money|bit\(\d+\)|bit varying(\(\d+\))?|time(\(\d\))? with time zone|pg_lsn|xml|tsvector|tsquery|pg_snapshot|txid_snapshot) typtype=b: type with oid (600|601|602|603|604|628|718|1186|869|650|829|774|790|1560|1562|1266|3220|142|3614|3615|5038|2970) in relation \S+ is not supported\)$
-check data.type.* unsupported-types ^rejected: type=.+? typtype=[a-z] \d+ values \([^)]*\); copy=rejected \(column v type=\S+ typtype=[cde]: type with oid \d{5,} in relation \S+ is not supported\)$
+check data.type.* unsupported-types ^rejected: type=.+? typtype=[a-z] \d+ values \([^)]*\); copy=rejected \(column v type=\S+ typtype=[de]: type with oid \d{5,} in relation \S+ is not supported\)$
 check data.type.* unsupported-types ^rejected: type=.+? typtype=[a-z] \d+ values \([^)]*\); copy=rejected \(column v type=\S+ typtype=r: type with oid (3904|3906|3908|3910|3912|3926|\d{5,}) in relation \S+ is not supported\)$
-check data.type.* unsupported-types ^rejected: type=.+? typtype=[a-z] \d+ values \([^)]*\); copy=rejected \(column v type=\S+\[\] typtype=b: type with oid \d{5,} in relation \S+ is not supported\)$
+check data.type.* unsupported-types ^rejected: type=.+? typtype=[a-z] \d+ values \([^)]*\); copy=rejected \(column v type=(posint|vc4|dposinta|dcomptype|ddtest1)\[\] typtype=b: type with oid \d{5,} in relation \S+ is not supported\)$
 check data.type.* unsupported-types ^rejected: type=.+? typtype=[a-z] \d+ values \([^)]*\); copy=rejected \(column v type=numeric\((39|[4-9]\d|\d{3,}),\d+\) typtype=b: (Invalid => Failed to create decimal type, source: DataInvalid => )?Decimals with precision larger than 38 are not supported\b
 check cdc.* unsupported-types ^create: create_table rejected: column \S+ type=(point|lseg|path|box|polygon|line|circle|interval|inet|cidr|macaddr8?|money|bit\(\d+\)|bit varying(\(\d+\))?|time(\(\d\))? with time zone|pg_lsn|xml|tsvector|tsquery|pg_snapshot|txid_snapshot) typtype=b: type with oid (600|601|602|603|604|628|718|1186|869|650|829|774|790|1560|1562|1266|3220|142|3614|3615|5038|2970) in relation \S+ is not supported ::
-check cdc.* unsupported-types ^create: create_table rejected: column \S+ type=\S+ typtype=[cde]: type with oid \d{5,} in relation \S+ is not supported ::
+check cdc.* unsupported-types ^create: create_table rejected: column \S+ type=\S+ typtype=[de]: type with oid \d{5,} in relation \S+ is not supported ::
 check cdc.* unsupported-types ^create: create_table rejected: column \S+ type=\S+ typtype=r: type with oid (3904|3906|3908|3910|3912|3926|\d{5,}) in relation \S+ is not supported ::
-check cdc.* unsupported-types ^create: create_table rejected: column \S+ type=\S+\[\] typtype=b: type with oid \d{5,} in relation \S+ is not supported ::
+check cdc.* unsupported-types ^create: create_table rejected: column \S+ type=(posint|vc4|dposinta|dcomptype|ddtest1)\[\] typtype=b: type with oid \d{5,} in relation \S+ is not supported ::
 check cdc.* unsupported-types ^create: create_table rejected: column \S+ type=numeric\((39|[4-9]\d|\d{3,}),\d+\) typtype=b: (Invalid => Failed to create decimal type, source: DataInvalid => )?Decimals with precision larger than 38 are not supported\b
 check data.type.* unsupported-types ^rejected: type=(point|lseg|path|box|polygon|line|circle|interval|inet|cidr|macaddr8?|money|bit\(\d+\)|bit varying(\(\d+\))?|time(\(\d\))? with time zone|pg_lsn|xml|tsvector|tsquery|pg_snapshot|txid_snapshot) typtype=b \d+ values \([^)]*\); copy=rejected \(type with oid (600|601|602|603|604|628|718|1186|869|650|829|774|790|1560|1562|1266|3220|142|3614|3615|5038|2970) in relation \S+ is not supported\)$
-check data.type.* unsupported-types ^rejected: type=\S+\[\] typtype=b \d+ values \([^)]*\); copy=rejected \(type with oid \d{5,} in relation \S+ is not supported\)$
+check data.type.domain.* unsupported-types ^rejected: type=(posint|vc4|dposinta|dcomptype|ddtest1)\[\] typtype=b \d+ values \(domain\); copy=rejected \(type with oid \d{5,} in relation \S+ is not supported\)$
+# ddtest1 is a composite whose field is a domain (posint), which this moonlink can't store.
+check data.copy.domain.ddtest2* unsupported-types ^rejected: types=\[.*\] column \S+ type=ddtest1 typtype=c: type with oid \d{5,} in relation \S+ is not supported$
+check data.type.domain.ddtest1* unsupported-types ^rejected: type=ddtest1 typtype=c \d+ values \(domain\); copy=rejected \(column v type=ddtest1 typtype=c: type with oid \d{5,} in relation \S+ is not supported\)$
+check cdc.domain.ddtest2 unsupported-types ^create: create_table rejected: column \S+ type=ddtest1 typtype=c: type with oid \d{5,} in relation \S+ is not supported ::
 check data.copy.arrays.arrtest unsupported-types ^rejected: types=\[.*\] column b type=integer\[\] typtype=b: type with oid 1007 in relation public\.arrtest is not supported$
 check cdc.arrays.arrtest unsupported-types ^create: create_table rejected: column b type=integer\[\] typtype=b: type with oid 1007 in relation public\.arrtest is not supported ::
-check data.copy.* unsupported-types ^rejected: types=\[.*\] type with oid (600|601|602|603|604|628|718|1186|869|650|829|774|790|1560|1562|1266|3220|142|3614|3615|5038|2970|\d{5,}) in relation \S+ is not supported$
+check data.copy.* unsupported-types ^rejected: types=\[.*\] type with oid (600|601|602|603|604|628|718|1186|869|650|829|774|790|1560|1562|1266|3220|142|3614|3615|5038|2970) in relation \S+ is not supported$
 check cdc.* unsupported-table-shapes ^create: create_table rejected: not supported for unlogged tables\.
 check cdc.* rejected-create-leaves-state ^create: create_table rejected: (column \S+ type=.+? typtype=[a-z]: )?error creating table: mc\.\S+ ::
 
 # ---- char(n), json -----------------------------------------------------------------------------
-check data.type.character_[0-9]* char-padding-lost ^lossy: type=character\(\d+\)(\[\])? typtype=b
+check data.type.character_[0-9]* char-padding-lost ^lossy: type=character\(\d+\)(\[\])? typtype=b \d+ values \([^)]*\); \w+=lossy \(value col=v type=character\(\d+\)(\[\])? heap-only: 
 check data.copy.* char-padding-lost ^lossy: types=\[.*\] value col=\S+ type=character\(\d+\)(\[\])? heap-only
 check cdc.* char-padding-lost ^(copy|dml|commit|final): value col=\S+ type=character\(\d+\)(\[\])? heap-only
-check data.type.json json-text-normalised ^equivalent: type=json typtype=b
-check data.type.jsonb json-text-normalised ^equivalent: type=jsonb typtype=b
+check data.type.json json-text-normalised ^equivalent: type=json typtype=b \d+ values \([^)]*\); \w+=equivalent \(value col=v type=json heap-only: 
+check data.type.jsonb json-text-normalised ^equivalent: type=jsonb typtype=b \d+ values \([^)]*\); \w+=equivalent \(value col=v type=jsonb heap-only: 
 check data.copy.* json-text-normalised ^equivalent: types=\[.*\] value col=\S+ type=jsonb? heap-only
 
 # ---- numeric -----------------------------------------------------------------------------------
@@ -115,7 +119,7 @@ check data.type.timestamp* date-out-of-range ^crashed: type=timestamp.*create_ta
 check cdc.date.* date-out-of-range ^(create: create_table crashed moonlink at moonlink/src/moonlink_connectors/src/pg_replicate\.rs:283:22|dml: row-count heap=\d+ mirror=\d+ heap-only: [^|]*(infinity|BC)[^|]* \|\| mirror-only:  ::)
 check cdc.timestamp*.* date-out-of-range ^(create: create_table crashed moonlink at moonlink/src/moonlink_connectors/src/pg_replicate\.rs:283:22|dml: row-count heap=\d+ mirror=\d+ heap-only: .* \|\| mirror-only:  :: INSERT INTO TIMESTAMP(TZ)?_T(BL|ST) VALUES)
 check backend.data.timestamptz duckdb-timezone-commit-abort ^1 Postgres crash restart\(s\) not attributed to a statement: TRAP: failed Assert\(\"IsTransactionState\(\)\"\), File: \"relcache\.c\", Line: \d+, PID: \d+$
-check backend.timestamptz.* duckdb-timezone-commit-abort TRAP: failed Assert\("IsTransactionState\(\)"\), File: "relcache\.c", Line: \d+, PID: \d+ during: COMMIT;$
+check backend.timestamptz.* duckdb-timezone-commit-abort ^Postgres backend crashed \(server crash recovery\): TRAP: failed Assert\("IsTransactionState\(\)"\), File: "relcache\.c", Line: \d+, PID: \d+ during: COMMIT;$
 
 # ---- arrays and composites -----------------------------------------------------------------------
 check panic.arrays.* keyless-nested-copy-panic at (moonlink/src/moonlink/src/row/arrow_converter\.rs:108:13|parquet-55\.2\.0/src/arrow/mod\.rs:304:22) during: CALL mooncake\.create_table
@@ -123,7 +127,9 @@ check panic.aggregates.* keyless-nested-copy-panic at moonlink/src/moonlink/src/
 check panic.insert.* keyless-nested-copy-panic at parquet-55\.2\.0/src/arrow/mod\.rs:304:22 during: CALL mooncake\.create_table\('mc\.inserttest'
 check data.copy.* keyless-nested-copy-panic ^crashed: types=\[.*\] create_table panicked moonlink at (moonlink/src/moonlink/src/row/arrow_converter\.rs:108:13|parquet-55\.2\.0/src/arrow/mod\.rs:304:22)$
 check cdc.* keyless-nested-copy-panic ^create: create_table (crashed|not attempted: column \S+ type=\S+ crashed) moonlink at (moonlink/src/moonlink/src/row/arrow_converter\.rs:108:13|parquet-55\.2\.0/src/arrow/mod\.rs:304:22)
-check data.type.*_array multidim-arrays,arrays-come-back-empty ^(crashed|lossy): type=\S+( \S+)*\[\] typtype=b
+check data.type.*_array multidim-arrays ^crashed: type=\S+( \S+)*\[\] typtype=b \d+ values \([^)]*\); copy=crashed \(create_table panicked moonlink at moonlink/src/moonlink_connectors/src/pg_replicate\.rs:283:22\)$
+check data.type.*_array multidim-arrays ^lossy: type=\S+( \S+)*\[\] typtype=b \d+ values \([^)]*\); \w+=lossy \(value col=v type=\S+( \S+)*\[\] heap-only: [^|]*\{\{
+check data.type.*_array arrays-come-back-empty ^lossy: type=\S+( \S+)*\[\] typtype=b \d+ values \([^)]*\); \w+=lossy \(value col=v type=\S+( \S+)*\[\] heap-only: .* \|\| mirror-only: [^|]*\{\}
 check cdc.* arrays-come-back-empty ^(copy|dml|commit|final): value col=\S+ type=\S+\[\] heap-only: .* \|\| mirror-only: [^|]*\{\}
 check data.copy.* composite-as-struct ^lossy: types=\[.*\] value col=\S+ type=\S+ heap-only: .* \|\| mirror-only: .*\{'\w+': 
 check data.type.* composite-as-struct ^lossy: type=\S+ typtype=[bcd] \d+ values .*mirror-only: .*\{'\w+': 
@@ -168,7 +174,7 @@ check cdc.extra_tables.shp_parent inheritance-children-ignored ^(dml|final): row
 check query.extra_tables.* inheritance-children-ignored :: SELECT \* FROM shp_parent ORDER BY id;$
 check stmt.extra_tables.multiassign_update_on_mirror duckdb-multiassign-abort ^died: +:: UPDATE mc\.shp_ri_index SET \(v, id\) = \(SELECT
 check stmt.extra_tables.set_local_timezone_commit_after_duckdb duckdb-timezone-commit-abort ^died: +:: COMMIT;
-check backend.extra_tables.* duckdb-timezone-commit-abort,duckdb-multiassign-abort TRAP: failed Assert\("(IsTransactionState\(\)|\(\(Param \*\) expr\)->paramid == .*)"\), File: "[^"]+", Line: \d+, PID: \d+ during: (COMMIT;|UPDATE mc\.shp_ri_index SET \(v, id\))
+check backend.extra_tables.* duckdb-timezone-commit-abort,duckdb-multiassign-abort ^Postgres backend crashed \(server crash recovery\): TRAP: failed Assert\("(IsTransactionState\(\)|\(\(Param \*\) expr\)->paramid == .*)"\), File: "[^"]+", Line: \d+, PID: \d+ during: (COMMIT;|UPDATE mc\.shp_ri_index SET \(v, id\))
 check service.run.extra_tables inheritance-recovery-crash-loop ^mooncake\.list_tables\(\) fails after the file: ERROR: Failed to connect to moonlink: .*Connection refused
 check cdc.extra_tables.* inheritance-recovery-crash-loop ^final: mirror read failed: error XX000 \(PGDuckDB/CreatePlan\) Invalid Input Error: Initialization function "mooncake_duckdb_cpp_init" from file
 check panic.data.arrays drop-after-dead-task-panic ^1 moonlink panic\(s\) at moonlink/src/moonlink/src/storage/mooncake_table/table_event_manager\.rs:127:14 not attributed to a check$

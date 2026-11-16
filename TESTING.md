@@ -142,6 +142,6 @@ A full run takes one to three hours; `--files numeric,join` runs a subset (the g
 (`tests/mirror_diff/expected.txt`, `bug <name> class=blocking|class=limitation ...`) and the `GATE mirror_diff` line
 and exit status follow the [end-to-end gate](#end-to-end-gate-scriptse2e-smokesh) and its
 [release policy](#release-policy-blocking-and-limitation), with one difference: a plain SKIP (a query DuckDB can't
-plan, a volatile statement, a `LIMIT` that may pick different rows) doesn't fail the mirror_diff gate; only an
+plan, a volatile or side-effecting statement) doesn't fail the mirror_diff gate; only an
 unverified SKIP (a mirror that couldn't be checked) does. `tests/mirror_diff/README.md` describes the checks, the
 comparison rules, the SKIPs and the rule syntax.

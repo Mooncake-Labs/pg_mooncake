@@ -29,8 +29,9 @@ moonlink_service = { path = "moonlink/src/moonlink_service", optional = true }
 native-tls = "0.2"
 # Exact: cargo-pgrx (installed at this version by CI and the README) must match the pgrx crate.
 pgrx = "=0.16.1"
-postgres.git = "https://github.com/Mooncake-Labs/rust-postgres.git"
-postgres-native-tls.git = "https://github.com/Mooncake-Labs/rust-postgres.git"
+# The rust-postgres revision moonlink pins (moonlink/Cargo.toml), so Cargo resolves one copy of it, not two.
+postgres = { git = "https://github.com/Mooncake-Labs/rust-postgres.git", rev = "14c8e599f5551a8caa96ff5023685a6f537a1455" }
+postgres-native-tls = { git = "https://github.com/Mooncake-Labs/rust-postgres.git", rev = "14c8e599f5551a8caa96ff5023685a6f537a1455" }
 tokio = "1.48"
 
 [profile.release]

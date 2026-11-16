@@ -47,6 +47,8 @@ jobs:
       - name: Install the Rust toolchain from rust-toolchain.toml
         run: rustup toolchain install
       - run: cargo fmt --check
+      - name: Check that rust-postgres is pinned as in moonlink
+        run: make check-rust-postgres
 
   duckdb_mooncake:
     name: Build duckdb_mooncake

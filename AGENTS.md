@@ -126,9 +126,8 @@ cargo pgrx init --pg17 download --pg18 download    # or --pgNN "$(which pg_confi
 Build and install for one PG major (repeat with `pg17`):
 ```bash
 export PG_VERSION=pg18
-PG_BIN="$(dirname "$(cargo pgrx info pg-config $PG_VERSION)")"
-make pg_duckdb PG_VERSION=$PG_VERSION                     # pg_duckdb + libduckdb into that PG
-PATH="$PG_BIN:$PATH" make install PG_VERSION=$PG_VERSION  # see pitfall 1
+make pg_duckdb PG_VERSION=$PG_VERSION    # pg_duckdb + libduckdb into that PG
+make install PG_VERSION=$PG_VERSION      # release build; PG_CONFIG=<pg_config> installs into another PG
 ```
 Add this to the cluster's `postgresql.conf` (pgrx clusters live in `~/.pgrx/data-NN`):
 ```ini
@@ -155,8 +154,9 @@ and set `duckdb.allow_unsigned_extensions = true` and `duckdb.autoinstall_known_
 
 ## 5. Pitfalls
 
-1. **`cargo pgrx install` uses the first `pg_config` on `PATH`**, not the `PG_CONFIG` the Makefile exports. With another
-   Postgres on `PATH` it compiles for the right major but installs into the wrong prefix.
+1. **`cargo pgrx install` without `--pg-config` uses the first `pg_config` on `PATH`.** With another Postgres on `PATH`
+   it compiles for the right major but installs into the wrong prefix. `make install` and `make package` pass
+   `--pg-config "$PG_CONFIG"`; call `cargo pgrx install` directly only with `--pg-config`.
 2. **The `bgworker` cargo feature** (default) is what starts moonlink. A `--no-default-features` build has no worker, and
    every call fails with `mooncake.<procedure> failed: failed to connect to moonlink: ...`.
 3. **`mooncake.create_table` creates the mirror table on a separate, autocommitted libpq connection** (loopback by default,

@@ -30,7 +30,9 @@ runs:
         sudo apt-get install -y -q build-essential cmake ninja-build pkg-config clang libclang-dev \
           libssl-dev libcurl4-openssl-dev liblz4-dev "postgresql-$PG" "postgresql-server-dev-$PG"
         pg_bin=/usr/lib/postgresql/$PG/bin
-        # cargo pgrx install uses the first pg_config on PATH (AGENTS.md, pitfall 1).
+        # This PostgreSQL's tools come first on PATH, for the steps that call them directly. make install and make
+        # package pass --pg-config themselves; a bare cargo pgrx install would use the first pg_config on PATH
+        # (AGENTS.md, pitfall 1).
         echo "$pg_bin" >> "$GITHUB_PATH"
         echo "PG_BIN=$pg_bin" >> "$GITHUB_ENV"
         # Let the runner user install pg_duckdb and pg_mooncake without sudo.

@@ -73,10 +73,11 @@ make pg_duckdb PG_VERSION=pg18              # Skip if pg_duckdb is already insta
 make install PG_VERSION=pg18
 ```
 
-`make install` installs into the Postgres whose `pg_config` comes first on your `PATH`, so make sure that is the one you
-passed to `cargo pgrx init`. If that Postgres is owned by root, install pg_mooncake with
-`cargo pgrx install --release --sudo` in place of `make install`, and install pg_duckdb with root privileges as described
-in [its build instructions][pgduckdb-link].
+`make install` and `make pg_duckdb` install into the Postgres you passed to `cargo pgrx init` for that version. To
+install into another one, pass its `pg_config`: `make install PG_VERSION=pg18 PG_CONFIG=/path/to/pg_config` (the major
+version must match `PG_VERSION`). If that Postgres is owned by root, install pg_mooncake with
+`cargo pgrx install --release --sudo --pg-config /path/to/pg_config` in place of `make install`, and install pg_duckdb
+with root privileges as described in [its build instructions][pgduckdb-link].
 
 **Configure Postgres.** Add pg_mooncake to `shared_preload_libraries` in your `postgresql.conf` file and enable logical
 replication, then restart Postgres:

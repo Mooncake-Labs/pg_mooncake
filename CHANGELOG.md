@@ -19,18 +19,19 @@ pg_mooncake 0.3.0 runs on a slimmed-down moonlink.
   so updates keep unchanged TOAST values. Changing it back puts the mirror into the errored state. ([moonlink PR
   2360][ml-2360])
 - `mooncake.create_table` refuses, with the reason, a source it cannot mirror exactly: a column of a type mirrors cannot
-  store (`interval`, `inet`), generated columns, a table with inheritance children, a partitioned table without a
-  primary key or with an unlogged or foreign partition, a partitioned table and one of its own partitions both mirrored,
-  and a source the connection's role cannot `SELECT`. ([moonlink PR 2360][ml-2360], [moonlink PR 2368][ml-2368])
-- Values are stored as Postgres has them (`numeric`, `json`/`jsonb`, `character(n)`, arrays, dates before year 1 and
-  after 9999, domains, enums), or the mirror enters the errored state: for example on `infinity` dates and timestamps,
-  multi-dimensional arrays, or more than 10 fractional digits in an unconstrained `numeric`. ([moonlink PR
+  store (`interval`, `inet`), a multi-dimensional array column, generated columns, a table with inheritance children, a
+  partitioned table without a primary key or with an unlogged or foreign partition, a partitioned table and one of its
+  own partitions both mirrored, and a source the connection's role cannot `SELECT`. ([moonlink PR 2360][ml-2360],
+  [moonlink PR 2368][ml-2368])
+- Values are stored as Postgres has them (`numeric`, `json`/`jsonb`, arrays, dates before year 1 and after 9999,
+  domains, enums), or the mirror enters the errored state: for example on `infinity` dates and timestamps,
+  multi-dimensional array values, or more than 10 fractional digits in an unconstrained `numeric`. ([moonlink PR
   2360][ml-2360], [moonlink PR 2368][ml-2368])
 - A query that reads a mirror at the session's last commit waits at most 30 s for moonlink to reach it, then fails with
   a retryable error naming the LSN. ([moonlink PR 2365][ml-2365])
 - moonlink deletes Iceberg files it no longer needs. Set `MOONLINK_ICEBERG_GC=dry-run` in the server's environment to
-  only log them, or `off` to keep everything. A full disk pauses mirrors instead of failing them. ([moonlink PR
-  2365][ml-2365])
+  only log them, or `off` to keep everything. A full disk pauses mirrors for up to 30 minutes (or until 512 MiB of
+  changes wait in memory) before erroring them. ([moonlink PR 2365][ml-2365])
 - Failures talking to moonlink are reported as regular Postgres errors (`mooncake.<procedure> failed: ...`), and the
   next call reconnects.
 - `DROP TABLE` of a mirror always succeeds. If moonlink is down or does not answer, the drop completes with a `WARNING`
@@ -75,7 +76,8 @@ pg_mooncake 0.3.0 runs on a slimmed-down moonlink.
 - Dropping a mirror created by 0.2 whose name needs quoting (mixed case, `$`) also removes it from moonlink.
 
 ### Fixed in moonlink
-- A restart or a reconnect no longer loses or duplicates rows, and `pg_wal` no longer grows behind idle or empty
+- A restart or a reconnect no longer loses or duplicates rows once a mirror's initial copy has been persisted (see Known
+  limitations for a restart right after `mooncake.create_table`), and `pg_wal` no longer grows behind idle or empty
   mirrors. ([moonlink PR 2364][ml-2364])
 - A mirror that cannot follow its source no longer crashes the background worker, stops replication for the other
   mirrors, or silently diverges: it enters the errored state, and dropping it no longer hangs. A mirror that cannot be
@@ -117,6 +119,12 @@ pg_mooncake 0.3.0 runs on a slimmed-down moonlink.
   a leftover is removed when a mirror with the same name is created again.
 - Identifiers containing `.` are rejected.
 - Moonlink calls other than the one made by `DROP TABLE` have no timeout.
+- `character(n)` values come back without their trailing padding.
+- If moonlink restarts within about half a second after `mooncake.create_table` returns (a fast server stop or restart,
+  or the moonlink worker being stopped), the new mirror loses the rows of its initial copy, without an error. To avoid
+  it, write to the source table and run `CALL mooncake.create_snapshot('<mirror>')` in the same session after
+  `mooncake.create_table`; if it happened, drop and re-create the mirror.
+  <!-- RC: remove this entry if the moonlink fix for losing the initial copy on an early restart lands before the tag. -->
 - Composite and domain-over-composite columns read back from a mirror as DuckDB STRUCT values, e.g.
   `{'f1': 1, 'f2': 'foo'}` instead of `(1,foo)`. The values are preserved; compare or extract fields (`(c).f1`) rather
   than the row text. Comparing the whole value with a row (`c = ROW(1, 'foo')::t`) fails in DuckDB.

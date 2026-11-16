@@ -204,6 +204,10 @@ summary. Product behavior (fix with a test; don't paper over it):
   Postgres privileges on relations it scans through the mooncake table AM, so per-mirror GRANTs are not enforced.
 - Dropping the last mirror leaves `initial_copy/`, `.moonlink_atomic_tmp/` and `source_fingerprints/` entries behind
   under `$PGDATA/pg_mooncake`.
+- A moonlink restart (fast stop, or SIGTERM to the worker) within about 0.5 s after `create_table` returns loses the
+  mirror's initial-copy rows for good, without an error: the copy is not yet in an Iceberg snapshot, and the slot
+  resumes after it. Workaround: write to the source and `CALL mooncake.create_snapshot(...)` in the same session after
+  `create_table` (a fresh session's `create_snapshot` returns at once and does not help).
 - Calls other than `DropTable` have no timeout: a hung moonlink blocks them until it answers.
 - Identifiers containing `.` are rejected (moonlink splits source names on `.`).
 

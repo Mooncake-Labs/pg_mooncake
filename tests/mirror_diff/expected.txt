@@ -44,6 +44,7 @@ bug partition-ddl-ignored class=blocking DROP, DETACH or ATTACH PARTITION on a m
 bug partition-update-panics class=blocking UPDATE whose old row is missing (multi-level partitions, replica identity not FULL) panics the replication task
 bug relation-schema-assert class=blocking A Relation message for a table the CDC stream doesn't know panics the replication task (multi-level partitions)
 bug rejected-create-leaves-state class=blocking After create_table is rejected, mirroring a re-created source under the same mirror name fails with "error creating table"
+bug drop-after-dead-task-panic class=blocking DROP of a mirror whose table task already died panics moonlink (table_event_manager.rs) and half-drops it
 bug snapshot-hangs-after-xidless-wal class=blocking create_snapshot waits forever when the session's last transaction wrote WAL without an xid
 
 # ---- backend crashes (Postgres crash recovery) -----------------------------------------------------
@@ -51,10 +52,29 @@ bug duckdb-timezone-commit-abort class=blocking After a DuckDB query in the sess
 bug duckdb-multiassign-abort class=blocking UPDATE ... SET (a, b) = (SELECT ...) on a mirror aborts the backend in pg_duckdb's deparser
 
 # ---- unsupported types: clean rejections ---------------------------------------------------------
-check data.copy.* unsupported-types ^rejected: types=\[.*\] (column \S+ type=.+? typtype=[a-z]: )?type with oid \d+ in relation \S+ is not supported$
-check data.copy.* unsupported-types ^rejected: types=\[.*\] (column \S+ type=numeric\(\d+,\d+\) typtype=b: )?(Invalid => Failed to create decimal type, source: DataInvalid => )?Decimals with precision larger than 38 are not supported\b
-check data.type.* unsupported-types ^rejected: type=.+? typtype=[a-z] \d+ values \([^)]*\); copy=rejected \((column v type=.+? typtype=[a-z]: )?(type with oid \d+ in relation \S+ is not supported|(Invalid => Failed to create decimal type, source: DataInvalid => )?Decimals with precision larger than 38 are not supported\b)
-check cdc.* unsupported-types ^create: create_table rejected: (column \S+ type=.+? typtype=[a-z]: )?(type with oid \d+ in relation \S+ is not supported|(Invalid => Failed to create decimal type, source: DataInvalid => )?Decimals with precision larger than 38 are not supported\b)
+# The rejected column's type (or the oid the error names) must be one mirrors don't support: the
+# builtin types listed, a type a file defines (oid >= 10000), or an array of one. A rejection of
+# any other type is a FAIL.
+check data.copy.* unsupported-types ^rejected: types=\[.*\] column \S+ type=(point|lseg|path|box|polygon|line|circle|interval|inet|cidr|macaddr8?|money|bit\(\d+\)|bit varying(\(\d+\))?|time(\(\d\))? with time zone|pg_lsn|xml|tsvector|tsquery|pg_snapshot|txid_snapshot) typtype=b: type with oid (600|601|602|603|604|628|718|1186|869|650|829|774|790|1560|1562|1266|3220|142|3614|3615|5038|2970) in relation \S+ is not supported$
+check data.copy.* unsupported-types ^rejected: types=\[.*\] column \S+ type=\S+ typtype=[cde]: type with oid \d{5,} in relation \S+ is not supported$
+check data.copy.* unsupported-types ^rejected: types=\[.*\] column \S+ type=\S+ typtype=r: type with oid (3904|3906|3908|3910|3912|3926|\d{5,}) in relation \S+ is not supported$
+check data.copy.* unsupported-types ^rejected: types=\[.*\] column \S+ type=\S+\[\] typtype=b: type with oid \d{5,} in relation \S+ is not supported$
+check data.copy.* unsupported-types ^rejected: types=\[.*\] column \S+ type=numeric\((39|[4-9]\d|\d{3,}),\d+\) typtype=b: (Invalid => Failed to create decimal type, source: DataInvalid => )?Decimals with precision larger than 38 are not supported\b
+check data.type.* unsupported-types ^rejected: type=.+? typtype=[a-z] \d+ values \([^)]*\); copy=rejected \(column v type=(point|lseg|path|box|polygon|line|circle|interval|inet|cidr|macaddr8?|money|bit\(\d+\)|bit varying(\(\d+\))?|time(\(\d\))? with time zone|pg_lsn|xml|tsvector|tsquery|pg_snapshot|txid_snapshot) typtype=b: type with oid (600|601|602|603|604|628|718|1186|869|650|829|774|790|1560|1562|1266|3220|142|3614|3615|5038|2970) in relation \S+ is not supported\)$
+check data.type.* unsupported-types ^rejected: type=.+? typtype=[a-z] \d+ values \([^)]*\); copy=rejected \(column v type=\S+ typtype=[cde]: type with oid \d{5,} in relation \S+ is not supported\)$
+check data.type.* unsupported-types ^rejected: type=.+? typtype=[a-z] \d+ values \([^)]*\); copy=rejected \(column v type=\S+ typtype=r: type with oid (3904|3906|3908|3910|3912|3926|\d{5,}) in relation \S+ is not supported\)$
+check data.type.* unsupported-types ^rejected: type=.+? typtype=[a-z] \d+ values \([^)]*\); copy=rejected \(column v type=\S+\[\] typtype=b: type with oid \d{5,} in relation \S+ is not supported\)$
+check data.type.* unsupported-types ^rejected: type=.+? typtype=[a-z] \d+ values \([^)]*\); copy=rejected \(column v type=numeric\((39|[4-9]\d|\d{3,}),\d+\) typtype=b: (Invalid => Failed to create decimal type, source: DataInvalid => )?Decimals with precision larger than 38 are not supported\b
+check cdc.* unsupported-types ^create: create_table rejected: column \S+ type=(point|lseg|path|box|polygon|line|circle|interval|inet|cidr|macaddr8?|money|bit\(\d+\)|bit varying(\(\d+\))?|time(\(\d\))? with time zone|pg_lsn|xml|tsvector|tsquery|pg_snapshot|txid_snapshot) typtype=b: type with oid (600|601|602|603|604|628|718|1186|869|650|829|774|790|1560|1562|1266|3220|142|3614|3615|5038|2970) in relation \S+ is not supported ::
+check cdc.* unsupported-types ^create: create_table rejected: column \S+ type=\S+ typtype=[cde]: type with oid \d{5,} in relation \S+ is not supported ::
+check cdc.* unsupported-types ^create: create_table rejected: column \S+ type=\S+ typtype=r: type with oid (3904|3906|3908|3910|3912|3926|\d{5,}) in relation \S+ is not supported ::
+check cdc.* unsupported-types ^create: create_table rejected: column \S+ type=\S+\[\] typtype=b: type with oid \d{5,} in relation \S+ is not supported ::
+check cdc.* unsupported-types ^create: create_table rejected: column \S+ type=numeric\((39|[4-9]\d|\d{3,}),\d+\) typtype=b: (Invalid => Failed to create decimal type, source: DataInvalid => )?Decimals with precision larger than 38 are not supported\b
+check data.type.* unsupported-types ^rejected: type=(point|lseg|path|box|polygon|line|circle|interval|inet|cidr|macaddr8?|money|bit\(\d+\)|bit varying(\(\d+\))?|time(\(\d\))? with time zone|pg_lsn|xml|tsvector|tsquery|pg_snapshot|txid_snapshot) typtype=b \d+ values \([^)]*\); copy=rejected \(type with oid (600|601|602|603|604|628|718|1186|869|650|829|774|790|1560|1562|1266|3220|142|3614|3615|5038|2970) in relation \S+ is not supported\)$
+check data.type.* unsupported-types ^rejected: type=\S+\[\] typtype=b \d+ values \([^)]*\); copy=rejected \(type with oid \d{5,} in relation \S+ is not supported\)$
+check data.copy.arrays.arrtest unsupported-types ^rejected: types=\[.*\] column b type=integer\[\] typtype=b: type with oid 1007 in relation public\.arrtest is not supported$
+check cdc.arrays.arrtest unsupported-types ^create: create_table rejected: column b type=integer\[\] typtype=b: type with oid 1007 in relation public\.arrtest is not supported ::
+check data.copy.* unsupported-types ^rejected: types=\[.*\] type with oid (600|601|602|603|604|628|718|1186|869|650|829|774|790|1560|1562|1266|3220|142|3614|3615|5038|2970|\d{5,}) in relation \S+ is not supported$
 check cdc.* unsupported-table-shapes ^create: create_table rejected: not supported for unlogged tables\.
 check cdc.* rejected-create-leaves-state ^create: create_table rejected: (column \S+ type=.+? typtype=[a-z]: )?error creating table: mc\.\S+ ::
 
@@ -74,12 +94,16 @@ check data.type.numeric_* numeric-typmod-panic ^crashed: type=numeric\(\d+,-?\d+
 check cdc.* numeric-typmod-panic ^create: create_table (crashed|not attempted: column \S+ type=numeric\(\d+,-?\d+\) crashed) moonlink at moonlink/src/moonlink/src/row/column_array_builder\.rs:193:22
 check data.copy.numeric.* decimal-stats-overflow-panic ^crashed: types=\[numeric\] mirror scan ok; moonlink panicked at rust_decimal-1\.43\.0/src/decimal\.rs:2047:1
 check data.copy.numeric.* numeric-beyond-i128-panic ^crashed: types=\[numeric\] create_table panicked moonlink at moonlink/src/moonlink_connectors/src/pg_replicate\.rs:283:22$
-check data.type.numeric numeric-digits-shifted,numeric-nan-inf-null,numeric-beyond-i128-panic,decimal-stats-overflow-panic ^(crashed|lossy): type=numeric typtype=b
+check data.type.numeric numeric-beyond-i128-panic ^crashed: type=numeric typtype=b \d+ values \([^)]*\); (copy|cdc_\w+|probe)=crashed \(.*(moonlink/src/moonlink_connectors/src/pg_replicate/util\.rs:355:61|moonlink/src/moonlink_connectors/src/pg_replicate\.rs:283:22)
+check data.type.numeric decimal-stats-overflow-panic ^crashed: type=numeric typtype=b \d+ values \([^)]*\); (copy|cdc_\w+|probe)=crashed \(.*rust_decimal-1\.43\.0/src/decimal\.rs:2047:1
+check data.type.numeric numeric-nan-inf-null ^(crashed|lossy): type=numeric typtype=b \d+ values \([^)]*\); \w+=lossy \(value col=v type=numeric heap-only: [^|]*\b(NaN|-?Infinity)\b[^|]*\|\| mirror-only: [^|]*§N§
+check data.type.numeric numeric-digits-shifted ^(crashed|lossy): type=numeric typtype=b \d+ values \([^)]*\); \w+=lossy \(value col=v type=numeric heap-only: 
 check data.type.numeric_* numeric-nan-inf-null ^lossy: type=numeric\(\d+,\d+\) typtype=b .*heap-only: [^|]*\b(NaN|-?Infinity)\b[^|]*\|\| mirror-only: [^|]*§N§
 check data.copy.* numeric-nan-inf-null ^lossy: types=\[.*\] value col=\S+ type=numeric(\(\d+,\d+\))? heap-only: [^|]*\b(NaN|-?Infinity)\b[^|]*\|\| mirror-only: [^|]*§N§
 check cdc.* numeric-nan-inf-null ^(copy|dml|commit|final): value col=\S+ type=numeric(\(\d+,\d+\))? heap-only: [^|]*\b(NaN|-?Infinity)\b[^|]*\|\| mirror-only: [^|]*§N§
 check data.copy.* numeric-digits-shifted ^(lossy|equivalent): types=\[.*\] value col=\S+ type=numeric(\[\])? heap-only
-check cdc.* numeric-digits-shifted ^(copy|dml|commit|final): (value col=\S+ type=numeric(\[\])? heap-only|row-count heap=\d+ mirror=\d+ heap-only: .* \|\| mirror-only: [-\d.]+ :: <end of file>)
+check cdc.* numeric-digits-shifted ^(copy|dml|commit|final): value col=\S+ type=numeric(\[\])? heap-only
+check cdc.numeric.* numeric-digits-shifted ^final: row-count heap=\d+ mirror=\d+ heap-only: .* \|\| mirror-only: [-\d.]+ :: <end of file>$
 check cdc.numeric.num_variance numeric-beyond-i128-panic ^(drop: drop mirror failed: timeout|create: create_table rejected: error creating table: mc\.num_variance)
 
 # ---- dates and timestamps ------------------------------------------------------------------------
@@ -90,6 +114,7 @@ check data.type.date date-out-of-range ^crashed: type=date typtype=b .*create_ta
 check data.type.timestamp* date-out-of-range ^crashed: type=timestamp.*create_table panicked moonlink at moonlink/src/moonlink_connectors/src/pg_replicate\.rs:283:22
 check cdc.date.* date-out-of-range ^(create: create_table crashed moonlink at moonlink/src/moonlink_connectors/src/pg_replicate\.rs:283:22|dml: row-count heap=\d+ mirror=\d+ heap-only: [^|]*(infinity|BC)[^|]* \|\| mirror-only:  ::)
 check cdc.timestamp*.* date-out-of-range ^(create: create_table crashed moonlink at moonlink/src/moonlink_connectors/src/pg_replicate\.rs:283:22|dml: row-count heap=\d+ mirror=\d+ heap-only: .* \|\| mirror-only:  :: INSERT INTO TIMESTAMP(TZ)?_T(BL|ST) VALUES)
+check backend.data.timestamptz duckdb-timezone-commit-abort ^1 Postgres crash restart\(s\) not attributed to a statement: TRAP: failed Assert\(\"IsTransactionState\(\)\"\), File: \"relcache\.c\", Line: \d+, PID: \d+$
 check backend.timestamptz.* duckdb-timezone-commit-abort TRAP: failed Assert\("IsTransactionState\(\)"\), File: "relcache\.c", Line: \d+, PID: \d+ during: COMMIT;$
 
 # ---- arrays and composites -----------------------------------------------------------------------
@@ -116,29 +141,27 @@ check service.run.insert relation-schema-assert last moonlink panic at moonlink/
 check cdc.insert.* relation-schema-assert ^(unverified: no mirror: moonlink wedged since line \d+: CALL mooncake\.create_table\('mc\.key_desc'|create: create_table died :: create table key_desc|dml: mirror read failed: died +:: insert into mlparted|drop: drop mirror failed: timeout .*:: insert into mlparted|create: create_table rejected: error creating table: mc\.mlparted ::)
 check cdc.insert.list_parted partition-ddl-ignored ^dml: row-count heap=\d+ mirror=\d+ heap-only:  \|\| mirror-only: .* :: insert into list_parted values
 check panic.update.* partition-update-panics at moonlink/src/moonlink_connectors/src/pg_replicate/moonlink_sink\.rs:301:65 during
-check panic.insert_conflict.* partition-update-panics at moonlink/src/moonlink_connectors/src/pg_replicate/(moonlink_sink\.rs:301:65|\.\./moonlink/src/table_handler\.rs:253:34) during
+check panic.insert_conflict.* partition-update-panics at (moonlink/src/moonlink_connectors/src/pg_replicate/moonlink_sink\.rs:301:65|moonlink/src/moonlink/src/table_handler\.rs:253:34) during
 check service.update.wedged partition-update-panics last moonlink panic at moonlink/src/moonlink_connectors/src/pg_replicate/moonlink_sink\.rs:301:65;
 check infra.update.file_timeout partition-update-panics last moonlink panic at moonlink/src/moonlink_connectors/src/pg_replicate/moonlink_sink\.rs:301:65$
 check service.run.update partition-update-panics last moonlink panic at moonlink/src/moonlink_connectors/src/pg_replicate/moonlink_sink\.rs:301:65$
 check cdc.update.* partition-update-panics ^(unverified: no mirror: moonlink wedged since line \d+: CALL mooncake\.create_table\('mc\.range_parted'|create: create_table died :: CREATE TABLE range_parted|dml: mirror read failed: died +:: WITH aaa AS|drop: drop mirror failed: timeout .*:: WITH aaa AS|create: create_table rejected: error creating table: mc\.upsert_test ::)
-check cdc.insert_conflict.parted_conflict* partition-update-panics ^(drop: drop mirror failed: error drop_table failed|create: create_table rejected: (create_table failed: Rpc|error creating table: mc\.parted_conflict))
+check cdc.insert_conflict.parted_conflict* partition-update-panics ^(drop: drop mirror failed: error drop_table failed|create: create_table rejected: (create_table failed: Rpc|error creating table: mc\.parted_conflict)|create: create_table crashed moonlink at moonlink/src/moonlink/src/table_handler\.rs:253:34)
 check cdc.insert_conflict.cities inheritance-children-ignored ^dml: (row-count heap=\d+ mirror=\d+ heap-only: .* \|\| mirror-only: |value col=population type=double precision heap-only: )
 check cdc.merge.measurement inheritance-children-ignored ^(dml|copy): row-count heap=\d+ mirror=\d+ heap-only: .* :: (INSERT INTO measurement VALUES|MERGE into measurement|<create_table: schema changed>)
 check cdc.merge.measurement_y2007m01 inheritance-children-ignored ^create: create_table rejected: create_table failed: Rpc
+check cdc.merge.measurement_y2007m01 inheritance-recovery-crash-loop ^create: create_table rejected: replication client error: tokio_postgres error: db error: ERROR: relation \"measurement_y2007m01\" is already member of publication
 check query.aggregates.* inheritance-children-ignored ^mirror differs; DuckDB on the heap tables agrees with the heap: .* :: select (distinct )?min\(f1\), max\(f1\) from minmaxtest
 
 # ---- CDC and table shapes (extra files) --------------------------------------------------------
 check stmt.extra_cdc.snapshot_after_xidless_wal snapshot-hangs-after-xidless-wal ^(died|timeout): .*create_snapshot
 check cdc.extra_cdc.cdc_toast unchanged-toast-overwritten ^dml: value col=(big|bin|doc) type=(text|bytea|jsonb) heap-only
 check cdc.extra_cdc.cdc_trunc truncate-ignored ^dml: row-count heap=\d+ mirror=\d+ .*:: INSERT INTO cdc_trunc VALUES \(1, 'after truncate'\)
-check data.copy.* unsupported-types ^rejected: types=\[.*numeric\((39|[4-9]\d|\d{3,}),\d+\)[^\]]*\] (column \S+ type=numeric\(\d+,\d+\) typtype=b: )?Invalid => Failed to create decimal type, source: DataInvalid => Decimals with precision larger than 38 are not supported
-check data.type.numeric_* unsupported-types ^rejected: type=numeric\((39|[4-9]\d|\d{3,}),\d+\) typtype=b \d+ values \([^)]*\); copy=rejected \(.*Decimals with precision larger than 38 are not supported\)$
-check cdc.* unsupported-types ^create: create_table rejected: column \S+ type=numeric\((39|[4-9]\d|\d{3,}),\d+\) typtype=b: Invalid => Failed to create decimal type, source: DataInvalid => Decimals with precision larger than 38 are not supported ::
 
 # ---- queries: row order and DuckDB semantics the classifier can't attribute ----------------------
-check query.window.* window-row-order ^mirror differs; DuckDB on the heap tables agrees with the heap: .* :: SELECT sum\(unique1\) over \(rows between [^)]*\), unique1, four FROM tenk1 WHERE unique1 < 10;$
-check query.window.* window-row-order ^heap, mirror and DuckDB-on-heap all differ: .* :: SELECT first_value\(unique1\) over w, nth_value\(unique1, 2\) over w AS nth_2, last_value\(unique1\) over w, unique1, four FROM tenk1 WHERE unique1 < 10 WINDOW w AS
-check query.aggregates.* duckdb-semantics ^heap, mirror and DuckDB-on-heap all differ: .* :: select sum\(1/ten\) filter \(where ten > 0\) from tenk1;$
+check query.window.* window-row-order ^mirror differs; DuckDB on the heap tables agrees with the heap: (\d+) vs \1 rows; .* :: SELECT sum\(unique1\) over \(rows between [^)]*\), unique1, four FROM tenk1 WHERE unique1 < 10;$
+check query.window.* window-row-order ^heap, mirror and DuckDB-on-heap all differ: (\d+) vs \1 rows; .* :: SELECT first_value\(unique1\) over w, nth_value\(unique1, 2\) over w AS nth_2, last_value\(unique1\) over w, unique1, four FROM tenk1 WHERE unique1 < 10 WINDOW w AS
+check query.aggregates.* duckdb-semantics ^heap, mirror and DuckDB-on-heap all differ: (\d+) vs \1 rows; .* :: select sum\(1/ten\) filter \(where ten > 0\) from tenk1;$
 check query.name.* duckdb-semantics ^mirror differs and DuckDB did not run the query on the heap tables: .* :: SELECT c\.f1 FROM NAME_TBL c WHERE c\.f1 ~ '\[0-9\]';$
 check cdc.extra_tables.shp_generated generated-column-breaks-mirror ^copy: mirror read failed: error XX000 \(PGDuckDB/CreatePlan\) Prepared query returned an error: Binder Error
 check cdc.extra_tables.shp_parent inheritance-children-ignored ^(dml|final): row-count heap=\d+ mirror=\d+
@@ -148,3 +171,4 @@ check stmt.extra_tables.set_local_timezone_commit_after_duckdb duckdb-timezone-c
 check backend.extra_tables.* duckdb-timezone-commit-abort,duckdb-multiassign-abort TRAP: failed Assert\("(IsTransactionState\(\)|\(\(Param \*\) expr\)->paramid == .*)"\), File: "[^"]+", Line: \d+, PID: \d+ during: (COMMIT;|UPDATE mc\.shp_ri_index SET \(v, id\))
 check service.run.extra_tables inheritance-recovery-crash-loop ^mooncake\.list_tables\(\) fails after the file: ERROR: Failed to connect to moonlink: .*Connection refused
 check cdc.extra_tables.* inheritance-recovery-crash-loop ^final: mirror read failed: error XX000 \(PGDuckDB/CreatePlan\) Invalid Input Error: Initialization function "mooncake_duckdb_cpp_init" from file
+check panic.data.arrays drop-after-dead-task-panic ^1 moonlink panic\(s\) at moonlink/src/moonlink/src/storage/mooncake_table/table_event_manager\.rs:127:14 not attributed to a check$

@@ -6,4 +6,5 @@
 	url = https://github.com/Mooncake-Labs/moonlink.git
 [submodule "pg_duckdb"]
 	path = pg_duckdb
-	url = https://github.com/duckdb/pg_duckdb.git
+	url = https://github.com/Mooncake-Labs/pg_duckdb.git
+	branch = v1.0.0-mooncake

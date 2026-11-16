@@ -50,6 +50,11 @@ pg_mooncake 0.3.0 runs on a slimmed-down moonlink. <!-- RC: post-bump: true only
 - The moonlink background worker is restarted 15 s after it is stopped with SIGTERM outside a server shutdown (for
   example a `kill` of the worker). Before, it exited cleanly and was never restarted, so every mirror stayed down
   until Postgres restarted.
+- Configuration reloads (`pg_reload_conf()`, `pg_ctl reload`, `SIGHUP`, including reloads by logrotate, systemd or
+  package scripts) and time zone changes undone at the end of a transaction no longer crash sessions that have run a
+  DuckDB query, such as a query on a mirror. The bundled pg_duckdb is now the `v1.0.0-mooncake` branch of
+  Mooncake-Labs/pg_duckdb, which carries the upstream fix for pg_duckdb's TimeZone hook (pg_duckdb #981) on the
+  DuckDB v1.4.1 that duckdb_mooncake needs. 0.2 has the same crash.
 - A fast shutdown no longer panics in the moonlink background worker, which could also make `pg_ctl stop -m fast` hang:
   shutdown signals are now handled only on the worker's main thread.
 - Building from source with the Rust toolchain pinned in `rust-toolchain.toml` works again: Cargo now prefers
@@ -69,11 +74,6 @@ pg_mooncake 0.3.0 runs on a slimmed-down moonlink. <!-- RC: post-bump: true only
      memory. -->
 
 ### Known limitations
-- Every session that has queried a mirror crashes on a configuration reload (`pg_reload_conf()`, `pg_ctl reload`,
-  `SIGHUP`), even when nothing changed, and when a time zone change is undone at the end of its transaction
-  (`SET LOCAL TIME ZONE` then `COMMIT`, or `SET TIME ZONE` then `ROLLBACK`). Postgres then restarts every session. This
-  is a bug in the bundled pg_duckdb, fixed in later pg_duckdb releases. Restart instead of reloading.
-  <!-- RC: remove if the release ships with the pg_duckdb time zone fix. -->
 - Reading mirrors needs pg_duckdb's `duckdb.postgres_role` and membership in both `pg_read_server_files` and
   `pg_write_server_files`, so in practice a superuser. `GRANT`/`REVOKE` on individual mirrors are not enforced.
 - Mirrors and the schemas that contain them cannot be renamed; drop and re-create the mirror instead.

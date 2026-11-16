@@ -36,7 +36,10 @@ docker exec -it mooncake psql -U postgres
 ### Option 2: From Source
 
 pg_mooncake supports Postgres 14 to 18 and is built with [Rust][rust-install] and [pgrx][pgrx-install]. It depends on
-[pg_duckdb][pgduckdb-link], which is included as a submodule and built from source along with DuckDB.
+[pg_duckdb][pgduckdb-link], which is included as a submodule and built from source along with DuckDB. The submodule is
+the `v1.0.0-mooncake` branch of [Mooncake-Labs/pg_duckdb][pgduckdb-fork-link]: pg_duckdb 1.0.0 on DuckDB v1.4.1 plus the
+upstream fix for its TimeZone hook (pg_duckdb #981), without which a configuration reload crashes every session that
+has run a DuckDB query. Use this pg_duckdb rather than a separately installed one.
 <!-- RC: confirm the Postgres versions against the release test matrix. -->
 
 **Prerequisites.**
@@ -236,17 +239,6 @@ subextension), cannot be upgraded with `ALTER EXTENSION`. Drop every mirror, the
 
 ## Known Issues
 
-- **Reloading the configuration can crash the server.** Every session that has run a DuckDB query, including any
-  query on a mirror, crashes when Postgres reloads its configuration, even if nothing changed, and Postgres then
-  restarts all sessions. Reloads come from `SELECT pg_reload_conf()`, `pg_ctl reload` and `SIGHUP`, for example after
-  `ALTER SYSTEM`, and also from tools that reload Postgres on their own: log rotation (logrotate), `systemctl reload`,
-  and package upgrade scripts. The same happens in such a session when a time zone change ends with its transaction:
-  `SET LOCAL TIME ZONE ...` then `COMMIT`, or `SET TIME ZONE ...` then `ROLLBACK`. This is a bug in the bundled
-  pg_duckdb. Later pg_duckdb releases fix it, but they need a newer DuckDB than the `mooncake` DuckDB extension is built
-  for, so upgrading pg_duckdb on its own does not help. Until pg_mooncake ships the fix, restart Postgres instead of
-  reloading it, turn off reloads by other tools (for example logrotate's `postrotate` reload), and set the time zone
-  per session (`SET TIME ZONE ...` outside a transaction, or `ALTER ROLE ... SET timezone`).
-  <!-- RC: drop this item if the release ships with the pg_duckdb time zone fix. -->
 - See [Roles](#self-hosting) for who can read mirrors, and the [CHANGELOG](CHANGELOG.md) for the other known
   limitations.
 
@@ -268,6 +260,7 @@ To build and test a change, see [AGENTS.md](AGENTS.md) and [TESTING.md](TESTING.
 [license-shield]: https://img.shields.io/badge/License-MIT-blue
 [mooncake-link]: https://mooncake.dev/
 [moonlink-link]: https://github.com/Mooncake-Labs/moonlink
+[pgduckdb-fork-link]: https://github.com/Mooncake-Labs/pg_duckdb/tree/v1.0.0-mooncake
 [pgduckdb-link]: https://github.com/duckdb/pg_duckdb
 [pgrx-install]: https://github.com/pgcentralfoundation/pgrx?tab=readme-ov-file#getting-started
 [rust-install]: https://www.rust-lang.org/tools/install

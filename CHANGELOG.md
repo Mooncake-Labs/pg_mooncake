@@ -82,6 +82,9 @@ pg_mooncake 0.3.0 runs on a slimmed-down moonlink. <!-- RC: post-bump: true only
   a leftover is removed when a mirror with the same name is created again.
 - Identifiers containing `.` are rejected.
 - Moonlink calls other than the one made by `DROP TABLE` have no timeout.
+- Composite and domain-over-composite columns read back from a mirror as DuckDB STRUCT values, e.g.
+  `{'f1': 1, 'f2': 'foo'}` instead of `(1,foo)`. The values are preserved; compare or extract fields (`(c).f1`) rather
+  than the row text. Comparing the whole value with a row (`c = ROW(1, 'foo')::t`) fails in DuckDB.
 <!-- RC: replace with the final list from the release-gate run. -->
 
 ## 0.1.2 (2025-02-11)

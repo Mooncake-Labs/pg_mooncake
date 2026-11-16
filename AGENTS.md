@@ -197,6 +197,8 @@ summary. Product behavior (fix with a test; don't paper over it):
 - A `numeric` value wider than 96 bits (for example 38 digits in `numeric(38,10)`) panics moonlink's statistics in the
   first snapshot and errors that mirror; re-creating it hits the same value again.
 - `char(n)` comes back without its trailing padding (no error).
+- Composite and domain-over-composite columns come back as DuckDB STRUCT text (`{'f1': 1, 'f2': foo}`, not `(1,foo)`);
+  field access (`(c).f1`) works, comparing the whole value with a row literal fails in DuckDB.
 - Unconstrained `numeric` is stored as `decimal(38,10)`: a value with more than 10 fractional digits errors the mirror.
   `interval` and `inet` columns are rejected at `create_table`.
 - Reading mirrors as a non-superuser needs `duckdb.postgres_role` plus `pg_read_server_files` and

@@ -87,10 +87,10 @@ makes a listed check pass, it reports `XPASS(<bugs>)`, and `KNOWN <bug> FIXED` m
 passed: remove its lines in the same change. For a bug whose description starts with `Intermittent:`, a run in which
 every listed check passed reports `NOT-SEEN` instead of `FIXED`: passing runs don't show that an intermittent bug is
 gone, so its entry stays until its fix is in. The known-bugs file must be a readable regular file. These are setup
-errors (exit 2): a missing file (or `KNOWN_BUGS` set to an empty value), a file that is empty or has no `bug` entries,
-a regex that matches the empty string, a bug declared twice, and a bug name outside `[A-Za-z0-9_.-]`.
-`EMPTY_KNOWN_BUGS_OK=1` allows an existing file without entries, for a release with no known bugs; a missing file is
-always an error.
+errors (exit 2): a missing file (or `KNOWN_BUGS` set to an empty value), a file that is empty or has no `bug` entries, a
+regex that matches the empty string or arbitrary text, a rule that accepts any crash restart without a `requires` line,
+a bug declared twice, and a bug name outside `[A-Za-z0-9_.-]`. `EMPTY_KNOWN_BUGS_OK=1` allows an existing file without
+entries, for a release with no known bugs; a missing file is always an error.
 
 After unsupported source DDL (`ddl`, `ddl_drop`), a mirror passes if it equals the source, or if its scans fail with
 one ERROR line that names the mirror, says `schema changes are not supported` and gives the `drop and re-create`

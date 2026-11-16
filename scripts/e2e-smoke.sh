@@ -93,7 +93,7 @@ export PGHOST=/tmp PGDATABASE=postgres PGPORT=${PGPORT:-$((5400 + MAJOR))}
 unset PGTZ PGOPTIONS
 # moonlink's own log lines (e.g. "Received SIGTERM, shutting down") are INFO; keep its default level.
 unset RUST_LOG
-SCEN=""; DATA=""; OUT=""; FENCE_SRC=""; FENCE_MC=""; FENCE_N=0; RESNAPSHOT_OK=0; ALLOWED_EXIT_LINES=""; WAIT_ERR=""
+SCEN=""; TERM_PID=""; DATA=""; OUT=""; FENCE_SRC=""; FENCE_MC=""; FENCE_N=0; RESNAPSHOT_OK=0; ALLOWED_EXIT_LINES=""; WAIT_ERR=""
 CLUSTER_STOPPED=0; LAST_STOP_LINES=""
 
 [[ -n $PG_PREFIX && -x $BIN/psql ]] || { echo "no psql in ${PG_PREFIX:-<unset>}/bin (set PG_PREFIX)" >&2; exit 2; }
@@ -138,7 +138,8 @@ load_known_bugs() {
         # ... and so does one that matches these: canaries shaped like signatures, and plain text.
         if [[ x =~ $rest || "a b" =~ $rest || "zq canary x1" =~ $rest || "zq/canary.rs:1 x1" =~ $rest ||
               "x[0-9]: /a/b.rs:1 q9 [z]" =~ $rest ||
-              "the quick brown fox jumps over the lazy dog 0123456789" =~ $rest ]]; then
+              "the quick brown fox jumps over the lazy dog 0123456789" =~ $rest ||
+              "backend crashed (zq, signal 1, cassert=no) running [zq]; TRAP: none" =~ $rest ]]; then
           echo "$KNOWN_BUGS:$n: regex matches arbitrary text: $rest" >&2; exit 2
         fi
         KNOWN_RULES[$a]+="$b"$'\t'"$rest"$'\n' ;;
@@ -151,6 +152,17 @@ load_known_bugs() {
       *) echo "$KNOWN_BUGS:$n: unknown entry '$kind'" >&2; exit 2 ;;
     esac
   done < "$KNOWN_BUGS"
+  # A rule that accepts a bare crash restart explains any crash, unless a "requires" line ties it to
+  # an earlier failure of its bug.
+  local key
+  for key in "${!KNOWN_RULES[@]}"; do
+    while IFS=$'\t' read -r b rest; do
+      [[ -n $b && -z ${RULE_REQUIRES[$key|$b]:-} ]] || continue
+      if [[ "reinitializing x1" =~ $rest ]]; then
+        echo "$KNOWN_BUGS: rule for $key ($b) matches any crash restart without a 'requires' line: $rest" >&2; exit 2
+      fi
+    done <<< "${KNOWN_RULES[$key]}"
+  done
   # With no entries, no blocking bug is listed and the gate could pass by accident (an empty file, a
   # file of comments). A release with no known bugs says so explicitly.
   if (( ${#BUG_CLASS[@]} == 0 )) && [[ ${EMPTY_KNOWN_BUGS_OK:-} != 1 ]]; then
@@ -317,7 +329,7 @@ compare_core() {
   if (( rc >= 124 )); then
     CMP_DETAIL="mirror query timed out after the fence (WAL $FENCE_WAL) was applied; moonlink panics so far: $(panics_inline)"
   elif (( rc != 0 )); then
-    CMP_DETAIL="mirror query failed (rc=$rc): $(one_line 200 < "$m.err")"
+    CMP_DETAIL="mirror query failed (rc=$rc): $(one_line 400 < "$m.err")"
   elif ! diff -q "$h" "$m" > /dev/null; then
     CMP_DETAIL="data mismatch after the fence (WAL $FENCE_WAL) was applied: $(diff "$h" "$m" | head -4 | cut -c1-120 | one_line)"
   else
@@ -435,13 +447,14 @@ worker_exits() {
 # older call every backend "server process" (and aux processes "<name> process"); 18 names the
 # backend type ("client backend", "walsender", "autovacuum worker", ...). Background workers
 # ('background worker "<name>"') have their own checks.
-CRASH_RE='LOG: +[a-zA-Z][a-zA-Z ]* \(PID [0-9]+\) (was terminated by signal [0-9]+|exited with exit code [0-9]+)'
+CRASH_RE='LOG: +[a-zA-Z][-a-zA-Z ]* \(PID [0-9]+\) (was terminated by signal [0-9]+|exited with exit code [0-9]+)'
 # CRASH_KIND_SED: the process kind at the start of a line, in PostgreSQL 17 terms, so signatures are
-# the same on every major: PG18 backend types become "server process", and aux process names lose
-# their " process" suffix ("checkpointer process" and "checkpointer" both become "checkpointer").
+# the same on every major: PG18 backend types (including "dead-end client backend") become "server
+# process", and any other kind loses a trailing " process", so a kind logged as "<name> process" and
+# one logged as "<name>" read the same.
 CRASH_KIND_SED='
-  s/^(client backend|walsender|autovacuum worker|slotsync worker|standalone backend) /server process /
-  /^server process /!s/^([a-zA-Z ]+) process /\1 /'
+  s/^(dead-end client backend|client backend|walsender|autovacuum worker|slotsync worker|standalone backend) /server process /
+  /^server process /!s/^([-a-zA-Z ]+) process /\1 /'
 # crash_restarts: one "<process kind> terminated by signal <n> x<count>" (background workers
 # included) or "<process kind> exited with exit code <n> x<count>" (not background workers, whose
 # exits bgworker_no_abnormal_exits checks) per kind of crash, "reinitializing
@@ -449,7 +462,7 @@ CRASH_KIND_SED='
 # during a stop ends it without a restart (pg_ctl stop then still returns 0).
 crash_restarts() {
   sed -nE 's/.*LOG: +(.*) \(PID [0-9]+\) was terminated by signal ([0-9]+).*/\1 terminated by signal \2/p;
-           s/.*LOG: +([a-zA-Z][a-zA-Z ]*) \(PID [0-9]+\) exited with exit code ([0-9]+).*/\1 exited with exit code \2/p;
+           s/.*LOG: +([a-zA-Z][-a-zA-Z ]*) \(PID [0-9]+\) exited with exit code ([0-9]+).*/\1 exited with exit code \2/p;
            s/.*all server processes terminated; reinitializing.*/reinitializing/p;
            s/.*LOG: +abnormal database system shutdown.*/abnormal shutdown/p' "$OUT/postgres.log" 2>/dev/null |
     sed -E "$CRASH_KIND_SED" | sort | uniq -c | awk '{c = $1; $1 = ""; print substr($0, 2) " x" c}'
@@ -504,7 +517,7 @@ still_running() {
   # titles; a client backend's is "<role> <db> <address> ...", so a role named like one of them
   # still shows up.
   local wal_re='^walsender [^ ]+ [^ ]+ (\[local\]|[^ ]*\([0-9]+\)|[0-9a-fA-F.:]+)( |$)'
-  local aux_re='^(checkpointer|background writer|walwriter|logger|archiver|startup( .*)?|walsummarizer|io worker [0-9]+|autovacuum launcher)$'
+  local aux_re='^(checkpointer|background writer|walwriter|logger|archiver|startup( (recovering|waiting)( .*)?)?|walsummarizer|io worker [0-9]+|autovacuum launcher)$'
   ws=$(grep -cE "$wal_re" <<< "$titles")
   r=$(grep -vE "$wal_re" <<< "$titles" | grep -vE "$aux_re" | grep -v '^$' | sort -u | paste -sd, -)
   echo "${r:-none}; walsenders: $ws"
@@ -717,7 +730,7 @@ scenario_build() {
 TYPES=(
   "smallint|-32768, 0, 32767" "integer|-2147483648, 42" "bigint|-9223372036854775808, 9223372036854775807"
   "real|1.5, -0.25" "double precision|3.141592653589793, -1e300" "numeric(20,5)|123456789012345.12345, -0.00001"
-  "numeric|1.23456789012345678901234567890" "boolean|true, false" "text|'', 'hello', 'ünïcødé ✓'"
+  "numeric|1.23456789012345678901234567890" "numeric(38,10)|1234567890123456789012345678.1234567890, -0.0000000001" "boolean|true, false" "text|'', 'hello', 'ünïcødé ✓'"
   "varchar(10)|'abc'" "char(3)|'ab'" "bytea|'\\xdeadbeef'::bytea, ''::bytea" "date|'2024-02-29', '1970-01-01'"
   "time|'23:59:59.999999'" "timestamp|'2024-06-05 10:00:00.123456'" "timestamptz|'2024-06-05 10:00:00+02'"
   "interval|'1 year 2 days 03:04:05'" "uuid|'a0eebc99-9c0b-4ef8-bb6d-6bb9bd380a11'" "json|'{\"a\":1}'"
@@ -897,7 +910,7 @@ leftover_files() {
   local all
   all=$(find "$p" -mindepth 1 -printf '%y %P\n' 2>&1) || { echo "? find failed: $(echo "$all" | one_line 120)"; return; }
   echo "$all" |
-    grep -vE '^(s moonlink\.sock|f moonlink_metadata_store\.sqlite(-wal|-shm|-journal)?|d (temp|read_through_cache|_wal|postgres)|f [^/]+/indicator\.text)$' |
+    grep -vE '^(s moonlink\.sock|f moonlink_metadata_store\.sqlite(-wal|-shm|-journal)?|d (temp|read_through_cache|_wal|postgres|\.moonlink_atomic_tmp|source_fingerprints)|f [^/]+/indicator\.text)$' |
     sed 's#^\(.\) #\1 pg_mooncake/#' | sort -k2
 }
 no_leftover_files() { [[ -z $(leftover_files | head -1) ]]; }
@@ -991,7 +1004,7 @@ scenario_persist() {
     c1=$(panic_count)
     if (( rc == 0 && c0 == c1 )); then result "type.$(type_check_name "$ty")" 0
     elif (( rc >= 124 )); then result "type.$(type_check_name "$ty")" 1 "create_snapshot did not return within ${PSQL_TIMEOUT}s; panics during it: $(panics_inline "$c0")"
-    else result "type.$(type_check_name "$ty")" 1 "rc=$rc, panics during it: $(panics_inline "$c0"): $(echo "$out" | one_line 160)"; fi
+    else result "type.$(type_check_name "$ty")" 1 "rc=$rc, panics during it: $(panics_inline "$c0"): $(echo "$out" | one_line 400)"; fi
   done
   for i in "${!TYPES[@]}"; do
     [[ -n ${created[$i]:-} ]] || continue
@@ -1019,6 +1032,21 @@ scenario_persist() {
 raw_psql() {
   local secs=$1 out=$2 err=$3; shift 3
   timeout -k 5 "$secs" "$BIN/psql" -X -qAt -v ON_ERROR_STOP=0 "$@" > "$out" 2> "$err"
+}
+
+# keep_moonlink_down: the moonlink worker restarts about 15s after a SIGTERM (bgw_restart_time).
+# The "while down" checks must not race that restart, so a worker that is back is stopped again;
+# each such exit gets its own excused log range. TERM_PID follows the latest stopped worker.
+KEEP_DOWN_KILLS=0
+keep_moonlink_down() {
+  local p from
+  p=$(moonlink_pid)
+  [[ -n $p ]] || return 0
+  from=$(wc -l < "$OUT/postgres.log")
+  kill -TERM "$p" 2>/dev/null
+  poll_until 10 moonlink_gone
+  ALLOWED_EXIT_LINES+=" $from $(wc -l < "$OUT/postgres.log")"
+  TERM_PID=$p; KEEP_DOWN_KILLS=$((KEEP_DOWN_KILLS + 1))
 }
 
 # drop_while_down <check> <mirror> <file prefix>: with the bgworker gone, DROP of a mirror succeeds
@@ -1106,7 +1134,7 @@ SQL
   # Stale stream: the session's connection dies with moonlink. Its next call must detect that and
   # reconnect (reporting that moonlink is unreachable) instead of failing on the dead connection, and
   # so must the call after it.
-  pid=$(moonlink_pid); term_pid=$pid; log_before=$(wc -l < "$OUT/postgres.log")
+  pid=$(moonlink_pid); term_pid=$pid; TERM_PID=$pid; KEEP_DOWN_KILLS=0; log_before=$(wc -l < "$OUT/postgres.log")
   if [[ -z $pid ]]; then
     result stale_stream_first_call_reconnects skip "no moonlink bgworker found"; result stale_stream_reconnects skip "no moonlink bgworker found"
   else
@@ -1133,22 +1161,27 @@ SQL
   else result bgworker_exited_after_term 1 "bgworker pid $term_pid still running 10s after SIGTERM"; fi
   # The SIGTERMed worker's own exit (non-zero is how a fixed worker gets restarted) is not abnormal.
   ALLOWED_EXIT_LINES+=" $log_before $(wc -l < "$OUT/postgres.log")"
+  keep_moonlink_down
   raw_psql 30 "$o.dh.out" "$o.dh.err" -c "DROP TABLE h"; rc=$?
   if (( rc == 0 )) && ! grep -q 'ERROR:\|WARNING:' "$o.dh.err"; then result drop_heap_while_down 0
   else result drop_heap_while_down 1 "rc=$rc $(one_line 240 < "$o.dh.err")"; fi
+  keep_moonlink_down
   drop_while_down drop_mirror_while_down s_mc "$o.dm"
   # s4_mc too, for the re-create checks after the restart (moonlink keeps its table).
+  keep_moonlink_down
   drop_while_down drop_second_mirror_while_down s4_mc "$o.d4"
+  keep_moonlink_down
   raw_psql 30 "$o.lt.out" "$o.lt.err" -c "SELECT count(*) FROM mooncake.list_tables()"; rc=$?
   if grep -q 'ERROR:' "$o.lt.err" && ! grep -qi 'server closed the connection\|terminated abnormally' "$o.lt.err" && pg_alive; then
     result list_tables_errors_while_down 0 "$(grep -m1 'ERROR:' "$o.lt.err" | cut -c1-120)"
   else result list_tables_errors_while_down 1 "rc=$rc $(one_line 240 < "$o.lt.err") $(one_line 40 < "$o.lt.out")"; fi
 
   # A bgworker that exited after SIGTERM must come back (restart_time is 15s).
+  info moonlink_kept_down "worker stopped again $KEEP_DOWN_KILLS time(s) during the while-down checks"
   if [[ -z $term_pid ]]; then result bgworker_restarted_after_term skip "no moonlink bgworker found"
-  elif poll_until 30 moonlink_restarted "$term_pid" && wait_ready; then
-    result bgworker_restarted_after_term 0 "pid $term_pid -> $(moonlink_pid)"
-  else result bgworker_restarted_after_term 1 "no new moonlink bgworker 30s after SIGTERM (pid before: $term_pid, now: [$(moonlink_pid)])"; fi
+  elif poll_until 30 moonlink_restarted "$TERM_PID" && wait_ready; then
+    result bgworker_restarted_after_term 0 "pid $TERM_PID -> $(moonlink_pid)"
+  else result bgworker_restarted_after_term 1 "no new moonlink bgworker 30s after SIGTERM (pid before: $TERM_PID, now: [$(moonlink_pid)])"; fi
 
   stop fast clean_stop_before_restart; start
   if wait_ready; then result restart_ready 0; else result restart_ready 1 "mooncake.list_tables() not answering within 60s"; fi
@@ -1207,7 +1240,7 @@ crash_detail() {
   log=$(tail -n +"$(( $1 + 1 ))" "$OUT/postgres.log")
   line=$(grep -aE -m1 "$CRASH_RE" <<< "$log")
   [[ -n $line ]] || return 0
-  kind=$(sed -E 's/.*LOG: +([a-zA-Z][a-zA-Z ]*) \(PID .*/\1 /' <<< "$line" | sed -E "$CRASH_KIND_SED" | sed 's/ $//')
+  kind=$(sed -E 's/.*LOG: +([a-zA-Z][-a-zA-Z ]*) \(PID .*/\1 /' <<< "$line" | sed -E "$CRASH_KIND_SED" | sed 's/ $//')
   how=$(sed -E 's/.*(was terminated by signal|exited with exit code) ([0-9]+).*/\1 \2/; s/^was terminated by //; s/^exited with //' <<< "$line")
   trap=$(grep -a -m1 '^TRAP: ' <<< "$log" | sed -E 's/^TRAP: //; s/, PID: [0-9]+//')
   stmt=$(grep -aE -m1 'DETAIL: +Failed process was running: ' <<< "$log" | sed -E 's/.*Failed process was running: +//; s/[; ]+$//')

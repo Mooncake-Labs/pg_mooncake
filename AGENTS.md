@@ -202,8 +202,8 @@ summary. Product behavior (fix with a test; don't paper over it):
 - Reading mirrors as a non-superuser needs `duckdb.postgres_role` plus `pg_read_server_files` and
   `pg_write_server_files` (pg_duckdb disables DuckDB's `LocalFileSystem` otherwise), and pg_duckdb does not check
   Postgres privileges on relations it scans through the mooncake table AM, so per-mirror GRANTs are not enforced.
-- Dropping the last mirror leaves `initial_copy/`, `.moonlink_atomic_tmp/` and `source_fingerprints/` entries behind
-  under `$PGDATA/pg_mooncake`.
+- Dropping a mirror leaves its empty directory under `$PGDATA/pg_mooncake/initial_copy`.
+  `.moonlink_atomic_tmp/` and `source_fingerprints/` there are moonlink's own and stay, empty once every mirror is gone.
 - A moonlink restart (fast stop, or SIGTERM to the worker) within about 0.5 s after `create_table` returns loses the
   mirror's initial-copy rows for good, without an error: the copy is not yet in an Iceberg snapshot, and the slot
   resumes after it. Workaround: write to the source and `CALL mooncake.create_snapshot(...)` in the same session after

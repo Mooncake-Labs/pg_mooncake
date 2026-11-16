@@ -179,7 +179,6 @@ It cannot see a rename of the database, which runs from another database: drop t
 `ALTER DATABASE ... RENAME TO` and re-create them afterwards. Column changes on a source table (for example
 `ALTER TABLE ... ADD COLUMN` or `DROP COLUMN`) put its mirrors into the errored state; drop and re-create them (see
 [Durability and Recovery](#durability-and-recovery)).
-<!-- RC: the errored state on column changes is true only with the moonlink submodule bump. -->
 
 **Monitoring.** `SELECT * FROM mooncake.list_tables();` lists the mirrors with their commit and flush LSNs.
 
@@ -202,9 +201,9 @@ from `shared_preload_libraries`, restart Postgres, and delete `$PGDATA/pg_moonca
 
 ## Durability and Recovery
 
-<!-- RC: this paragraph is true only with the moonlink submodule bump; re-check it against the final moonlink. -->
 Moonlink acknowledges the replication slot only up to what is persisted in Iceberg and replays the rest from the slot
 after a restart. Idle mirrors are persisted at least every 5 minutes, which bounds how much `pg_wal` they hold back.
+Errored mirrors don't hold the slot back.
 
 If a mirror can no longer be kept in sync (for example after `TRUNCATE`, a schema change of its source table, or a
 value it cannot store), it enters an errored state. Queries on it fail with a message that says why. Drop it and
@@ -215,11 +214,9 @@ CALL mooncake.create_table('trades_iceberg', 'trades');
 ```
 Dropping a mirror always succeeds, even while moonlink is down. Moonlink then keeps its copy until the mirror is
 created again under the same name, which removes it. After a crash, if a mirror looks wrong, do the same.
-<!-- RC: the errored state comes from moonlink changes that are not merged yet; re-check against the final moonlink. -->
 
 ## Upgrading from 0.2
 
-<!-- RC: the reason below is true only with the moonlink submodule bump; re-check it against the final moonlink. -->
 pg_mooncake 0.3 changed how moonlink persists data, so mirrors created with 0.2 must be re-created.
 
 1. Write down each mirror and its source table. moonlink keeps them in its metadata store, one row per mirror (the
@@ -235,7 +232,6 @@ pg_mooncake 0.3 changed how moonlink persists data, so mirrors created with 0.2 
 4. In each database that has the extension, run `ALTER EXTENSION pg_mooncake UPDATE;`.
 5. Re-create the mirrors with `CALL mooncake.create_table(...)`.
 6. Optionally delete `$PGDATA/pg_mooncake/_wal/`. 0.3 no longer uses it.
-   <!-- RC: this step must not ship before the moonlink submodule bump: the pinned moonlink still writes _wal. -->
 
 If you upgraded without dropping the mirrors first, `ALTER EXTENSION pg_mooncake UPDATE` prints a warning that lists
 them. Drop and re-create each one.

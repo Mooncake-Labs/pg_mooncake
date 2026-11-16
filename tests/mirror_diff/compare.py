@@ -1,0 +1,314 @@
+"""Result comparison and query classification for mirror_diff (no database access, unit-tested).
+
+Results are compared as Postgres prints them. The only tolerance is for float4/float8 result
+columns, rounded to the digits the type guarantees, because DuckDB prints a few last digits
+differently. Everything else (numeric scale, text, dates) must match exactly. Row order is
+compared as far as the statement's top-level ORDER BY determines it.
+"""
+
+import re
+
+from psqlsession import NULL_TOKEN
+
+# Significant digits that survive a round trip through each binary float type.
+FLOAT_DIGITS = {"double precision": 12, "real": 6}
+
+# Errors DuckDB raises while binding or planning a statement it does not support. pg_duckdb
+# prefixes errors of DuckDB execution with "(PGDuckDB/...)".
+DUCKDB_PLANNING_ERROR = re.compile(
+    r"\(PGDuckDB/CreatePlan\)|"
+    r"\(PGDuckDB/[^)]*\).*\b(Catalog Error|Binder Error|Parser Error|Not implemented Error|"
+    r"Unsupported|Conversion Error: Unimplemented|is not supported|Not implemented)|"
+    r"^(ERROR:\s+)?DuckDB execution is not supported inside functions", re.I | re.S)
+# The session's role may not run DuckDB at all (files switch roles): not a property of the mirror.
+DUCKDB_ROLE_ERROR = re.compile(r"not been granted the duckdb\.postgres_role", re.I)
+# Errors of the mirror read path itself (moonlink, the mooncake DuckDB extension, its RPC): never
+# a DuckDB semantics difference, even when DuckDB phrases them.
+NOT_DUCKDB_ERROR = re.compile(
+    r"moonlink|mooncake_duckdb_cpp_init|backend error|Failed to connect|IO Error|early eof|\bRPC\b",
+    re.I)
+
+
+def is_planning_error(message):
+    return bool(DUCKDB_PLANNING_ERROR.search(message or "")) and not NOT_DUCKDB_ERROR.search(message or "")
+
+
+# ---- cells and rows ------------------------------------------------------------------------------
+def canon_cell(cell, typ):
+    digits = FLOAT_DIGITS.get(typ or "")
+    if digits is None or cell == NULL_TOKEN:
+        return cell
+    try:
+        f = float(cell)
+    except ValueError:
+        return cell
+    if f != f or f in (float("inf"), float("-inf")):
+        return cell.lower().lstrip("+")
+    if f == 0:
+        return "0"
+    return format(f, f".{digits}g")
+
+
+def canon_rows(rows, types):
+    if not types or not any(t in FLOAT_DIGITS for t in types):
+        return [tuple(r) for r in rows]
+    return [tuple(canon_cell(c, types[i] if i < len(types) else None) for i, c in enumerate(r)) for r in rows]
+
+
+def norm_error(message):
+    """Error text without the parts that differ by engine path: the pg_duckdb prefix, the
+    'Prepared query returned an error' wrapper, catalog qualifiers and the LINE excerpt."""
+    m = (message or "").split("\nLINE ")[0]
+    m = re.sub(r"\(PGDuckDB/[^)]*\)\s*", "", m)
+    m = re.sub(r"Prepared query returned an error:\s*'?", "", m)
+    m = re.sub(r"\b(mc|public|pg_catalog|memory|main)\.", "", m)
+    m = re.sub(r"^(ERROR|WARNING):\s*", "", m.strip())
+    return " ".join(m.split()).rstrip("'").strip()
+
+
+# ---- ORDER BY ------------------------------------------------------------------------------------
+def mask(sql):
+    """sql with the inside of string literals, quoted identifiers and parentheses replaced by
+    underscores (same length), so keyword and comma positions found in it are top-level ones."""
+    out, depth, i, n = list(sql), 0, 0, len(sql)
+    while i < n:
+        c = sql[i]
+        if c in "'\"":
+            j = i + 1
+            while j < n and not (sql[j] == c and (j + 1 >= n or sql[j + 1] != c)):
+                j += 2 if sql[j] == c else 1
+            for k in range(i + 1, min(j, n)):
+                out[k] = "_"
+            i = j + 1
+            continue
+        if c == "(":
+            depth += 1
+        elif c == ")":
+            depth = max(0, depth - 1)
+        elif depth:
+            out[i] = "_"
+        i += 1
+    return "".join(out)
+
+
+_CLAUSE_END = re.compile(r"\b(limit|offset|fetch|for\s+(update|share|no\s+key|key)|window)\b", re.I)
+
+
+def top_level_order_by(sql):
+    """(ORDER BY items of the outermost query or None, whether LIMIT/FETCH cuts the result)."""
+    sql = sql.rstrip().rstrip(";")
+    m = mask(sql)
+    limited = bool(re.search(r"\b(limit\s+(?!all\b)|fetch\s+(first|next)\b)", m, re.I))
+    found = list(re.finditer(r"\border\s+by\b", m, re.I))
+    if not found:
+        return None, limited
+    start = found[-1].end()
+    end = _CLAUSE_END.search(m, start)
+    stop = end.start() if end else len(sql)
+    items, k = [], start
+    for c in re.finditer(",", m[start:stop]):
+        items.append(sql[k:start + c.start()].strip())
+        k = start + c.end()
+    items.append(sql[k:stop].strip())
+    return [i for i in items if i], limited
+
+
+def _item_expr(item):
+    e = re.sub(r"\s+nulls\s+(first|last)\s*$", "", item.strip(), flags=re.I)
+    e = re.sub(r"\s+using\s+\S+\s*$", "", e, flags=re.I)
+    return re.sub(r"\s+(asc|desc)\s*$", "", e, flags=re.I).strip()
+
+
+def order_key_columns(items, names):
+    """Result column indexes of the leading ORDER BY items that name an output column (by
+    position, name or qualified name). Stops at the first item that can't be mapped."""
+    lower = [n.lower() for n in names]
+    out = []
+    for item in items or []:
+        e = _item_expr(item)
+        if re.fullmatch(r"\d+", e):
+            k = int(e) - 1
+            if not 0 <= k < len(names):
+                break
+            out.append(k)
+            continue
+        e = e.split(".")[-1].strip()
+        e = e[1:-1] if e.startswith('"') and e.endswith('"') else e.lower()
+        if e.lower() not in lower or lower.count(e.lower()) > 1:
+            break
+        out.append(lower.index(e.lower()))
+    return out
+
+
+# ---- comparison ----------------------------------------------------------------------------------
+def _multiset(rows):
+    d = {}
+    for r in rows:
+        d[r] = d.get(r, 0) + 1
+    return d
+
+
+def rows_match(a_rows, b_rows, types=None, order_items=None, names=None, limited=False):
+    """(equal, how). how: exact | float | multiset | ties | unordered-limit | order | rows."""
+    ra, rb = [tuple(r) for r in a_rows], [tuple(r) for r in b_rows]
+    if ra == rb:
+        return True, "exact"
+    ca, cb = canon_rows(ra, types), canon_rows(rb, types)
+    via = "float" if ca != ra or cb != rb else None
+    if len(ca) != len(cb):
+        return False, "rows"
+    keys = order_key_columns(order_items, names or []) if order_items else []
+    if not order_items or not keys:
+        if order_items is None and limited:
+            # LIMIT without ORDER BY: any subset of that size is a correct answer.
+            return True, "unordered-limit"
+        if _multiset(ca) == _multiset(cb):
+            return True, via or "multiset"
+        return False, "rows"
+    if ca == cb:
+        return True, via or "exact"
+    # Rows must come in the same ORDER BY key sequence; rows with equal keys may be permuted.
+    def key(r):
+        return tuple(r[k] for k in keys)
+    if [key(r) for r in ca] != [key(r) for r in cb]:
+        return False, "order" if _multiset(ca) == _multiset(cb) else "rows"
+    i = 0
+    while i < len(ca):
+        j = i
+        while j < len(ca) and key(ca[j]) == key(ca[i]):
+            j += 1
+        last = j == len(ca)
+        if not (limited and last) and _multiset(ca[i:j]) != _multiset(cb[i:j]):
+            return False, "rows"
+        i = j
+    return True, "ties"
+
+
+def results_match(a, b, types=None, order_items=None, names=None, limited=False):
+    """Compare two psqlsession Results: (equal, how). Both erroring is equal only with the same
+    SQLSTATE and normalised message; a timeout or a dead session never matches."""
+    for r in (a, b):
+        if r.timed_out:
+            return False, "timeout"
+        if r.died:
+            return False, "died"
+    if a.error or b.error:
+        if a.error and b.error:
+            if a.sqlstate == b.sqlstate and norm_error(a.message) == norm_error(b.message):
+                return True, "same-error"
+            return False, "different-error"
+        return False, "error-vs-rows"
+    return rows_match(a.rows, b.rows, types, order_items, names, limited)
+
+
+# ---- window frames -------------------------------------------------------------------------------
+ORDER_SENSITIVE = re.compile(
+    r"\b(row_number|ntile|lag|lead|first_value|last_value|nth_value|array_agg|string_agg|json_agg|"
+    r"jsonb_agg|json_object_agg|jsonb_object_agg|xmlagg)\s*\(", re.I)
+
+
+def _windows(sql):
+    """(function text before OVER, window spec text) for every window call; named windows resolved."""
+    s = re.sub(r"'(?:[^']|'')*'", "''", sql)
+    named = {}
+    for m in re.finditer(r"\bwindow\s+", s, re.I):
+        rest = s[m.end():]
+        for wm in re.finditer(r"(\w+)\s+as\s*\(", rest, re.I):
+            named[wm.group(1).lower()] = _paren(rest, wm.end() - 1)
+    out = []
+    for m in re.finditer(r"\bover\s*(\(|(\w+))", s, re.I):
+        spec = _paren(s, m.start(1)) if m.group(1) == "(" else named.get(m.group(2).lower(), "")
+        base = re.match(r"\s*(\w+)", spec)
+        if base and base.group(1).lower() in named:
+            spec = named[base.group(1).lower()] + " " + spec
+        func = s[max(0, m.start() - 200):m.start()]
+        out.append((func, spec))
+    return out
+
+
+def _paren(s, i):  # text inside the parenthesis that opens at s[i]
+    depth, j = 0, i
+    while j < len(s):
+        depth += {"(": 1, ")": -1}.get(s[j], 0)
+        j += 1
+        if depth == 0:
+            break
+    return s[i + 1:j - 1]
+
+
+def order_dependent(sql):
+    """True if a window function's result depends on the physical order of rows, which differs
+    between a heap and its mirror: an order-sensitive function over a window without ORDER BY,
+    or a ROWS/GROUPS frame or EXCLUDE clause (ties are split by physical order)."""
+    for func, spec in _windows(sql):
+        tail = re.split(r"\)\s*$", func)[0]
+        calls = list(re.finditer(r"(\w+)\s*\(", tail))
+        fname = calls[-1].group(0) if calls else ""
+        if not re.search(r"\border\s+by\b", spec, re.I) and ORDER_SENSITIVE.match(fname):
+            return True
+        if re.search(r"\b(rows|groups)\s+(between|unbounded|current|\d)", spec, re.I) or \
+                re.search(r"\bexclude\b", spec, re.I):
+            return True
+    return False
+
+
+# ---- classification ------------------------------------------------------------------------------
+def classify(heap, mirror, duck, duck_ran, match, order_dep):
+    """Verdict for a query whose mirror result differs from the heap result.
+
+    duck is the same query on the heap tables with duckdb.force_execution; duck_ran says EXPLAIN
+    showed DuckDB planned it. match(a, b) -> (equal, how). Returns (status, verdict, reason) with
+    status FAIL | ENGINE | SKIP."""
+    if mirror.timed_out or mirror.died:
+        return "FAIL", "mooncake", f"mirror query {'timed out' if mirror.timed_out else 'died'}"
+    if mirror.error and DUCKDB_ROLE_ERROR.search(mirror.message or ""):
+        return "SKIP", "unsupported", "the session's role may not run DuckDB"
+    if duck_ran and match(duck, heap)[0]:
+        return "FAIL", "mooncake", "mirror differs; DuckDB on the heap tables agrees with the heap"
+    if duck_ran and match(duck, mirror)[0]:
+        if mirror.ok:
+            return "ENGINE", "engine", "DuckDB semantics (DuckDB on the heap tables gives the mirror's answer)"
+        if is_planning_error(mirror.message):
+            return "SKIP", "unsupported", "DuckDB cannot run it"
+        if NOT_DUCKDB_ERROR.search(mirror.message or ""):
+            return "FAIL", "mooncake", "mirror read path error"
+        return "ENGINE", "engine", "error raised by DuckDB only (also on the heap tables)"
+    if order_dep and duck_ran and duck.ok and heap.ok and mirror.ok and len(mirror.rows) == len(heap.rows):
+        return "ENGINE", "engine", "result depends on physical row order (window frame or order-sensitive function)"
+    if mirror.error and is_planning_error(mirror.message) and (not duck_ran or duck.error):
+        return "SKIP", "unsupported", "DuckDB cannot run it"
+    if not duck_ran:
+        return "FAIL", "unclassified", "mirror differs and DuckDB did not run the query on the heap tables"
+    return "FAIL", "unclassified", "heap, mirror and DuckDB-on-heap all differ"
+
+
+# ---- divergence events ---------------------------------------------------------------------------
+def _fmt_rows(rows, n):
+    return "; ".join("|".join(str(c)[:60] for c in r) for r in rows[:n])[:240]
+
+
+def divergence_events(cols, heap_rows, mirror_rows, sample=3):
+    """Events describing how a mirror's rows differ from the heap's. cols: [(name, type), ...].
+    Each event: {"kind": row-count|value|rows, "detail": text, ["col", "type"]}."""
+    ha, mb = [tuple(r) for r in heap_rows], [tuple(r) for r in mirror_rows]
+    ca, cb = _multiset(ha), _multiset(mb)
+    only_h = [r for r in ca if ca[r] > cb.get(r, 0)]
+    only_m = [r for r in cb if cb[r] > ca.get(r, 0)]
+    if len(ha) != len(mb):
+        return [{"kind": "row-count",
+                 "detail": f"row-count heap={len(ha)} mirror={len(mb)} heap-only: {_fmt_rows(only_h, sample)} "
+                           f"|| mirror-only: {_fmt_rows(only_m, sample)}"}]
+    out = []
+    for i, (name, typ) in enumerate(cols):
+        hv, mv = _multiset([r[i] for r in ha if i < len(r)]), _multiset([r[i] for r in mb if i < len(r)])
+        if hv == mv:
+            continue
+        h_only = [v for v in hv if hv[v] > mv.get(v, 0)]
+        m_only = [v for v in mv if mv[v] > hv.get(v, 0)]
+        out.append({"kind": "value", "col": name, "type": typ,
+                    "detail": f"value col={name} type={typ} heap-only: {'; '.join(str(v)[:80] for v in h_only[:sample])} "
+                              f"|| mirror-only: {'; '.join(str(v)[:80] for v in m_only[:sample])}"})
+    if not out and only_h:
+        out.append({"kind": "rows", "detail": f"rows heap-only: {_fmt_rows(only_h, sample)} "
+                                              f"|| mirror-only: {_fmt_rows(only_m, sample)}"})
+    return out

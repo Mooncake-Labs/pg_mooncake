@@ -5,34 +5,38 @@ The harness reads the regression files from a PostgreSQL source tree at run time
 copied into this repository) and checks three things:
 
   data   Fidelity of every column type. Each data-type file is replayed without mirrors; every
-         table is then mirrored (initial copy) and compared row by row with the heap
-         (data.copy.<file>.<table>). All values of each built-in column type are pooled across
-         files and probed in isolation: initial copy, CDC insert, CDC update that leaves the value
-         unchanged, CDC delete, and after create_snapshot (data.type.<type>). Types defined by a
-         file (enum, domain, composite, range) are probed in that file's database
-         (data.type.<file>.<type>). Verdicts: exact, rejected (create_table refused the table),
-         equivalent (only JSON formatting differs), lossy (silent divergence), errored, crashed.
+         table is mirrored (initial copy) and compared row by row with the heap each time the file
+         is about to drop or alter it (data.copy.<file>.<table>, .sN for later states). All values
+         of each built-in column type are pooled across files and probed in isolation: initial
+         copy, CDC insert, CDC update that leaves the value unchanged, CDC delete, and after
+         create_snapshot (data.type.<type>). Types defined by a file (enum, domain, composite,
+         range) are probed in that file's database (data.type.<file>.<type>). Verdicts: exact,
+         rejected (create_table refused the table), equivalent (only JSON formatting differs),
+         lossy (silent divergence), errored, crashed. Only exact passes.
 
   cdc    Each regress file is run statement by statement against heap tables while every table
          in schema public is mirrored into schema "mc" (fixtures up front, the file's own tables
          right after CREATE TABLE). After each DML statement or COMMIT, the mirrors of the tables
-         it names must equal the heap (same session, so scans wait for the session's last
-         commit), and again after mooncake.create_snapshot at the end (cdc.<file>.<table>).
+         it names must equal the heap. The mirror is read right after a fence commit in the same
+         session, so read-your-writes must make it current: a mirror that only catches up later
+         is a stale read (cdc.<file>.<table>, one event per divergence).
 
   query  Every SELECT of the file that names a mirrored table is run a second time with
          search_path = mc, ... so it reads the mirrors (DuckDB executes it), and compared with
-         the heap result (query.<file>.L<line>). A difference is classified by a third run on the
-         heap tables with duckdb.force_execution: if DuckDB-on-heap gives the mirror's answer it
-         is DuckDB semantics (XFAIL with the engine-semantics bug), if it gives the heap's
-         answer the mirror is wrong (FAIL). Queries neither DuckDB path can run are SKIPs.
+         the heap result as typed and ordered by the statement (query.<file>.L<line>). A
+         difference is classified by a third run on the heap tables with duckdb.force_execution:
+         if DuckDB-on-heap gives the heap's answer the mirror is wrong (FAIL); if it gives the
+         mirror's answer it is DuckDB semantics (the engine bug of expected.txt). Queries DuckDB
+         cannot plan are SKIPs.
 
 Output (shared with scripts/e2e-smoke.sh): one line per check,
-  RESULT <check> PASS|FAIL|XFAIL(<bugs>)|XPASS(<bugs>)|SKIP [detail]
+  RESULT <check> PASS|FAIL|XFAIL(<bugs>)|XFAIL(limitation:<bugs>)|XPASS(<bugs>)|SKIP [detail]
 then BUILD / TYPE / STAT / KNOWN information lines, and
-  SUMMARY mirror_diff pg<major> layers=<..> pass=N xpass=N fail=N xfail=N skip=N
+  SUMMARY mirror_diff pg<major> layers=<..> pass=N xpass=N fail=N xfail=N xfail_limitation=N skip=N unverified=N
   BLOCKING mirror_diff <n> [<bug>,...]
-  GATE mirror_diff PASS|FAIL|BLOCKED
-Exit status: 0 iff there is no unexpected FAIL (regression rule). See README.md for the GATE rule.
+  GATE mirror_diff PASS|FAIL|BLOCKED|INCOMPLETE
+Exit status: the GATE (0 PASS, 1 FAIL, 4 BLOCKED, 3 INCOMPLETE), or with --exit-regression 0 iff
+no check failed or went unverified in a way expected.txt does not list. See README.md.
 """
 
 import argparse
@@ -49,6 +53,7 @@ import time
 HERE = os.path.dirname(os.path.abspath(__file__))
 sys.path.insert(0, HERE)
 
+import compare  # noqa: E402
 import sqlsplit  # noqa: E402
 from psqlsession import NULL_TOKEN, PsqlSession  # noqa: E402
 
@@ -77,7 +82,7 @@ PREREQS = {
 
 # psql meta-commands that would change output format, connection, or the client itself.
 SKIP_META = re.compile(
-    r"^\\(c|connect|o|out|pset|a|t|x|f|H|html|C|T|!|i|ir|include|include_relative|lo_\w+|"
+    r"^\\!|^\\(c|connect|o|out|pset|a|t|x|f|H|html|C|T|!|i|ir|include|include_relative|lo_\w+|"
     r"watch|timing|q|quit|password|encoding|prompt|w|write|e|edit|ef|ev|s|cd|errverbose|"
     r"crosstabview|gdesc|startpipeline|endpipeline|syncpipeline|sendpipeline|flushrequest|"
     r"getresults|flush|bind|bind_named|parse|close_prepared)\b")
@@ -101,9 +106,9 @@ VOLATILE = re.compile(
     r"pg_relation_size|pg_table_size|pg_total_relation_size|ctid|xmin|xmax|cmin|cmax|tableoid|"
     r"lo_\w+|pg_notify|set_config|pg_read\w*|pg_ls\w*|pg_current_wal\w*|inet_client\w*|"
     r"pg_column_size|pg_column_compression|explain|for\s+(update|share|no\s+key|key))\b", re.I)
-NUMBER = re.compile(r"^[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?$")
 SCHEMA_MIRROR = "mc"
-VERDICT_ORDER = ["crashed", "lossy", "errored", "equivalent", "rejected", "exact"]
+CLUSTER_MARKER = "mirror_diff.cluster"  # written into data directories this harness created
+VERDICT_ORDER = ["crashed", "lossy", "errored", "equivalent", "rejected", "rejected-values", "exact"]
 
 
 def ident_re(name):
@@ -113,14 +118,6 @@ def ident_re(name):
 def strip_literals(sql):
     """SQL with string literals blanked, so 'tbl'::regclass in catalog queries is not a table reference."""
     return re.sub(r"'(?:[^']|'')*'", "''", sql)
-
-
-def order_dependent(sql):
-    """Window frames whose ORDER BY is missing or not unique: the result depends on physical row
-    order, which differs between a heap and its mirror's parquet files."""
-    return bool(re.search(r"\bover\s*\((?:(?!order\s+by)[^)])*\b(rows|groups)\s+between", sql, re.I)
-                or re.search(r"\b(rows|groups|range)\s+between\b.*\bexclude\b", sql, re.I)
-                or re.search(r"\b(first_value|last_value|nth_value)\s*\(", sql, re.I))
 
 
 def main_verb(sql):
@@ -146,7 +143,7 @@ def qident(s):
 
 
 def type_key(typ):
-    return re.sub(r"[^A-Za-z0-9]+", "_", typ.replace("[]", "_array")).strip("_")
+    return re.sub(r"[^A-Za-z0-9]+", "_", typ.replace("[]", "_array").replace("-", "m")).strip("_")
 
 
 def type_label(typ):
@@ -157,14 +154,16 @@ def type_label(typ):
 class Expectations:
     """Known differences (expected.txt), same model as scripts/e2e-known-bugs.txt:
 
-      bug <key> blocking|limitation <description>
+      bug <key> class=blocking|class=limitation <description>
       check <check-glob> <key>[,<key>...] [<regex>]
       engine <key>
 
-    A failing check matching a check line (fnmatch glob on the name; the optional Python regex is
-    searched in the failure detail) reports XFAIL(<keys>); the first matching line wins. A passing
-    check matching a line without a regex reports XPASS(<keys>). "engine" names the bug that the
-    classifier attaches to DuckDB-semantics differences of query checks."""
+    A failing check is matched against the check lines whose glob (fnmatch on the check name,
+    also tried without a .vN/.sN suffix) matches; the optional Python regex must be found in the
+    failure signature. Checks that carry events (cdc tables) are XFAIL only if every event
+    matches some line; they report the union of the matched keys. A passing check matched by a
+    line without a regex, or by a line naming it exactly, reports XPASS. "engine" names the bug
+    the classifier attaches to DuckDB-semantics differences of query checks."""
 
     def __init__(self, path, ids_path=None):
         self.rules = []
@@ -172,102 +171,170 @@ class Expectations:
         self.engine = []
         self.ids = {}        # key -> tracker ids, from a private file outside the repository
         if path and os.path.exists(path):
-            for n, raw in enumerate(open(path), 1):
+            with open(path) as f:
+                lines = f.readlines()
+            for n, raw in enumerate(lines, 1):
                 line = raw.strip()
                 if not line or line.startswith("#"):
                     continue
                 parts = line.split(None, 3)
                 kind = parts[0]
-                if kind == "bug" and len(parts) >= 3 and parts[2] in ("blocking", "limitation"):
-                    self.bugs[parts[1]] = (parts[2], parts[3] if len(parts) > 3 else "")
+                if kind == "bug" and len(parts) >= 4 and parts[2] in ("class=blocking", "class=limitation"):
+                    if not re.fullmatch(r"[A-Za-z0-9_.-]+", parts[1]):
+                        sys.exit(f"{path}:{n}: bug name {parts[1]!r} must match [A-Za-z0-9_.-]+")
+                    if parts[1] in self.bugs:
+                        sys.exit(f"{path}:{n}: bug {parts[1]} is declared twice")
+                    self.bugs[parts[1]] = (parts[2].split("=", 1)[1], parts[3])
                 elif kind == "check" and len(parts) >= 3:
-                    rx = re.compile(parts[3]) if len(parts) > 3 else None
-                    self.rules.append((parts[1], parts[2].split(","), rx))
+                    try:
+                        rx = re.compile(parts[3]) if len(parts) > 3 else None
+                    except re.error as e:
+                        sys.exit(f"{path}:{n}: invalid regex: {e}")
+                    self.rules.append((parts[1], parts[2].split(","), rx, n))
                 elif kind == "engine" and len(parts) == 2:
                     self.engine = [parts[1]]
                 else:
                     sys.exit(f"{path}:{n}: cannot parse: {line}")
-            for _, keys, _ in self.rules:
+            for _, keys, _, n in self.rules:
                 for k in keys:
                     if k not in self.bugs:
-                        sys.exit(f"{path}: check refers to undeclared bug {k}")
+                        sys.exit(f"{path}:{n}: check refers to undeclared bug {k}")
+            for k in self.engine:
+                if k not in self.bugs:
+                    sys.exit(f"{path}: engine refers to undeclared bug {k}")
         if ids_path and os.path.exists(ids_path):
-            for raw in open(ids_path):
+            with open(ids_path) as f:
+                id_lines = f.readlines()
+            for raw in id_lines:
                 p = raw.split()
                 if len(p) >= 2 and not raw.startswith("#"):
                     self.ids[p[0]] = p[1]
 
-    def match(self, check, detail, passed=False):
-        for k, (pat, keys, rx) in enumerate(self.rules):
-            if not fnmatch.fnmatchcase(check, pat):
-                continue
-            if rx is not None and (passed or not rx.search(detail or "")):
-                continue
-            return k, keys
-        return None, None
+    @staticmethod
+    def _names(check):
+        base = re.sub(r"\.[vs]\d+$", "", check)
+        return [check] if base == check else [check, base]
 
-    def blocking(self, keys):
-        return [k for k in keys if self.bugs.get(k, ("blocking",))[0] == "blocking"]
+    def match(self, check, detail, passed=False):
+        """Keys of the first rule matching a failure (or, with passed, a rule that would XPASS)."""
+        for pat, keys, rx, _ in self.rules:
+            if not any(fnmatch.fnmatchcase(c, pat) for c in self._names(check)):
+                continue
+            if passed:
+                if rx is None or not re.search(r"[*?\[]", pat):
+                    return keys
+                continue
+            if rx is not None and not rx.search(detail or ""):
+                continue
+            return keys
+        return None
+
+    def match_events(self, check, events):
+        """Union of keys if every event's signature matches a rule for this check, else None."""
+        if not events:
+            return None
+        keys = []
+        for ev in events:
+            k = self.match(check, ev["text"])
+            if k is None:
+                return None
+            keys += [x for x in k if x not in keys]
+        return keys
+
+    def is_limitation(self, keys):
+        return bool(keys) and all(self.bugs.get(k, ("blocking",))[0] == "limitation" for k in keys)
 
 
 class Reporter:
-    def __init__(self, exp, log_path, resume=False):
+    STATUSES = ("PASS", "XPASS", "FAIL", "XFAIL", "XFAIL_LIMITATION", "SKIP")
+
+    def __init__(self, exp, log_path, resume=False, done=()):
         self.exp = exp
-        self.counts = {"PASS": 0, "XPASS": 0, "FAIL": 0, "XFAIL": 0, "SKIP": 0}
-        self.xfail_ids = set()
+        self.counts = {k: 0 for k in self.STATUSES}
+        self.unverified = 0
+        self.unexpected = []   # checks that make --exit-regression fail
+        self.stats = {}
+        self.known = {}        # bug key -> {"XFAIL": n, "XPASS": n, "checks": [...]}
+        self.blocking_xfails = 0
+        self.names = {}
+        self.unit = ""
         prior = []
         if resume and os.path.exists(log_path):
             with open(log_path) as f:
                 prior = [json.loads(line) for line in f if line.strip()]
+            # Records of a unit that was interrupted are dropped; the unit runs again.
+            prior = [r for r in prior if r.get("unit") in done]
+            with open(log_path + ".tmp", "w") as f:
+                for rec in prior:
+                    f.write(json.dumps(rec, default=str) + "\n")
+            os.replace(log_path + ".tmp", log_path)
         self.log = open(log_path, "a" if resume else "w")
-        self.stats = {}
-        self.known = {}  # bug key -> {"XFAIL": n, "XPASS": n, "checks": [...]}
-        self.blocking_xfails = 0
-        self.names = {}
-        for rec in prior:  # results of files completed before a --resume
-            self.account(rec["check"], rec["status"], rec.get("ids") or [])
-            self.names[rec["check"]] = self.names.get(rec["check"], 0) + 1
+        for rec in prior:
+            self.account(rec["check"], rec["status"], rec.get("ids") or [], rec.get("unverified"))
+            base = re.sub(r"\.v\d+$", "", rec["check"])
+            self.names[base] = self.names.get(base, 0) + 1
 
-    def account(self, check, status, ids):
+    def account(self, check, status, ids, unverified=False):
         self.counts[status] += 1
+        if status == "SKIP" and unverified:
+            self.unverified += 1
+        if status == "FAIL" or (status == "SKIP" and unverified):
+            self.unexpected.append(check)
         if status == "XFAIL":
-            self.xfail_ids.update(ids or ["?"])
-            if not ids or self.exp.blocking(ids):
-                self.blocking_xfails += 1
-        for i in ids if status in ("XFAIL", "XPASS") else []:
-            kn = self.known.setdefault(i, {"XFAIL": 0, "XPASS": 0, "checks": []})
-            kn[status] += 1
-            if len(kn["checks"]) < 3:
-                kn["checks"].append(f"{check}={status}")
+            self.blocking_xfails += 1
+        if status in ("XFAIL", "XFAIL_LIMITATION", "XPASS"):
+            col = "XPASS" if status == "XPASS" else "XFAIL"
+            for i in ids:
+                kn = self.known.setdefault(i, {"XFAIL": 0, "XPASS": 0, "checks": []})
+                kn[col] += 1
+                if len(kn["checks"]) < 3:
+                    kn["checks"].append(f"{check}={col}")
 
-    def result(self, check, status, detail="", record=None, ids=None):
+    def result(self, check, status, detail="", record=None, ids=None, events=None, unverified=False):
+        """Report one check. FAIL is turned into XFAIL by expected.txt (ids: keys decided by the
+        caller, e.g. the engine bug); unverified marks a SKIP that hides a check that could not run
+        (it fails the regression rule unless expected.txt lists it)."""
         ids = list(ids or [])
         n = self.names.get(check, 0) + 1
         self.names[check] = n
         if n > 1:
             check = f"{check}.v{n}"
-        if status == "FAIL" and not ids:
-            k, rule_ids = self.exp.match(check, detail)
-            if k is not None:
-                status, ids = "XFAIL", rule_ids
-        elif status == "FAIL":
-            status = "XFAIL"
+        if status == "FAIL":
+            if not ids:
+                ids = (self.exp.match_events(check, events) if events else self.exp.match(check, detail)) or []
+            if ids:
+                status = "XFAIL_LIMITATION" if self.exp.is_limitation(ids) else "XFAIL"
+        elif status == "SKIP" and unverified:
+            ids = self.exp.match(check, detail) or []
+            if ids:
+                status = "XFAIL_LIMITATION" if self.exp.is_limitation(ids) else "XFAIL"
+                unverified = False
         elif status == "PASS":
-            k, rule_ids = self.exp.match(check, detail, passed=True)
-            if k is not None:
-                status, ids = "XPASS", rule_ids
-        label = f"{status}({','.join(map(str, ids)) or '?'})" if status in ("XFAIL", "XPASS") else status
-        self.account(check, status, ids)
+            ids = self.exp.match(check, "", passed=True) or []
+            if ids:
+                status = "XPASS"
+        if status == "XFAIL_LIMITATION":
+            label = f"XFAIL(limitation:{','.join(ids)})"
+        elif status in ("XFAIL", "XPASS"):
+            label = f"{status}({','.join(ids)})"
+        else:
+            label = status
+        self.account(check, status, ids, unverified)
         print(f"RESULT {check} {label}" + (f" {one_line(detail)}" if detail else ""), flush=True)
         rec = dict(record or {})
-        rec.update(check=check, status=status, ids=ids, detail=detail)
+        rec.update(check=check, status=status, ids=ids, detail=detail, unit=self.unit)
+        if events:
+            rec["events"] = events
+        if unverified:
+            rec["unverified"] = True
         self.log.write(json.dumps(rec, default=str) + "\n")
         self.log.flush()
 
     def stat(self, key, n=1):
         self.stats[key] = self.stats.get(key, 0) + n
 
-    def summary(self, major, layers):
+    def summary(self, major, layers, complete):
+        """Print the trailer; return (gate exit code, regression exit code)."""
         for k in sorted(self.stats):
             print(f"STAT {k} {self.stats[k]}", flush=True)
         for key in sorted(set(self.exp.bugs) | set(self.known)):
@@ -275,20 +342,24 @@ class Reporter:
             state = "OPEN" if kn["XFAIL"] else ("FIXED" if kn["XPASS"] else "NOT-SEEN")
             cls = self.exp.bugs.get(key, ("blocking", ""))[0]
             ids = self.exp.ids.get(key)
-            print(f"KNOWN {key} {state} {','.join(kn['checks']) or '-'} xfail={kn['XFAIL']} xpass={kn['XPASS']} "
-                  f"class={cls}" + (f" ids={ids}" if ids else ""), flush=True)
+            print(f"KNOWN {key} {state} {','.join(kn['checks']) or '-'} class={cls}" + (f" ids={ids}" if ids else ""),
+                  flush=True)
         c = self.counts
         print(f"SUMMARY mirror_diff pg{major} layers={layers} pass={c['PASS']} xpass={c['XPASS']} "
-              f"fail={c['FAIL']} xfail={c['XFAIL']} skip={c['SKIP']}", flush=True)
+              f"fail={c['FAIL']} xfail={c['XFAIL']} xfail_limitation={c['XFAIL_LIMITATION']} skip={c['SKIP']} "
+              f"unverified={self.unverified}", flush=True)
         listed = sorted(k for k, (cls, _) in self.exp.bugs.items() if cls == "blocking")
         print(f"BLOCKING mirror_diff {len(listed)}" + (f" {','.join(listed)}" if listed else ""), flush=True)
-        if c["FAIL"] or self.blocking_xfails:
-            print("GATE mirror_diff FAIL", flush=True)
+        if c["FAIL"] or self.blocking_xfails or self.unverified or not c["PASS"]:
+            gate, code = "FAIL", 1
         elif listed:
-            print("GATE mirror_diff BLOCKED", flush=True)
+            gate, code = "BLOCKED", 4
+        elif not complete:
+            gate, code = "INCOMPLETE", 3
         else:
-            print("GATE mirror_diff PASS", flush=True)
-        return c["FAIL"] == 0
+            gate, code = "PASS", 0
+        print(f"GATE mirror_diff {gate}", flush=True)
+        return code, (1 if self.unexpected else 0)
 
 
 # ------------------------------------------------------------------------------------------------
@@ -315,16 +386,18 @@ class Server:
         if not self.managed:
             return
         os.makedirs(os.path.join(self.args.workdir, "logs"), exist_ok=True)
-        if os.path.exists(self.datadir):
-            self.pg_ctl("stop", "-m", "immediate", check=False)
         self.logfile = os.path.join(self.args.workdir, "logs", f"{label}.log")
         os.makedirs(self.host, exist_ok=True)
         if os.path.exists(self.datadir):
+            if not os.path.exists(os.path.join(self.datadir, CLUSTER_MARKER)):
+                sys.exit(f"{self.datadir} exists but was not created by mirror_diff ({CLUSTER_MARKER} missing); "
+                         "refusing to delete it: choose another --workdir")
             self.pg_ctl("stop", "-m", "immediate", check=False)
             shutil.rmtree(self.datadir)
         subprocess.run([os.path.join(self.bindir, "initdb"), "-D", self.datadir, "-U", self.user,
                         "--locale=C", "--encoding=UTF8"], check=True,
                        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        open(os.path.join(self.datadir, CLUSTER_MARKER), "w").close()
         with open(os.path.join(self.datadir, "postgresql.conf"), "a") as f:
             f.write(f"""
 port = {self.port}
@@ -368,8 +441,14 @@ duckdb.autoinstall_known_extensions = false
             return -1, "", "timeout"
 
     def cancel(self, pid):
+        """Cancel the statement of backend pid; terminate the backend only if it is still running
+        that statement after 10 s (a cancelled statement leaves the session usable)."""
         self.admin("postgres", f"SELECT pg_cancel_backend({pid})", timeout=10)
-        time.sleep(2)
+        for _ in range(20):
+            time.sleep(0.5)
+            rc, state, _ = self.admin("postgres", f"SELECT state FROM pg_stat_activity WHERE pid = {pid}", timeout=10)
+            if rc == 0 and state != "active":
+                return
         self.admin("postgres", f"SELECT pg_terminate_backend({pid})", timeout=10)
 
     def panic_lines(self):
@@ -380,6 +459,9 @@ duckdb.autoinstall_known_extensions = false
 
     def panics(self):
         return len(self.panic_lines())
+
+    def can_see_panics(self):
+        return os.path.exists(self.logfile)
 
     def backend_crashes(self):
         """Postgres backends killed by a signal (server-wide crash recovery follows)."""
@@ -415,16 +497,18 @@ duckdb.autoinstall_known_extensions = false
 
 
 # ------------------------------------------------------------------------------------------------
-def _tol(c):
-    if NUMBER.match(c):
-        try:
-            f = float(c)
-        except ValueError:
-            return c
-        if f == int(f) and abs(f) < 1e15:
-            return str(int(f))
-        return "%.10g" % f
-    return c
+def panic_site(line):
+    """Location of a Rust panic, independent of where the crates were built: moonlink sources as
+    moonlink/src/<crate>/src/...rs:L:C, registry crates as <crate>-<version>/src/...rs:L:C."""
+    m = re.search(r"panicked at (\S+?\.rs:\d+:\d+)", line)
+    if not m:
+        return one_line(re.sub(r"^.*panicked at ", "", line), 120)
+    path = m.group(1)
+    reg = re.search(r"/registry/src/[^/]+/(.+)$", path)
+    if reg:
+        return reg.group(1)
+    ml = re.search(r"(?:^|/)(moonlink/src/.+)$", path)
+    return ml.group(1) if ml else path
 
 
 def json_norm(rows, idx):
@@ -443,21 +527,6 @@ def json_norm(rows, idx):
                     pass
         out.append(r)
     return out
-
-
-def same(a, b):
-    """Compare two Results: (equal, how) with how in exact|order|tolerant|both-error|..."""
-    if not a.ok or not b.ok:
-        if not a.ok and not b.ok:
-            return True, "both-error"
-        return False, "error-vs-rows"
-    if a.rows == b.rows:
-        return True, "exact"
-    if sorted(map(tuple, a.rows)) == sorted(map(tuple, b.rows)):
-        return True, "order"
-    if sorted(tuple(map(_tol, r)) for r in a.rows) == sorted(tuple(map(_tol, r)) for r in b.rows):
-        return True, "tolerant"
-    return False, "rows"
 
 
 def diff_sample(a, b, n=3):
@@ -494,7 +563,7 @@ def json_equivalent(a, b):
 TABLES_SQL = (
     "SELECT c.relname, c.relkind, c.relispartition, "
     " coalesce((SELECT json_agg(json_build_array(a.attname, format_type(a.atttypid, a.atttypmod), t.typtype,"
-    "     t.typnamespace = 'pg_catalog'::regnamespace, t.typcategory) ORDER BY a.attnum)"
+    "     t.typnamespace = 'pg_catalog'::regnamespace, t.typcategory, a.atttypid) ORDER BY a.attnum)"
     "   FROM pg_attribute a JOIN pg_type t ON t.oid = a.atttypid"
     "   WHERE a.attrelid = c.oid AND a.attnum > 0 AND NOT a.attisdropped), '[]') "
     "FROM pg_class c JOIN pg_namespace n ON n.oid = c.relnamespace "
@@ -522,6 +591,45 @@ def json_cols(cols):
 
 
 # ------------------------------------------------------------------------------------------------
+ROLE_PROBLEM = re.compile(r"duckdb\.postgres_role|pg_read_server_files|permission denied", re.I)
+
+
+def rejection_core(message):
+    """The innermost cause of a create_table error (moonlink wraps it in several layers)."""
+    msg = message or ""
+    for rx in (r"source table \S+ cannot be mirrored: .*?(?=\s+\((?:permanent|temporary)\) at |$)",
+               r"conversion error: .*?(?=\s+\((?:permanent|temporary)\) at |$)",
+               r"type with oid \d+[^\"]*?not supported",
+               r"Decimals with precision larger than \d+ are not supported",
+               r"[Uu]nsupported[^\"]{0,160}", r"not supported[^\"]{0,160}", r"[Ii]nvalid[^\"]{0,160}"):
+        m = re.search(rx, msg)
+        if m:
+            return one_line(m.group(0), 240)
+    inner = re.sub(r"\s+\((?:permanent|temporary)\) at \S+$", "", msg.split("source: ")[-1].strip())
+    return one_line(inner, 240)
+
+
+def describe_rejection(cols, message):
+    """create_table error with the column it is about: the column whose type oid the error names,
+    else the first column of a non-builtin or non-base type."""
+    m = re.search(r"oid (\d+)", message or "")
+    hit = [c for c in cols if m and len(c) > 5 and str(c[5]) == m.group(1)]
+    named = re.search(r"column (\S+) \(", message or "")
+    if not hit and named:
+        hit = [c for c in cols if c[0] == named.group(1)]
+    wide = re.search(r"precision larger than (\d+)", message or "")
+    if not hit and wide:
+        hit = [c for c in cols if re.match(r"numeric\((\d+)", c[1])
+               and int(re.match(r"numeric\((\d+)", c[1]).group(1)) > int(wide.group(1))]
+    if not hit:
+        hit = [c for c in cols if not c[3] or c[2] != "b"]
+    core = rejection_core(message)
+    if hit:
+        c = hit[0]
+        return f"create_table rejected: column {c[0]} type={c[1]} typtype={c[2]}: {core}"
+    return f"create_table rejected: {core}"
+
+
 class FileRun:
     """Run one regress file in its own database with mirrors attached (cdc + query layers)."""
 
@@ -535,11 +643,13 @@ class FileRun:
         self.c = None          # control session for mooncake RPCs (a failed mooncake RPC poisons the session's RPC client)
         self.tables = {}       # heap table -> state
         self.queries = []      # query outcomes, reported at end of file
-        self.events = {}       # table -> divergence records
-        self.ever = {}         # table -> "" once mirrored, else the create_table error
+        self.events = {}       # table -> events (divergences, failed create_table, failed reads, ...)
+        self.ever = set()      # tables a mirror was attempted for
+        self.unverified = {}   # table -> why its mirror could not be checked
         self.catalog_dirty = False
         self.pending_cmp = set()
         self.unit_line = 0
+        self.cur_stmt = ""
         self.wedged = ""        # set when mooncake RPCs keep timing out (the replication task died)
         self.ctl_timeouts = 0
 
@@ -562,13 +672,17 @@ class FileRun:
         if r.died and len(self.srv.backend_crashes()) > crashes:
             line, trap = self.srv.backend_crashes()[-1]
             self.rep.result(f"backend.{self.name}.L{self.unit_line}", "FAIL",
-                            f"Postgres backend crashed (server crash recovery): {trap or line} :: {one_line(text, 160)}")
+                            f"Postgres backend crashed (server crash recovery): {trap or line} during: {one_line(text, 160)}")
         if r.died:
             self.rep.stat("session.restarted")
             self.new_session()
         if self.srv.panics() > before:
             self.on_panic(text)
         return r
+
+    def last_panic_site(self):
+        lines = self.srv.panic_lines()
+        return panic_site(lines[-1]) if lines else "none"
 
     def ctl(self, sql, timeout=None):
         """Run a mooncake procedure / mirror DDL on the control session; recycle it after any error."""
@@ -584,7 +698,8 @@ class FileRun:
             if self.ctl_timeouts >= 2 and not self.wedged:
                 self.wedged = f"line {self.unit_line}: {one_line(sql, 100)}"
                 self.rep.result(f"service.{self.name}.wedged", "FAIL",
-                                f"mooncake RPCs time out repeatedly from {self.wedged}; no further mirrors in this file")
+                                f"mooncake RPCs time out repeatedly from {self.wedged}; last moonlink panic at "
+                                f"{self.last_panic_site()}; the file's remaining mirrors are unverified")
         if self.srv.panics() > before:
             self.on_panic(sql)
         return r
@@ -602,9 +717,9 @@ class FileRun:
         self.h.panics_seen = len(lines)
         if not new:
             return
-        where = re.sub(r"^.*panicked at ", "", new[0])
+        sites = sorted({panic_site(ln) for ln in new})
         self.rep.result(f"panic.{self.name}.L{self.unit_line}", "FAIL",
-                        f"{len(new)} moonlink panic(s) at {where[:200]} during: {one_line(text, 160)}",
+                        f"{len(new)} moonlink panic(s) at {', '.join(sites)} during: {one_line(text, 160)}",
                         record={"panics": new[:5]})
         if not self.srv.recover(self.db):
             raise RuntimeError("moonlink service down and did not recover after panic")
@@ -617,6 +732,16 @@ class FileRun:
         for name, t in list(self.tables.items()):
             if t.pop("needs_remirror", False):
                 self.mirror(name, "re-create after panic")
+
+    def event(self, name, kind, detail, stmt="", stage="", **extra):
+        """Record what went wrong with a table's mirror; the cdc check is XFAIL only if
+        expected.txt explains every event."""
+        stmt = one_line(stmt or self.cur_stmt, 300)
+        ev = {"kind": kind, "stage": stage, "line": self.unit_line, "stmt": stmt, "detail": detail}
+        ev.update({k: v for k, v in extra.items() if v is not None})
+        ev["text"] = f"{stage or kind}: {detail} :: {stmt}"
+        self.events.setdefault(name, []).append(ev)
+        self.rep.stat(f"cdc.event.{kind}")
 
     # ---- catalog -------------------------------------------------------------------------------
     def sync_catalog(self):
@@ -643,34 +768,38 @@ class FileRun:
         t.update(bad_cols=set(), lossy_all=False)
         if not t["cols"]:
             return
+        self.ever.add(name)
         if self.wedged:
             t["mirrored"] = False
-            self.ever.setdefault(name, f"not attempted: moonlink wedged since {self.wedged}")
+            self.unverified.setdefault(name, f"no mirror: moonlink wedged since {self.wedged}")
             return
-        crash_type = next((c[1] for c in t["cols"] if c[1] in self.h.crash_types), None)
-        if crash_type:
-            err = f"not attempted: type {crash_type} crashed moonlink at {self.h.crash_types[crash_type]}"
+        crash = next(((c, self.h.crash_types[c[1]]) for c in t["cols"] if c[1] in self.h.crash_types), None)
+        if crash:
+            (col, (where, site)) = crash
             t["mirrored"] = False
-            self.ever.setdefault(name, err)
+            self.event(name, "create-table", f"create_table not attempted: column {col[0]} type={col[1]} "
+                                             f"crashed moonlink at {site} ({where})", stage="create")
             return
         before = self.srv.panics()
         r = self.ctl(f"CALL mooncake.create_table({qlit(SCHEMA_MIRROR + '.' + name)}, {qlit('public.' + name)});")
         if self.srv.panics() > before:
-            suspects = [c[1] for c in t["cols"] if c[1] not in self.h.good_types]
-            for typ in suspects:
-                self.h.crash_types.setdefault(typ, f"{self.name}.{name}")
+            site = self.last_panic_site()
+            suspects = [c for c in t["cols"] if c[1] not in self.h.good_types]
+            for c in suspects:
+                self.h.crash_types.setdefault(c[1], (f"{self.name}.{name}", site))
             t["mirrored"] = False
-            self.ever.setdefault(name, f"create_table crashed moonlink (suspect types: {suspects})")
+            self.event(name, "create-table", f"create_table crashed moonlink at {site} "
+                                             f"(suspect types: {','.join(c[1] for c in suspects)})", stage="create")
             self.remirror_pending()
             return
         if not r.ok:
             t["mirrored"] = False
-            if self.ever.get(name) != "":
-                self.ever[name] = one_line(r.message or r.outcome(), 200)
+            detail = (f"create_table {r.outcome()}" if r.timed_out or r.died
+                      else describe_rejection(t["cols"], r.message))
+            self.event(name, "create-table", detail, stage="create")
             self.rep.stat("mirror.rejected")
             return
         t["mirrored"] = True
-        self.ever[name] = ""
         self.h.good_types.update(c[1] for c in t["cols"])
         self.rep.stat("mirror.created")
         self.compare(name, f"<create_table: {reason}>", stage="copy")
@@ -685,17 +814,30 @@ class FileRun:
         r = self.ctl(f"DROP TABLE IF EXISTS {SCHEMA_MIRROR}.{qident(name)};")
         if not r.ok:
             self.rep.stat("mirror.drop_failed")
-            self.events.setdefault(name, []).append(
-                {"stage": "drop", "line": self.unit_line, "stmt": "DROP mirror", "error": r.message[:300],
-                 "cols": [], "types": []})
+            self.event(name, "drop", f"drop mirror failed: {r.outcome()} {one_line(r.message, 200)}", stage="drop")
 
     # ---- comparison ----------------------------------------------------------------------------
+    def fenced_read(self, sql):
+        """Read a mirror right after a fence commit in the reading session: pg_mooncake makes the
+        scan wait for that session's last commit, which is after every write so far."""
+        fence = self.s.run("SELECT pg_current_xact_id() \\g /dev/null")
+        if fence.ok:
+            r = self.run(sql)
+            if r.ok or not ROLE_PROBLEM.search(r.message):
+                return r
+        # The file switched to a role that can't read mirrors (or can't commit): read as the
+        # harness user. Its fence commit comes after the file session's commits as well.
+        self.ctl("SELECT pg_current_xact_id() \\g /dev/null")
+        return self.ctl(sql)
+
     def compare(self, name, stmt, stage):
-        """Mirror vs heap for one table; records a divergence and re-baselines the mirror."""
+        """Mirror vs heap for one table, outside a transaction block. Records events; after a
+        divergence the mirror is re-created so later statements are checked independently."""
         t = self.tables[name]
-        if self.wedged:
-            return True
         if not t.get("mirrored") or (t["lossy_all"] and stage != "final"):
+            return True
+        if self.wedged:
+            self.unverified.setdefault(name, f"moonlink wedged since {self.wedged}")
             return True
         cols = [c for c in t["cols"] if c[0] not in t["bad_cols"]] if stage != "final" else t["cols"]
         if not cols:
@@ -703,39 +845,39 @@ class FileRun:
         sel = select_list(cols)
         heap = self.run(f"SELECT {sel} FROM public.{qident(name)};")
         if not heap.ok:
-            return True
+            self.event(name, "heap-read-error", f"heap read failed: {heap.outcome()} {heap.sqlstate} "
+                                                f"{one_line(heap.message, 200)}", stmt, stage)
+            return False
         jidx = json_cols(cols)
         heap.rows = json_norm(heap.rows, jidx)
+        first = mir = self.fenced_read(f"SELECT {sel} FROM {SCHEMA_MIRROR}.{qident(name)};")
+        mir.rows = json_norm(mir.rows, jidx)
+        if mir.ok and compare.rows_match(heap.rows, mir.rows)[0]:
+            return True
         deadline = time.monotonic() + self.h.args.converge_secs
-        polls = 0
-        reader = self.run
-        while True:
-            mir = reader(f"SELECT {sel} FROM {SCHEMA_MIRROR}.{qident(name)};")
-            if not mir.ok and "duckdb.postgres_role" in mir.message:
-                # The file switched to a role without DuckDB rights (SET SESSION AUTHORIZATION);
-                # read the mirror as the harness user instead (polling replaces read-your-writes).
-                reader = self.ctl
-                mir = reader(f"SELECT {sel} FROM {SCHEMA_MIRROR}.{qident(name)};")
-            mir.rows = json_norm(mir.rows, jidx)
-            eq, how = same(heap, mir)
-            if eq and how in ("exact", "order"):
-                if polls:
-                    self.rep.stat("cdc.converged_after_poll")
-                return True
-            if mir.died or mir.timed_out or time.monotonic() >= deadline:
-                break
-            polls += 1
+        t0 = time.monotonic()
+        while not (mir.died or mir.timed_out) and time.monotonic() < deadline:
             time.sleep(0.5)
-        dcols = self.diverged_columns(cols, heap, mir)
-        rec = {"stage": stage, "line": self.unit_line, "stmt": one_line(stmt, 300),
-               "cols": sorted(c[0] for c in dcols), "types": sorted({c[1] for c in dcols}),
-               "sample": diff_sample(heap, mir), "mirror_error": mir.message[:300]}
-        self.events.setdefault(name, []).append(rec)
-        self.h.diverged_cols.setdefault((self.name, name), set()).update(rec["cols"] or ["*"])
+            mir = self.fenced_read(f"SELECT {sel} FROM {SCHEMA_MIRROR}.{qident(name)};")
+            mir.rows = json_norm(mir.rows, jidx)
+            if mir.ok and compare.rows_match(heap.rows, mir.rows)[0]:
+                was = (f"error {one_line(first.message, 120)}" if not first.ok
+                       else compare.divergence_events([(c[0], c[1]) for c in cols], heap.rows, first.rows)[0]["detail"])
+                self.event(name, "stale-read", f"stale read: the mirror matched only {time.monotonic() - t0:.1f}s "
+                                               f"after the fenced read, which gave {one_line(was, 200)}", stmt, stage)
+                return False
+        if not mir.ok:
+            evs = [{"kind": "mirror-error", "detail": f"mirror read failed: {mir.outcome()} {mir.sqlstate} "
+                                                      f"{one_line(mir.message, 200)}"}]
+        else:
+            evs = compare.divergence_events([(c[0], c[1]) for c in cols], heap.rows, mir.rows)
+        for e in evs:
+            self.event(name, e["kind"], e["detail"], stmt, stage, col=e.get("col"), type=e.get("type"))
+        self.h.diverged_cols.setdefault((self.name, name), set()).update(e.get("col") or "*" for e in evs)
         self.rep.stat("cdc.divergences")
         if stage == "copy":
-            if dcols and len(heap.rows) == len(mir.rows) and mir.ok:
-                t["bad_cols"] |= {c[0] for c in dcols}
+            if mir.ok and evs and all(e["kind"] == "value" for e in evs):
+                t["bad_cols"] |= {e["col"] for e in evs}
             else:
                 t["lossy_all"] = True
             return False
@@ -743,16 +885,6 @@ class FileRun:
             self.drop_mirror(name)
             self.mirror(name, "re-baseline after divergence")
         return False
-
-    @staticmethod
-    def diverged_columns(cols, heap, mir):
-        if not heap.ok or not mir.ok or len(heap.rows) != len(mir.rows):
-            return []
-        out = []
-        for i, col in enumerate(cols):
-            if sorted(r[i] for r in heap.rows) != sorted(r[i] for r in mir.rows):
-                out.append(col)
-        return out
 
     # ---- statements --------------------------------------------------------------------------
     def mirrored_refs(self, sql):
@@ -772,6 +904,18 @@ class FileRun:
                 out.append(name)
         return out
 
+    def describe(self, unit, in_txn):
+        """(result column names, types) of a query, from psql's \\gdesc (nothing is executed)."""
+        sql = unit.sql.rstrip().rstrip(";")
+        text = ("SAVEPOINT md_desc;\n" if in_txn else "") + sql + "\n\\gdesc\n"
+        r = self.s.run(text, timeout=self.h.args.stmt_timeout, on_timeout=self.srv.cancel)
+        if in_txn and self.s.alive():
+            self.s.run("ROLLBACK TO SAVEPOINT md_desc;\nRELEASE SAVEPOINT md_desc;")
+        if not r.ok:
+            return [], []
+        rows = [row for row in r.rows if len(row) == 2]
+        return [row[0] for row in rows], [row[1] for row in rows]
+
     def handle_query(self, unit):
         refs = self.mirrored_refs(unit.sql)
         if not refs:
@@ -788,44 +932,29 @@ class FileRun:
             self.queries.append(dict(q, status="SKIP", reason="uncommitted writes in the transaction"))
             return
         q["masked_by"] = self.masking(refs, unit.sql)
+        names, types = self.describe(unit, in_txn) if heap.ok else ([], [])
+        order_items, limited = compare.top_level_order_by(unit.sql)
+        q.update(types=types, order_by=order_items, limited=limited)
+
+        def match(a, b):
+            return compare.results_match(a, b, types, order_items, names, limited)
         mir = self.shadow(unit, mirror=True, in_txn=in_txn)
-        eq, how = same(heap, mir)
+        eq, how = match(heap, mir)
         q["how"] = how
-        if eq and how != "both-error":
+        if eq:
             q["status"] = "PASS"
             self.rep.stat(f"query.pass_{how}")
             self.queries.append(q)
             return
-        if eq:
-            self.rep.stat("query.both_error")
-            self.queries.append(dict(q, status="SKIP", reason="errors on heap and on mirror",
-                                     heap_error=heap.message[:200], mirror_error=mir.message[:200]))
-            return
         duck = self.shadow(unit, mirror=False, in_txn=in_txn)
-        if not self.ran_in_duckdb(unit, in_txn):
-            duck.error, duck.message = True, "not executed by DuckDB (pg_duckdb fell back to Postgres)"
-            duck.rows = []
-        q.update(heap=heap.outcome(), mirror=mir.outcome(), duck=duck.outcome(), sample=diff_sample(heap, mir),
-                 heap_error=heap.message[:300], mirror_error=mir.message[:300], duck_error=duck.message[:300],
-                 duck_vs_mirror=same(duck, mir)[1], duck_vs_heap=same(duck, heap)[1])
-        if mir.timed_out or mir.died:
-            q.update(status="FAIL", verdict="mooncake", reason=f"mirror query {mir.outcome()}")
-        elif same(duck, mir)[0]:
-            if mir.ok:
-                q.update(status="ENGINE", verdict="engine", reason="DuckDB semantics")
-            else:
-                q.update(status="SKIP", verdict="unsupported", reason="DuckDB cannot run it")
-                self.rep.stat("query.duckdb_unsupported")
-        elif order_dependent(unit.sql) and mir.ok and heap.ok and len(mir.rows) == len(heap.rows):
-            q.update(status="ENGINE", verdict="engine",
-                     reason="result depends on physical row order (window frame without a unique ORDER BY)")
-        elif duck.ok and same(duck, heap)[0]:
-            q.update(status="FAIL", verdict="mooncake", reason="mirror differs; DuckDB on heap agrees with heap")
-        elif not duck.ok and not mir.ok:
-            q.update(status="SKIP", verdict="unsupported", reason="DuckDB cannot run it")
+        duck_ran = self.ran_in_duckdb(unit, in_txn)
+        status, verdict, reason = compare.classify(heap, mir, duck, duck_ran, match, compare.order_dependent(unit.sql))
+        if status == "SKIP":
             self.rep.stat("query.duckdb_unsupported")
-        else:
-            q.update(status="FAIL", verdict="unclassified", reason="heap, mirror and DuckDB-on-heap all differ")
+        q.update(status=status, verdict=verdict, reason=reason, heap=heap.outcome(), mirror=mir.outcome(),
+                 duck=duck.outcome() if duck_ran else "not-run-by-duckdb", sample=diff_sample(heap, mir),
+                 heap_error=heap.message[:300], mirror_error=mir.message[:300], duck_error=duck.message[:300],
+                 duck_vs_mirror=match(duck, mir)[1], duck_vs_heap=match(duck, heap)[1])
         self.queries.append(q)
 
     def ran_in_duckdb(self, unit, in_txn):
@@ -872,6 +1001,18 @@ class FileRun:
         for name in refs:
             self.compare(name, unit.sql, stage="dml")
 
+    def handle_multi(self, unit):
+        """Statements joined with \\; run as one query string: compare everything they name."""
+        self.run(unit.text)
+        refs = self.mirrored_refs(unit.sql)
+        if self.txn_state()[0]:
+            self.catalog_dirty = True
+            self.pending_cmp.update(refs)
+            return
+        self.sync_catalog()
+        for name in self.mirrored_refs(unit.sql):
+            self.compare(name, unit.sql, stage="dml")
+
     def pre_ddl(self, unit):
         """Drop mirrors of tables about to be dropped, truncated or altered (those statements break CDC for the mirror)."""
         if not PRE_DDL.match(unit.sql) or "md:unprotected" in unit.text:
@@ -884,6 +1025,7 @@ class FileRun:
             self.rep.stat("mirror.dropped_for_ddl")
 
     def execute(self, unit):
+        self.cur_stmt = unit.sql or unit.meta
         if unit.kind == "meta":
             if not (SKIP_META.match(unit.meta) or SKIP_SET_VAR.match(unit.meta)):
                 self.run(unit.text)
@@ -891,6 +1033,9 @@ class FileRun:
         if unit.kind == "block":
             self.run(unit.text)
             self.catalog_dirty = True
+            return
+        if unit.multi:
+            self.handle_multi(unit)
             return
         sql, meta = unit.sql, unit.meta
         if meta.startswith("\\gx"):
@@ -942,6 +1087,7 @@ class FileRun:
                    f"GRANT USAGE ON SCHEMA {SCHEMA_MIRROR} TO PUBLIC;\n"
                    f"ALTER DEFAULT PRIVILEGES IN SCHEMA {SCHEMA_MIRROR} GRANT SELECT ON TABLES TO PUBLIC;")
         text = open(self.h.sql_path(self.name)).read()
+        self.cur_stmt = "<fixture>"
         for name, info in read_tables(self.s).items():
             if info["partition"]:
                 continue
@@ -953,12 +1099,17 @@ class FileRun:
             for unit in sqlsplit.split(text):
                 if time.monotonic() - t0 > self.h.args.file_timeout:
                     self.rep.result(f"infra.{self.name}.file_timeout", "FAIL",
-                                    f"stopped at line {unit.line} after {self.h.args.file_timeout:.0f}s")
+                                    f"stopped at line {unit.line} after {self.h.args.file_timeout:.0f}s; last moonlink "
+                                    f"panic at {self.last_panic_site()}")
+                    for name in self.tables:
+                        if self.tables[name].get("mirrored"):
+                            self.unverified.setdefault(name, f"file stopped at line {unit.line} (file timeout)")
                     break
                 self.unit_line = unit.line
                 self.execute(unit)
                 self.remirror_pending()
             self.unit_line = 0
+            self.cur_stmt = "<end of file>"
             self.run("ROLLBACK;")
             if self.catalog_dirty:
                 self.sync_catalog()
@@ -980,44 +1131,47 @@ class FileRun:
 
     def cdc_detail(self, name):
         ev = self.events.get(name, [])
-        types = sorted({ty for e in ev for ty in e.get("types", [])})
-        first = ev[0]
-        return (f"types=[{','.join(types)}] events={len(ev)} first={first['stage']}@L{first['line']} "
-                f"cols={first.get('cols')} {first.get('sample') or first.get('error', '')} :: {first['stmt'][:160]}")
+        kinds = sorted({e["kind"] for e in ev})
+        return f"events={len(ev)} kinds={','.join(kinds)} first@L{ev[0]['line']} {ev[0]['text']}"
 
     def report(self):
         for name in sorted(self.ever):
             check = f"cdc.{self.name}.{name}"
             if self.events.get(name):
-                self.rep.result(check, "FAIL", self.cdc_detail(name), record={"events": self.events[name]})
-            elif self.ever[name]:
-                self.rep.result(check, "SKIP", f"no mirror: {self.ever[name]}")
+                self.rep.result(check, "FAIL", self.cdc_detail(name), events=self.events[name])
+            elif name in self.unverified:
+                self.rep.result(check, "SKIP", f"unverified: {self.unverified[name]}", unverified=True)
             else:
                 self.rep.result(check, "PASS")
         for q in self.queries:
             check = f"query.{self.name}.L{q['line']}"
             st = q["status"]
             sql = one_line(q["sql"], 160)
+            rec = {k: v for k, v in q.items() if k not in ("status",)}
             if st == "PASS":
                 self.rep.result(check, "PASS", "" if q.get("how") == "exact" else q["how"])
             elif st == "SKIP":
-                self.rep.result(check, "SKIP", f"{q['reason']}: {sql}", record=q)
+                self.rep.result(check, "SKIP", f"{q['reason']}: {sql}", record=rec)
             elif st == "ENGINE":
                 self.rep.stat("query.engine")
-                self.rep.result(check, "FAIL", f"engine: {q.get('sample') or q.get('heap_error')} :: {sql}",
-                                record=q, ids=self.h.exp.engine or ["duckdb-semantics"])
+                self.rep.result(check, "FAIL", f"engine: {q['reason']}: {q.get('sample') or q.get('heap_error')} :: {sql}",
+                                record=rec, ids=self.h.exp.engine or ["duckdb-semantics"])
             elif q.get("masked_by"):
                 names = q["masked_by"]
-                ids = sorted({i for n in names
-                              for i in (self.h.exp.match(f"cdc.{self.name}.{n}", self.cdc_detail(n))[1] or [])
-                              if self.events.get(n)})
+                ids = []
+                for n in names:
+                    k = self.h.exp.match_events(f"cdc.{self.name}.{n}", self.events.get(n, []))
+                    if k is None:
+                        ids = None
+                        break
+                    ids += [x for x in k if x not in ids]
                 if ids:
-                    self.rep.result(check, "FAIL", f"reads lossy mirror {names}: {sql}", record=q, ids=ids)
+                    self.rep.result(check, "FAIL", f"reads lossy mirror {names}: {sql}", record=rec, ids=ids)
                 else:
                     self.rep.result(check, "SKIP", f"reads lossy mirror {names} (see cdc.{self.name}.*): {sql}",
-                                    record=q)
+                                    record=rec)
             else:
-                self.rep.result(check, "FAIL", f"{q['reason']}: {q.get('sample', '')} :: {sql}", record=q)
+                self.rep.result(check, "FAIL", f"{q['reason']}: {q.get('sample', '')} :: {sql}", record=rec)
 
 
 # ------------------------------------------------------------------------------------------------
@@ -1033,10 +1187,11 @@ class ProbeRun:
         self.db = None
         self.s = None
         self.attempt = 0
+        self.states = {}  # table -> content hashes already checked in this file
 
     def fresh_db(self, replay=True):
-        """New database; replay the file. Regress files drop their tables as they go, so the
-        tables are collected (copy check + type values) before every destructive statement."""
+        """New database; replay the file. Regress files drop and alter their tables as they go,
+        so the tables are collected (copy check + type values) before every destructive statement."""
         self.attempt += 1
         self.db = self.h.dbname(self.name, suffix=f"d{self.attempt}")
         self.h.create_db(self.db)
@@ -1078,7 +1233,11 @@ class ProbeRun:
             self.s = self.h.session(self.db)
 
     def go(self):
-        self.fresh_db()
+        try:
+            self.fresh_db()
+        finally:
+            if self.s:
+                self.s.kill()
 
     def collect(self):
         tables = {n: i for n, i in read_tables(self.s).items() if not i["partition"]}
@@ -1087,46 +1246,43 @@ class ProbeRun:
         by_type = {}
         for rel, info in tables.items():
             for col in info["cols"]:
-                by_type.setdefault(col, []).append((rel, col[0]))
-        types = {}
-        for col, uses in by_type.items():
-            _, typ, typtype, builtin, _ = col
-            types.setdefault((typ, typtype, builtin), []).extend(uses)
-        for (typ, typtype, builtin), uses in sorted(types.items()):
+                by_type.setdefault((col[1], col[2], col[3]), []).append((rel, col[0]))
+        for (typ, typtype, builtin), uses in sorted(by_type.items()):
             union = " UNION ALL ".join(f"SELECT {qident(att)}::{typ} AS v FROM public.{qident(rel)}"
                                        for rel, att in uses)
             if builtin:
-                self.harvest(typ, union)
+                self.harvest(typ, union, typtype)
             else:
                 self.h.type_probe(self, f"data.type.{self.name}.{type_key(typ)}", typ,
-                                  f"SELECT v FROM ({union}) s", origin=self.name)
+                                  f"SELECT v FROM ({union}) s", origin=self.name, typtype=typtype)
 
-    def harvest(self, typ, union):
+    def harvest(self, typ, union, typtype):
         r = self.q(f"SELECT DISTINCT v::text FROM ({union}) s LIMIT {self.h.args.pool_limit};")
         if r.ok:
-            pool = self.h.pool.setdefault(typ, {"values": set(), "files": set()})
+            pool = self.h.pool.setdefault(typ, {"values": set(), "files": set(), "typtype": typtype})
             pool["values"].update(row[0] for row in r.rows if row)
             pool["files"].add(self.name)
 
     def copy_check(self, rel, cols):
+        """Initial-copy check of one state of a table: each distinct content of a table is checked
+        once per file (data.copy.<file>.<table>, then .s2, .s3, ...), and a content already checked
+        in another file is not checked again."""
         if not cols:
             return
         sel = select_list(cols)
         h = self.q(f"SELECT md5(string_agg(t::text, E'\\n' ORDER BY t::text)), count(*) FROM (SELECT {sel} FROM public.{qident(rel)}) t;")
-        key = ("table", rel, h.rows[0][0] if h.ok and h.rows else self.name)
-        if key in self.h.seen or ("file-table", self.name, rel) in self.h.seen:
+        digest = h.rows[0][0] if h.ok and h.rows else f"unreadable:{self.attempt}"
+        seen = self.states.setdefault(rel, [])
+        if digest in seen or ("table", rel, digest) in self.h.seen:
             return
-        self.h.seen.add(key)
-        self.h.seen.add(("file-table", self.name, rel))
-        verdict, detail = self.h.mirror_and_compare(self, f"public.{qident(rel)}", rel, f"md.{rel}", sel)
-        check = f"data.copy.{self.name}.{rel}"
+        seen.append(digest)
+        self.h.seen.add(("table", rel, digest))
+        verdict, detail = self.h.mirror_and_compare(self, f"public.{qident(rel)}", rel, f"md.{rel}", sel, cols)
+        check = f"data.copy.{self.name}.{rel}" + (f".s{len(seen)}" if len(seen) > 1 else "")
         types = sorted({c[1] for c in cols})
         rec = {"verdict": verdict, "types": types}
-        if verdict == "rejected":
-            self.rep.result(check, "SKIP", f"rejected: {detail}", record=rec)
-        else:
-            self.rep.result(check, "PASS" if verdict == "exact" else "FAIL",
-                            "" if verdict == "exact" else f"{verdict}: types=[{','.join(types)}] {detail}", record=rec)
+        self.rep.result(check, "PASS" if verdict == "exact" else "FAIL",
+                        "" if verdict == "exact" else f"{verdict}: types=[{','.join(types)}] {detail}", record=rec)
         self.q(f"DROP TABLE IF EXISTS md.{qident(rel)};", timeout=self.h.args.ddl_timeout)
 
 
@@ -1134,6 +1290,13 @@ class PoolRun(ProbeRun):
     """Probes every pooled built-in type in one database."""
 
     def go(self):
+        try:
+            self.probe_all()
+        finally:
+            if self.s:
+                self.s.kill()
+
+    def probe_all(self):
         self.fresh_db(replay=False)
         for k, typ in enumerate(sorted(self.h.pool)):
             last = self.h.last_verdict
@@ -1150,7 +1313,12 @@ class PoolRun(ProbeRun):
             values_sql = (f"SELECT t::{typ} AS v FROM unnest({arr}) t {valid} "
                           f"UNION ALL SELECT NULL::{typ}")
             self.h.type_probe(self, f"data.type.{type_key(typ)}", typ, values_sql,
-                              origin=",".join(sorted(self.h.pool[typ]["files"])))
+                              origin=",".join(sorted(self.h.pool[typ]["files"])),
+                              typtype=self.h.pool[typ].get("typtype", "b"))
+
+
+class FixtureError(RuntimeError):
+    pass
 
 
 # ------------------------------------------------------------------------------------------------
@@ -1158,25 +1326,28 @@ class Harness:
     def __init__(self, args):
         self.args = args
         self.srv = Server(args)
+        if args.host and args.server_log:
+            self.srv.logfile = args.server_log
         self.exp = Expectations(args.expected, args.bug_ids)
         os.makedirs(args.workdir, exist_ok=True)
         os.makedirs(os.path.join(args.workdir, "results"), exist_ok=True)
-        self.rep = Reporter(self.exp, os.path.join(args.workdir, "results.jsonl"), resume=args.resume)
         self.done_path = os.path.join(args.workdir, "done.txt")
         self.pool_path = os.path.join(args.workdir, "pool.json")
         self.done = set()
         if args.resume and os.path.exists(self.done_path):
             self.done = {line.strip() for line in open(self.done_path) if line.strip()}
+        self.rep = Reporter(self.exp, os.path.join(args.workdir, "results.jsonl"), resume=args.resume,
+                            done=self.done)
         self.seen = set()
         self.pool = {}
-        self.type_verdicts = {}
         self.diverged_cols = {}
-        self.crash_types = {}  # column type -> where it crashed moonlink at create_table
+        self.crash_types = {}  # column type -> (where, panic site) of a create_table that crashed moonlink
         self.good_types = set()
         self.panics_seen = 0
         self.probe_seq = 0
         self.last_verdict = None
         self.server_num = 0
+        self.regresslib_note = False
         regress = os.path.join(args.pg_src, "src", "test", "regress")
         self.regress = regress if os.path.isdir(regress) else args.pg_src
         if not os.path.isfile(os.path.join(self.regress, "sql", FIXTURES + ".sql")):
@@ -1190,7 +1361,8 @@ class Harness:
         if args.resume and os.path.exists(self.pool_path):
             for typ, v in json.load(open(self.pool_path)).items():
                 if typ != "_done":
-                    self.pool[typ] = {"values": set(v["values"]), "files": set(v["files"])}
+                    self.pool[typ] = {"values": set(v["values"]), "files": set(v["files"]),
+                                      "typtype": v.get("typtype", "b")}
             if "data pooled-types" in self.done:
                 self.pool["_done"] = True
 
@@ -1243,22 +1415,34 @@ class Harness:
             self.dbs.remove(db)
 
     def template(self):
+        """md_template: the fixtures of test_setup.sql, copied into every database. A fixture
+        statement that fails voids every check built on it, so it stops the run (FixtureError).
+        The few that need the regress.so test library are skipped when it isn't built."""
         self.srv.admin("postgres", "DROP DATABASE IF EXISTS md_template WITH (FORCE)")
         rc, _, err = self.srv.admin("postgres", "CREATE DATABASE md_template")
         if rc != 0:
-            raise RuntimeError(err)
+            raise FixtureError(f"create database md_template: {err}")
+        have_lib = os.path.exists(os.path.join(self.regress, "regress.so"))
         s = self.session("md_template")
-        failed = []
-        for unit in sqlsplit.split(open(self.sql_path(FIXTURES)).read()):
-            r = s.run(unit.text, timeout=300)
-            if not r.ok:
-                failed.append(f"L{unit.line}: {r.message[:80]}")
-        s.close()
-        print(f"INFO fixtures loaded into md_template; {len(failed)} statement(s) failed: {'; '.join(failed)[:400]}",
-              flush=True)
+        failed, skipped = [], 0
+        try:
+            for unit in sqlsplit.split(open(self.sql_path(FIXTURES)).read()):
+                if not have_lib and "regresslib" in unit.text and unit.kind == "sql":
+                    skipped += 1
+                    continue
+                r = s.run(unit.text, timeout=300)
+                if not r.ok:
+                    failed.append(f"L{unit.line}: {r.outcome()} {r.message[:160]}")
+        finally:
+            s.close()
+        if skipped and not self.regresslib_note:
+            self.regresslib_note = True
+            print(f"INFO {skipped} fixture statement(s) skipped: {self.regress}/regress.so is not built", flush=True)
+        if failed:
+            raise FixtureError(f"{len(failed)} fixture statement(s) of {FIXTURES}.sql failed: {'; '.join(failed)[:600]}")
 
     # ---- shared probe logic ------------------------------------------------------------------
-    def mirror_and_compare(self, run, heap_rel, src_name, dst, sel):
+    def mirror_and_compare(self, run, heap_rel, src_name, dst, sel, cols):
         """Mirror public.<src_name> into <dst> by initial copy; return (verdict, detail)."""
         before = self.srv.panics()
         r = run.q(f"CALL mooncake.create_table({qlit(dst)}, {qlit('public.' + src_name)});", timeout=self.args.ddl_timeout)
@@ -1266,15 +1450,16 @@ class Harness:
             p = self.srv.panic_lines()
             self.panics_seen = len(p)
             run.recover()
-            return "crashed", f"create_table panicked moonlink: {re.sub(r'^.*panicked at ', '', p[-1])[:200]}"
+            return "crashed", f"create_table panicked moonlink at {panic_site(p[-1])}"
         if not r.ok:
             if r.outcome() != "error":
                 run.recover()
                 return "crashed", f"create_table {r.outcome()}"
-            return "rejected", one_line(r.message, 200)
-        return self.converge(run, f"SELECT {sel} FROM {heap_rel}", f"SELECT {sel} FROM {dst}")
+            return "rejected", describe_rejection(cols, r.message).replace("create_table rejected: ", "", 1)
+        return self.converge(run, f"SELECT {sel} FROM {heap_rel}", f"SELECT {sel} FROM {dst}",
+                             [(c[0], c[1]) for c in cols])
 
-    def converge(self, run, heap_sql, mirror_sql):
+    def converge(self, run, heap_sql, mirror_sql, cols):
         heap = run.q(heap_sql + ";")
         if not heap.ok:
             return "errored", f"heap query failed: {heap.message[:200]}"
@@ -1282,37 +1467,61 @@ class Harness:
         before = self.srv.panics()
         while True:
             mir = run.q(mirror_sql + ";")
-            eq, how = same(heap, mir)
-            if eq and how in ("exact", "order"):
+            if mir.ok and compare.rows_match(heap.rows, mir.rows)[0]:
                 return "exact", ""
             if self.srv.panics() > before or mir.died:
-                self.panics_seen = self.srv.panics()
+                p = self.srv.panic_lines()
+                self.panics_seen = len(p)
                 run.recover()
-                return "crashed", f"mirror scan {mir.outcome()}: {mir.message[:200]}"
+                site = panic_site(p[-1]) if len(p) > before else "none"
+                return "crashed", f"mirror scan {mir.outcome()}; moonlink panicked at {site}: {one_line(mir.message, 160)}"
             if mir.timed_out or time.monotonic() >= deadline:
                 break
             time.sleep(0.5)
         if not mir.ok:
             return "errored", f"mirror scan {mir.outcome()}: {one_line(mir.message, 200)}"
-        if json_equivalent(heap, mir):
-            return "equivalent", diff_sample(heap, mir)
-        return "lossy", diff_sample(heap, mir)
+        events = compare.divergence_events(cols, heap.rows, mir.rows)
+        details = "; ".join(e["detail"] for e in events)
+        if all(e.get("type") in ("json", "jsonb") for e in events) and json_equivalent(heap, mir):
+            return "equivalent", details
+        return "lossy", details
 
-    def type_probe(self, run, check, typ, values_sql, origin):
+    def type_probe(self, run, check, typ, values_sql, origin, typtype="b"):
         """One column type in isolation: initial copy, CDC insert/update/delete, snapshot."""
         self.probe_seq += 1
         k = self.probe_seq
         src, cdc = f"md_ps{k}", f"md_pc{k}"
+        what = f"type={typ} typtype={typtype}"
         r = run.q(f"CREATE TABLE public.{src} AS SELECT row_number() OVER () AS id, v FROM ({values_sql}) s;")
         if r.ok:
             r = run.q(f"ALTER TABLE public.{src} ADD PRIMARY KEY (id);")
         if not r.ok:
-            self.rep.result(check, "SKIP", f"could not build probe table: {one_line(r.message, 200)}")
+            self.rep.result(check, "FAIL", f"probe table not built: {what} ({origin}): {one_line(r.message, 200)}",
+                            record={"type": typ, "verdict": "harness", "origin": origin})
             return
         n = run.q(f"SELECT count(*) FROM public.{src};").rows
         n = n[0][0] if n else "?"
+        cols = [("id", "bigint", "b", True, "N", 0), ("v", typ, typtype, True, "", 0)]
         steps = {}
-        steps["copy"] = self.mirror_and_compare(run, f"public.{src}", src, f"md.{src}", "id, v")
+        # create_table rejects a table holding a value the mirror can't store (and names it). Each such
+        # value is recorded and removed, so the type's other values are still checked.
+        refused = []
+        for _ in range(self.args.max_rejected_values):
+            steps["copy"] = self.mirror_and_compare(run, f"public.{src}", src, f"md.{src}", "id, v", cols)
+            bad = re.search(r"cannot convert '(.*?)': (.*)$", steps["copy"][1]) if steps["copy"][0] == "rejected" else None
+            if not bad:
+                break
+            value = bad.group(1)
+            if value.endswith("..."):  # moonlink shortens long values in the message
+                cond = "v::text LIKE " + qlit(re.sub(r"([\\%_])", r"\\\1", value[:-3]) + "%")
+            else:
+                cond = f"v::text = {qlit(value)}"
+            d = run.q(f"WITH d AS (DELETE FROM public.{src} WHERE {cond} RETURNING 1) SELECT count(*) FROM d;")
+            if not d.ok or not d.rows or d.rows[-1][0] == "0":
+                break
+            refused.append((bad.group(1), bad.group(2)))
+        if refused:
+            n = (run.q(f"SELECT count(*) FROM public.{src};").rows or [["?"]])[0][0]
         if steps["copy"][0] not in ("rejected", "crashed"):
             run.q(f"CREATE TABLE public.{cdc} (id bigint PRIMARY KEY, v {typ});")
             r = run.q(f"CALL mooncake.create_table({qlit('md.' + cdc)}, {qlit('public.' + cdc)});",
@@ -1333,11 +1542,13 @@ class Harness:
                         if not sr.ok:
                             steps[step] = ("errored", f"create_snapshot after {step}: {sr.outcome()} {one_line(sr.message, 160)}")
                             break
-                    steps[step] = self.converge(run, f"SELECT id, v FROM public.{cdc}", f"SELECT id, v FROM md.{cdc}")
+                    steps[step] = self.converge(run, f"SELECT id, v FROM public.{cdc}", f"SELECT id, v FROM md.{cdc}",
+                                                [("id", "bigint"), ("v", typ)])
                     if steps[step][0] != "exact":
                         break
             else:
-                steps["cdc_insert"] = ("rejected" if r.outcome() == "error" else "crashed", one_line(r.message, 160))
+                steps["cdc_insert"] = ("rejected" if r.outcome() == "error" else "crashed",
+                                       one_line(r.message or r.outcome(), 160))
         for t in (cdc, src):
             run.q(f"DROP TABLE IF EXISTS md.{t};", timeout=self.args.ddl_timeout)
             run.q(f"DROP TABLE IF EXISTS public.{t};")
@@ -1345,12 +1556,16 @@ class Harness:
         overall = next(o for o in VERDICT_ORDER if o in seen or o == "exact")
         if overall == "rejected" and len(set(seen)) > 1:
             overall = next(o for o in VERDICT_ORDER if o in seen and o != "rejected")
+        if refused and overall == "exact":
+            overall = "rejected-values"
         detail = "; ".join(f"{s}={v}" + (f" ({d})" if d and v != "exact" else "") for s, (v, d) in steps.items())
-        self.type_verdicts.setdefault(type_label(typ), []).append((typ, overall, check))
+        if refused:
+            reasons = sorted({r for _, r in refused})
+            detail += (f"; {len(refused)} value(s) rejected at create_table: "
+                       + "; ".join(reasons)[:300] + " [" + ", ".join(v[:40] for v, _ in refused[:5]) + "]")
         self.last_verdict = overall
-        status = {"exact": "PASS", "rejected": "SKIP"}.get(overall, "FAIL")
-        self.rep.result(check, status, f"{overall}: {n} values ({origin}); {detail}",
-                        record={"type": typ, "verdict": overall, "steps": steps, "origin": origin})
+        self.rep.result(check, "PASS" if overall == "exact" else "FAIL", f"{overall}: {what} {n} values ({origin}); {detail}",
+                        record={"type": typ, "typtype": typtype, "verdict": overall, "steps": steps, "origin": origin})
 
     # ---- main ------------------------------------------------------------------------------
     def selection(self):
@@ -1364,6 +1579,9 @@ class Harness:
             want = self.args.files.split(",")
             sel = [(k, f) for k, f in sel if f in want]
         return [(k, f) for k, f in sel if os.path.exists(self.sql_path(f))]
+
+    def complete(self):
+        return not self.args.files and set(self.args.layers.split(",")) >= {"data", "cdc", "query"}
 
     def build_info(self):
         def git(*a):
@@ -1380,6 +1598,8 @@ class Harness:
         print(f"BUILD server_version={out}", flush=True)
         rc, num, _ = self.srv.admin("postgres", "SELECT current_setting('server_version_num')")
         self.server_num = int(num) if rc == 0 and num.isdigit() else 0
+        rc, cassert, _ = self.srv.admin("postgres", "SELECT current_setting('debug_assertions')")
+        print(f"BUILD cassert={cassert or 'unknown'}", flush=True)
         rc, pkglib, _ = self.srv.admin("postgres", "SELECT setting FROM pg_config WHERE name = 'PKGLIBDIR'")
         for lib in ("pg_mooncake.so", "pg_duckdb.so"):
             p = os.path.join(pkglib, lib)
@@ -1404,7 +1624,8 @@ class Harness:
             why = []
             ok = self.srv.healthy(db) or (time.sleep(20) or self.srv.healthy(db, why))
             self.rep.result(f"service.{kind}.{name}", "PASS" if ok else "FAIL",
-                            "" if ok else f"mooncake.list_tables() fails after the file: {one_line(why[-1], 240)}")
+                            "" if ok else f"mooncake.list_tables() fails after the file: {one_line(why[-1], 240)}; "
+                                          f"last moonlink panic at {panic_site(self.srv.panic_lines()[-1]) if self.srv.panics() else 'none'}")
         if self.srv.managed:
             if not self.args.keep:
                 self.srv.stop()
@@ -1417,44 +1638,58 @@ class Harness:
         self.done.add(key)
         with open(self.done_path, "a") as f:
             f.write(key + "\n")
-        pool = {t: ({"values": sorted(v["values"]), "files": sorted(v["files"])} if t != "_done" else v)
-                for t, v in self.pool.items()}
+        pool = {t: ({"values": sorted(v["values"]), "files": sorted(v["files"]), "typtype": v.get("typtype", "b")}
+                    if t != "_done" else v) for t, v in self.pool.items()}
         with open(self.pool_path + ".tmp", "w") as f:
             json.dump(pool, f)
         os.replace(self.pool_path + ".tmp", self.pool_path)
 
+    def run_unit(self, kind, f):
+        key = f"{kind} {f}"
+        self.rep.unit = key
+        print(f"INFO begin {key}", flush=True)
+        t0 = time.monotonic()
+        self.begin(f"{kind}-{f}")
+        try:
+            (ProbeRun if kind == "data" else FileRun)(self, f).go()
+        except FixtureError:
+            raise
+        except Exception as e:  # one broken file must not end the run
+            import traceback
+            self.rep.result(f"infra.{kind}.{f}", "FAIL", f"{type(e).__name__}: {e}",
+                            record={"traceback": traceback.format_exc()})
+        self.end(kind, f)
+        self.checkpoint(key)
+        print(f"INFO end {key} {time.monotonic() - t0:.0f}s", flush=True)
+
     def main(self):
         sel = self.selection()
-        self.begin("build-info")
-        self.build_info()
-        self.srv.stop()
+        self.rep.unit = "build-info"
         try:
+            self.begin("build-info")
+            self.build_info()
+            self.srv.stop()
+            if not self.srv.managed and not self.args.server_log:
+                self.rep.result("infra.panic_detection", "SKIP", "--host without --server-log: moonlink panics "
+                                "and backend crashes in the server log are not detected", unverified=True)
             for kind, f in sel:
                 if kind == "run" and "data" in self.args.layers.split(",") and self.pool and not self.pool.get("_done"):
                     self.run_pool()
                 if f"{kind} {f}" in self.done:
                     print(f"INFO skip {kind} {f} (done in an earlier run, --resume)", flush=True)
                     continue
-                print(f"INFO begin {kind} {f}", flush=True)
-                t0 = time.monotonic()
-                self.begin(f"{kind}-{f}")
-                try:
-                    (ProbeRun if kind == "data" else FileRun)(self, f).go()
-                except Exception as e:  # one broken file must not end the run
-                    import traceback
-                    self.rep.result(f"infra.{kind}.{f}", "FAIL", f"{type(e).__name__}: {e}",
-                                    record={"traceback": traceback.format_exc()})
-                self.end(kind, f)
-                self.checkpoint(f"{kind} {f}")
-                print(f"INFO end {kind} {f} {time.monotonic() - t0:.0f}s", flush=True)
+                self.run_unit(kind, f)
             if self.pool and not self.pool.get("_done"):
                 self.run_pool()
             self.type_summary()
+        except FixtureError as e:
+            self.rep.result("infra.fixtures", "FAIL", str(e))
         finally:
             if self.srv.managed and not self.args.keep:
                 self.srv.stop()
         layers = self.args.layers.replace(",", "+")
-        return 0 if self.rep.summary(self.major(), layers) else 1
+        gate, regression = self.rep.summary(self.major(), layers, self.complete())
+        return regression if self.args.exit_regression else gate
 
     def major(self):
         try:
@@ -1468,12 +1703,15 @@ class Harness:
         if "data pooled-types" in self.done:
             self.pool["_done"] = True
             return
+        self.rep.unit = "data pooled-types"
         print("INFO begin data pooled-types", flush=True)
         t0 = time.monotonic()
         self.pool = {k: v for k, v in self.pool.items() if k != "_done"}
         self.begin("data-pooled-types")
         try:
             PoolRun(self, "pool").go()
+        except FixtureError:
+            raise
         except Exception as e:
             self.rep.result("infra.data.pool", "FAIL", f"{type(e).__name__}: {e}")
         self.end("data", "pooled_types")
@@ -1486,7 +1724,7 @@ class Harness:
         with open(os.path.join(self.args.workdir, "results.jsonl")) as f:
             for line in f:
                 rec = json.loads(line)
-                if rec["check"].startswith("data.type.") and rec.get("verdict"):
+                if rec["check"].startswith("data.type.") and rec.get("verdict") in VERDICT_ORDER:
                     verdicts.setdefault(type_label(rec["type"]), []).append((rec["type"], rec["verdict"], rec["check"]))
         for label in sorted(verdicts):
             vs = verdicts[label]
@@ -1501,6 +1739,7 @@ def parse_args(argv):
                                     "(default: pg_config --bindir)")
     p.add_argument("--workdir", default=os.path.join(os.getcwd(), "mirror_diff_work"))
     p.add_argument("--host", help="use a running server (socket dir or host) instead of a throwaway cluster")
+    p.add_argument("--server-log", help="with --host: the server's log file, for panic and crash detection")
     p.add_argument("--port", type=int, default=5491)
     p.add_argument("--user")
     p.add_argument("--duckdb-extension-dir", default=os.environ.get("DUCKDB_EXTENSION_DIR"),
@@ -1510,17 +1749,21 @@ def parse_args(argv):
     p.add_argument("--files", help="comma-separated subset of file names (regress or extra_*)")
     p.add_argument("--expected", default=os.path.join(HERE, "expected.txt"), help="known-failure list")
     p.add_argument("--bug-ids", default=os.environ.get("MIRROR_DIFF_BUG_IDS"),
-                   help='optional file of "<bug> <tracker ids>" lines, appended to KNOWN lines')
+                   help='optional bug-id map: a file of "<bug> <ids>" lines, shown on KNOWN lines')
     p.add_argument("--build-info", help="file of k=v lines to echo as BUILD lines")
     p.add_argument("--stmt-timeout", type=float, default=120)
     p.add_argument("--ddl-timeout", type=float, default=60)
     p.add_argument("--file-timeout", type=float, default=2400)
     p.add_argument("--converge-secs", type=float, default=10)
     p.add_argument("--pool-limit", type=int, default=5000, help="max distinct values per type per file")
+    p.add_argument("--max-rejected-values", type=int, default=40,
+                   help="values create_table may reject (by name) before a type probe gives up")
     p.add_argument("--trace", action="store_true", help="log every statement sent to <workdir>/trace.sql")
     p.add_argument("--resume", action="store_true",
-                   help="continue a run in the same --workdir: skip files listed in done.txt")
+                   help="continue a run in the same --workdir: skip units listed in done.txt")
     p.add_argument("--keep", action="store_true", help="keep databases and leave the server running")
+    p.add_argument("--exit-regression", action="store_true",
+                   help="exit 0 iff no check fails or goes unverified unlisted (instead of the GATE code)")
     a = p.parse_args(argv)
     if not a.bindir:
         try:
@@ -1531,7 +1774,19 @@ def parse_args(argv):
     return a
 
 
-def rescore(results_path, expected_path, major="?"):
+def requalify(rec, status, detail):
+    """Re-apply the classifier's SKIP rules for a mirror query that errored (a finished run's
+    record keeps the outcomes and error texts, not the rows)."""
+    msg = rec.get("mirror_error") or ""
+    if compare.DUCKDB_ROLE_ERROR.search(msg):
+        return "SKIP", f"the session's role may not run DuckDB: {rec.get('sql', '')[:160]}"
+    duck_ran = rec.get("duck") not in (None, "not-run-by-duckdb")
+    if compare.is_planning_error(msg) and (not duck_ran or rec.get("duck") == "error"):
+        return "SKIP", f"DuckDB cannot run it: {rec.get('sql', '')[:160]}"
+    return status, detail
+
+
+def rescore(results_path, expected_path, major="?", exit_regression=False):
     """Re-apply the known-failure list to a finished run's results.jsonl (no database needed).
     The raw outcome of each check is its status with XFAIL/XPASS undone; engine-semantics XFAILs
     (from the classifier, not from the list) are kept."""
@@ -1540,24 +1795,43 @@ def rescore(results_path, expected_path, major="?"):
     rep = Reporter(exp, out_path)
     with open(results_path) as f:
         recs = [json.loads(line) for line in f if line.strip()]
+    events = {r["check"]: r.get("events") or [] for r in recs if r["check"].startswith("cdc.")}
     for rec in recs:
         status, detail = rec["status"], rec.get("detail", "")
         ids = None
-        if status == "XFAIL" and detail.startswith("engine:"):
+        if status in ("XFAIL", "XFAIL_LIMITATION") and detail.startswith("engine:"):
             ids = exp.engine or rec.get("ids") or ["duckdb-semantics"]
             status = "FAIL"
-        elif status == "XFAIL":
+        elif status in ("XFAIL", "XFAIL_LIMITATION") and rec.get("masked_by"):
+            fname = rec["check"].split(".")[1]
+            ids, status = [], "SKIP"
+            for n in rec["masked_by"]:
+                k = exp.match_events(f"cdc.{fname}.{n}", events.get(f"cdc.{fname}.{n}", []))
+                if k is None:
+                    ids = []
+                    break
+                ids += [x for x in k if x not in ids]
+            if ids:
+                status = "FAIL"
+        elif status in ("XFAIL", "XFAIL_LIMITATION"):
             status = "FAIL"
         elif status == "XPASS":
             status = "PASS"
-        extra = {k: v for k, v in rec.items() if k not in ("check", "status", "ids", "detail")}
+        if status == "FAIL" and rec["check"].startswith("query.") and rec.get("mirror") == "error":
+            status, detail = requalify(rec, status, detail)
+        unverified = bool(rec.get("unverified")) or (status == "SKIP" and detail.startswith("unverified:"))
+        extra = {k: v for k, v in rec.items() if k not in ("check", "status", "ids", "detail", "events", "unverified", "unit")}
+        rep.unit = rec.get("unit", "")
         rep.names[rec["check"]] = 0  # keep the original check name (with any .vN suffix)
-        rep.result(rec["check"], status, detail, record=extra, ids=ids)
-    return 0 if rep.summary(major, "rescore") else 1
+        rep.result(rec["check"], status, detail, record=extra, ids=ids, events=rec.get("events"), unverified=unverified)
+    gate, regression = rep.summary(major, "rescore", True)
+    return regression if exit_regression else gate
 
 
 if __name__ == "__main__":
     if len(sys.argv) >= 2 and sys.argv[1] == "--rescore":
-        # mirror_diff.py --rescore <results.jsonl> [expected.txt]
-        sys.exit(rescore(sys.argv[2], sys.argv[3] if len(sys.argv) > 3 else os.path.join(HERE, "expected.txt")))
+        # mirror_diff.py --rescore <results.jsonl> [expected.txt] [--exit-regression]
+        rest = [a for a in sys.argv[2:] if a != "--exit-regression"]
+        sys.exit(rescore(rest[0], rest[1] if len(rest) > 1 else os.path.join(HERE, "expected.txt"),
+                         exit_regression="--exit-regression" in sys.argv))
     sys.exit(Harness(parse_args(sys.argv[1:])).main())

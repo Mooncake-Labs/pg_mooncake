@@ -5,6 +5,11 @@ CREATE TABLE p1 PARTITION OF p FOR VALUES FROM (0) TO (50);
 CREATE TABLE p2 PARTITION OF p FOR VALUES FROM (50) TO (100);
 INSERT INTO p SELECT g, 'old_' || g FROM generate_series(0, 79) g;
 CALL mooncake.create_table('p_mc', 'p');
+-- Persist the copy before reading it. A forced snapshot waits only for this session's last commit, which here comes
+-- before the copy, so write first; the row is removed again right after.
+INSERT INTO p VALUES (99, 'snapshot');
+CALL mooncake.create_snapshot('p_mc');
+DELETE FROM p WHERE a = 99;
 SELECT count(*), sum(a) FROM p_mc;
  count | sum  
 -------+------
@@ -21,8 +26,8 @@ SELECT count(*), sum(a), count(*) FILTER (WHERE b = 'changed') FROM p_mc;
     78 | 3744 |    13
 (1 row)
 
-SELECT (SELECT md5(string_agg(a || ':' || b, ',' ORDER BY a)) FROM p)
-     = (SELECT md5(string_agg(a || ':' || b, ',' ORDER BY a)) FROM p_mc) AS mirror_matches_source;
+SELECT (SELECT md5(string_agg(a::text || ':' || b, ',' ORDER BY a)) FROM p)
+     = (SELECT md5(string_agg(a::text || ':' || b, ',' ORDER BY a)) FROM p_mc) AS mirror_matches_source;
  mirror_matches_source 
 -----------------------
  t

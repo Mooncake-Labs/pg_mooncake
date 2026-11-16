@@ -5,10 +5,14 @@ PG_VERSION ?= pg18
 ifndef PG_CONFIG
 PG_CONFIG := $(shell cargo pgrx info pg-config $(PG_VERSION) 2>/dev/null)
 endif
+# A relative path would break in pg_duckdb's make, which runs in another directory; a bare name is looked up on PATH.
+ifneq (,$(findstring /,$(PG_CONFIG)))
+override PG_CONFIG := $(abspath $(PG_CONFIG))
+endif
 export PG_CONFIG
 MAKEFLAGS += --no-print-directory
 
-.PHONY: help check-pg-config clean duckdb_mooncake format install package pg_duckdb run test
+.PHONY: help check-pg-config check-rust-postgres clean duckdb_mooncake format install package pg_duckdb run test
 
 help:
 	@echo "Usage: make <COMMAND> [OPTIONS]"
@@ -39,6 +43,16 @@ check-pg-config:
 		exit 1; \
 	fi
 
+# pg_mooncake must pin rust-postgres to the revision moonlink uses, or Cargo builds a second copy of it.
+check-rust-postgres:
+	@ours=$$(sed -n 's/.*rust-postgres\.git", rev = "\([0-9a-f]*\)".*/\1/p' Cargo.toml | sort -u); \
+	theirs=$$(grep -i 'rust-postgres' moonlink/Cargo.toml | sed -n 's/.*rev = "\([0-9a-f]*\)".*/\1/p' | sort -u); \
+	if [ -z "$$ours" ] || [ -z "$$theirs" ] || [ "$$(echo "$$ours" | wc -l)" != 1 ] || [ "$$ours" != "$$theirs" ]; then \
+		echo "rust-postgres revisions differ: Cargo.toml has [$$ours], moonlink/Cargo.toml has [$$theirs]" >&2; \
+		exit 1; \
+	fi; \
+	echo "rust-postgres pinned to $$ours, as in moonlink"
+
 clean:
 	@cargo clean
 
@@ -59,15 +73,16 @@ install: check-pg-config
 package: check-pg-config
 	@cargo pgrx package --pg-config "$(PG_CONFIG)"
 
+# PG_CONFIG is passed explicitly: a command-line PG_CONFIG would otherwise reach this make through MAKEFLAGS unchanged.
 pg_duckdb: check-pg-config
-	@$(MAKE) -C pg_duckdb install -j$(shell nproc)
+	@$(MAKE) -C pg_duckdb install -j$(shell nproc) PG_CONFIG="$(PG_CONFIG)"
 
 run: pg_duckdb
 	@cargo pgrx run $(PG_VERSION)
 
 # cargo-pgrx 0.16 exits 0 when tests fail (it only fails in its auto-accept mode), and pg_regress leaves
 # regression.diffs behind only when a test failed.
-test:
+test: check-pg-config
 	@rm -f tests/pg_regress/regression.diffs
 	@cargo pgrx regress --resetdb
 	@if [ -e tests/pg_regress/regression.diffs ]; then \

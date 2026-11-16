@@ -118,6 +118,10 @@ pg_mooncake 0.3.0 runs on a slimmed-down moonlink.
 - `DROP EXTENSION pg_mooncake CASCADE` drops the mirror tables in Postgres but not in moonlink. Drop the mirrors first;
   a leftover is removed when a mirror with the same name is created again.
 - Identifiers containing `.` are rejected.
+- `char(n)` values come back from a mirror without their trailing blanks. Postgres ignores those blanks when it compares
+  `char(n)` values and in `length()`, so only the displayed value differs.
+- Unconstrained `numeric` columns are stored as `decimal(38, 10)`. A value with more than 10 fractional digits puts the
+  mirror into the errored state; give such a column an explicit precision and scale instead.
 - Moonlink calls other than the one made by `DROP TABLE` have no timeout.
 - `character(n)` values come back without their trailing padding.
 - If moonlink restarts within about half a second after `mooncake.create_table` returns (a fast server stop or restart,

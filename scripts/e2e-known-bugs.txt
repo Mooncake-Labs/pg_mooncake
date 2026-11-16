@@ -54,7 +54,7 @@ check persist.type.numeric_38_10.after_restart decimal-stats-overflow-panic ^mir
 requires persist.type.numeric_38_10.after_restart decimal-stats-overflow-panic persist.type.numeric_38_10 decimal-stats-overflow-panic
 check persist.no_moonlink_panics decimal-stats-overflow-panic rust_decimal-1\.43\.0/src/decimal\.rs:2047 x1
 
-bug char-padding-lost class=blocking char(n) values lose their trailing blank padding
+bug char-padding-lost class=limitation char(n) values come back without their trailing blank padding (Postgres ignores those blanks in char(n) comparisons and length(); only the displayed value differs)
 bug interval-inet-unsupported class=limitation interval and inet source columns are rejected by mooncake.create_table
 
 check schema.type.char_3 char-padding-lost data mismatch.*< 1\|ab  --- > 1\|ab$

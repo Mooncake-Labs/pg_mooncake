@@ -18,6 +18,7 @@ bug duckdb-semantics class=limitation Queries on mirrors run in DuckDB and follo
 bug json-text-normalised class=limitation json and jsonb values read back from a mirror in DuckDB's compact text form with keys reordered
 bug unsupported-types class=limitation mooncake.create_table rejects tables with columns of types mirrors don't support: geometric types, interval, inet/cidr, macaddr/macaddr8, money, bit/varbit, timetz, pg_lsn, xml, tsvector/tsquery, ranges, domains, enums, numeric with precision above 38
 bug unsupported-table-shapes class=limitation create_table rejects unlogged tables
+bug composite-as-struct class=limitation Composite and domain-over-composite values read back as DuckDB STRUCT text ({'f1': 1, 'f2': foo}) instead of the Postgres row text; the values are preserved
 bug window-row-order class=limitation Window queries whose result depends on physical row order (ROWS/GROUPS frames or order-sensitive functions over ties) can differ, because a mirror stores rows in a different order than its heap
 
 # ---- types ---------------------------------------------------------------------------------------
@@ -31,7 +32,6 @@ bug date-out-of-range class=blocking date/timestamp values +-infinity, BC or aft
 bug arrays-come-back-empty class=blocking Array columns read back as empty arrays ({NULL} becomes {})
 bug multidim-arrays class=blocking Multi-dimensional or non-default-bound arrays panic the initial copy, are mangled, or drop the transaction in CDC
 bug keyless-nested-copy-panic class=blocking Initial copy of a table without a primary key that has an array or composite column panics the table handler
-bug composite-as-struct class=blocking Composite-type values read back as DuckDB STRUCT text instead of the Postgres row value
 bug range-array-panic class=blocking A range-array column (int8range[]) panics moonlink in create_table
 
 # ---- CDC and table shapes ----------------------------------------------------------------------
@@ -45,6 +45,7 @@ bug partition-update-panics class=blocking UPDATE whose old row is missing (mult
 bug relation-schema-assert class=blocking A Relation message for a table the CDC stream doesn't know panics the replication task (multi-level partitions)
 bug rejected-create-leaves-state class=blocking After create_table is rejected, mirroring a re-created source under the same mirror name fails with "error creating table"
 bug drop-after-dead-task-panic class=blocking DROP of a mirror whose table task already died panics moonlink (table_event_manager.rs) and half-drops it
+bug sigterm-panic-in-tokio-thread class=blocking SIGTERM delivered to a tokio thread of the moonlink background worker panics in pgrx at shutdown (postgres FFI called from another thread)
 bug snapshot-hangs-after-xidless-wal class=blocking create_snapshot waits forever when the session's last transaction wrote WAL without an xid
 
 # ---- backend crashes (Postgres crash recovery) -----------------------------------------------------
@@ -126,14 +127,15 @@ check panic.arrays.* keyless-nested-copy-panic at (moonlink/src/moonlink/src/row
 check panic.aggregates.* keyless-nested-copy-panic at moonlink/src/moonlink/src/row/arrow_converter\.rs:108:13 during: CALL mooncake\.create_table
 check panic.insert.* keyless-nested-copy-panic at parquet-55\.2\.0/src/arrow/mod\.rs:304:22 during: CALL mooncake\.create_table\('mc\.inserttest'
 check data.copy.* keyless-nested-copy-panic ^crashed: types=\[.*\] create_table panicked moonlink at (moonlink/src/moonlink/src/row/arrow_converter\.rs:108:13|parquet-55\.2\.0/src/arrow/mod\.rs:304:22)$
+check data.copy.* keyless-nested-copy-panic,drop-after-dead-task-panic ^crashed: types=\[.*\] create_table panicked moonlink at (moonlink/src/moonlink/src/row/arrow_converter\.rs:108:13, moonlink/src/moonlink/src/storage/mooncake_table/table_event_manager\.rs:127:14|moonlink/src/moonlink/src/storage/mooncake_table/table_event_manager\.rs:127:14, parquet-55\.2\.0/src/arrow/mod\.rs:304:22)$
 check cdc.* keyless-nested-copy-panic ^create: create_table (crashed|not attempted: column \S+ type=\S+ crashed) moonlink at (moonlink/src/moonlink/src/row/arrow_converter\.rs:108:13|parquet-55\.2\.0/src/arrow/mod\.rs:304:22)
 check data.type.*_array multidim-arrays ^crashed: type=\S+( \S+)*\[\] typtype=b \d+ values \([^)]*\); copy=crashed \(create_table panicked moonlink at moonlink/src/moonlink_connectors/src/pg_replicate\.rs:283:22\)$
 check data.type.*_array multidim-arrays ^lossy: type=\S+( \S+)*\[\] typtype=b \d+ values \([^)]*\); \w+=lossy \(value col=v type=\S+( \S+)*\[\] heap-only: [^|]*\{\{
 check data.type.*_array arrays-come-back-empty ^lossy: type=\S+( \S+)*\[\] typtype=b \d+ values \([^)]*\); \w+=lossy \(value col=v type=\S+( \S+)*\[\] heap-only: .* \|\| mirror-only: [^|]*\{\}
 check cdc.* arrays-come-back-empty ^(copy|dml|commit|final): value col=\S+ type=\S+\[\] heap-only: .* \|\| mirror-only: [^|]*\{\}
-check data.copy.* composite-as-struct ^lossy: types=\[.*\] value col=\S+ type=\S+ heap-only: .* \|\| mirror-only: .*\{'\w+': 
-check data.type.* composite-as-struct ^lossy: type=\S+ typtype=[bcd] \d+ values .*mirror-only: .*\{'\w+': 
-check cdc.* composite-as-struct ^(copy|dml|commit|final): value col=\S+ type=\S+ heap-only: .* \|\| mirror-only: .*\{'\w+': 
+check data.copy.* composite-as-struct ^lossy: types=\[.*\] struct-text col=\S+ type=\S+: \d+ value\(s\) equal the heap's after STRUCT-to-row conversion
+check data.type.* composite-as-struct ^lossy: type=\S+ typtype=[bcd] \d+ values \([^)]*\); \w+=lossy \(struct-text col=v type=\S+: \d+ value\(s\) equal the heap's after STRUCT-to-row conversion
+check cdc.* composite-as-struct ^(copy|dml|commit|final): struct-text col=\S+ type=\S+: \d+ value\(s\) equal the heap's after STRUCT-to-row conversion
 check panic.rangetypes.* range-array-panic at moonlink/src/moonlink_connectors/src/pg_replicate/util\.rs:151:13 during: CALL mooncake\.create_table
 check data.copy.rangetypes.* range-array-panic ^crashed: types=\[.*range\[\].*\] create_table panicked moonlink at moonlink/src/moonlink_connectors/src/pg_replicate/util\.rs:151:13$
 check data.type.*range_array range-array-panic ^crashed: type=\S+range\[\] typtype=b .*util\.rs:151:13
@@ -178,3 +180,4 @@ check backend.extra_tables.* duckdb-timezone-commit-abort,duckdb-multiassign-abo
 check service.run.extra_tables inheritance-recovery-crash-loop ^mooncake\.list_tables\(\) fails after the file: ERROR: Failed to connect to moonlink: .*Connection refused
 check cdc.extra_tables.* inheritance-recovery-crash-loop ^final: mirror read failed: error XX000 \(PGDuckDB/CreatePlan\) Invalid Input Error: Initialization function "mooncake_duckdb_cpp_init" from file
 check panic.data.arrays drop-after-dead-task-panic ^1 moonlink panic\(s\) at moonlink/src/moonlink/src/storage/mooncake_table/table_event_manager\.rs:127:14 not attributed to a check$
+check panic.* sigterm-panic-in-tokio-thread ^\d+ moonlink panic\(s\) at pgrx-0\.16\.1/src/bgworkers\.rs:324:5 not attributed to a check$

@@ -354,6 +354,126 @@ def _fmt_rows(rows, n):
     return "; ".join("|".join(str(c)[:60] for c in r) for r in rows[:n])[:240]
 
 
+# ---- DuckDB STRUCT text ------------------------------------------------------------------------
+def _parse_duck(s, i):
+    """Parse a DuckDB value printed as text at s[i]: {'k': v, ...} (STRUCT), [a, b] (LIST), NULL
+    or a bare scalar. Returns (value, next index); STRUCT -> list of values, LIST -> tuple."""
+    if s.startswith("{'", i):
+        i += 1
+        fields = []
+        while True:
+            if s[i] != "'":
+                raise ValueError("struct key")
+            j = s.index("': ", i + 1)
+            v, i = _parse_duck(s, j + 3)
+            fields.append(v)
+            if s.startswith(", '", i):
+                i += 2
+                continue
+            if s[i] == "}":
+                return fields, i + 1
+            raise ValueError("struct end")
+    if s.startswith("[", i):
+        i += 1
+        items = []
+        if s[i] == "]":
+            return tuple(items), i + 1
+        while True:
+            v, i = _parse_duck(s, i)
+            items.append(v)
+            if s.startswith(", ", i):
+                i += 2
+                continue
+            if s[i] == "]":
+                return tuple(items), i + 1
+            raise ValueError("list end")
+    j = i
+    while j < len(s) and s[j] not in ",}]":
+        j += 1
+    text = s[i:j]
+    return (None if text == "NULL" else text), j
+
+
+def _pg_scalar(v):
+    # DuckDB prints integral DOUBLE values as 11.0 where Postgres prints 11.
+    return v[:-2] if re.fullmatch(r"-?\d+\.0", v) else v
+
+
+def _pg_text(v, in_array):
+    """Postgres output text of a parsed DuckDB value (record_out / array_out conventions)."""
+    if v is None:
+        return None
+    if isinstance(v, list):
+        out = []
+        for f in v:
+            t = _pg_text(f, False)
+            if t is None:
+                out.append("")
+            elif t == "" or re.search(r'[",()\\\s]', t):
+                out.append('"' + t.replace("\\", "\\\\").replace('"', '""') + '"')
+            else:
+                out.append(t)
+        return "(" + ",".join(out) + ")"
+    if isinstance(v, tuple):
+        return "{" + ",".join(_pg_array_elem(_pg_text(x, True)) for x in v) + "}"
+    return _pg_scalar(v)
+
+
+def _pg_array_elem(t):
+    if t is None:
+        return "NULL"
+    if t == "" or t.upper() == "NULL" or re.search(r'[{},"\\\s]', t):
+        return '"' + t.replace("\\", "\\\\").replace('"', '\\"') + '"'
+    return t
+
+
+def _parse_pg_array(text):
+    """Elements of a one-dimensional Postgres array literal (None for NULL), or None."""
+    if not (text.startswith("{") and text.endswith("}")):
+        return None
+    body, out, i = text[1:-1], [], 0
+    if not body:
+        return out
+    while i <= len(body):
+        if i < len(body) and body[i] == '"':
+            j, buf = i + 1, []
+            while body[j] != '"':
+                if body[j] == "\\":
+                    j += 1
+                buf.append(body[j])
+                j += 1
+            out.append("".join(buf))
+            i = j + 1
+        else:
+            j = body.find(",", i)
+            j = len(body) if j < 0 else j
+            elem = body[i:j]
+            out.append(None if elem == "NULL" else elem)
+            i = j
+        if i < len(body) and body[i] != ",":
+            return None
+        i += 1
+    return out
+
+
+def struct_to_row(cell):
+    """The Postgres text of a composite (or array of composites) value that the mirror printed
+    as DuckDB STRUCT text, or None if the cell isn't STRUCT text that parses completely."""
+    try:
+        if cell.startswith("{'"):
+            v, i = _parse_duck(cell, 0)
+            return _pg_text(v, False) if i == len(cell) else None
+        elems = _parse_pg_array(cell)
+        if elems and all(e is None or e.startswith("{'") for e in elems):
+            rows = [None if e is None else struct_to_row(e) for e in elems]
+            if any(e is not None and r is None for e, r in zip(elems, rows)):
+                return None
+            return "{" + ",".join(_pg_array_elem(r) for r in rows) + "}"
+    except (ValueError, IndexError):
+        return None
+    return None
+
+
 def divergence_events(cols, heap_rows, mirror_rows, sample=3):
     """Events describing how a mirror's rows differ from the heap's. cols: [(name, type), ...].
     Each event: {"kind": row-count|value|rows, "detail": text, ["col", "type"]}."""
@@ -372,6 +492,17 @@ def divergence_events(cols, heap_rows, mirror_rows, sample=3):
             continue
         h_only = [v for v in hv if hv[v] > mv.get(v, 0)]
         m_only = [v for v in mv if mv[v] > hv.get(v, 0)]
+        converted = {}
+        for v, k in mv.items():
+            c = struct_to_row(v) if isinstance(v, str) and "{'" in v else v
+            converted[c] = converted.get(c, 0) + k
+        if None not in converted and converted == hv:
+            # Only the text form differs: the mirror prints the composite as DuckDB STRUCT text.
+            out.append({"kind": "struct-text", "col": name, "type": typ,
+                        "detail": f"struct-text col={name} type={typ}: {sum(k for v, k in mv.items() if v not in hv)} "
+                                  f"value(s) equal the heap's after STRUCT-to-row conversion, e.g. heap "
+                                  f"{str(h_only[0])[:60]} mirror {str(m_only[0])[:60]}"})
+            continue
         out.append({"kind": "value", "col": name, "type": typ,
                     "detail": f"value col={name} type={typ} heap-only: {'; '.join(str(v)[:80] for v in h_only[:sample])} "
                               f"|| mirror-only: {'; '.join(str(v)[:80] for v in m_only[:sample])}"})

@@ -97,6 +97,11 @@ marker, so pointing `--workdir` at the wrong place cannot remove an unrelated cl
   that matches only when read again later counts as a stale read. A failed heap read, a failed
   mirror read, a rejected or crashed `create_table` and a failed mirror drop are all recorded as
   events of the table's `cdc` check, so none of them can pass silently.
+- A composite (or array of composites) that the mirror prints as DuckDB STRUCT text
+  (`{'f1': 1, 'f2': foo}`) is converted back to Postgres row text before it is compared. If the
+  converted values equal the heap's, the difference is a `struct-text` event (the
+  `composite-as-struct` limitation); any other difference in such a column is an ordinary value
+  difference.
 - `json` and `jsonb` cells are compared after JSON normalisation in the cdc layer: whitespace is
   removed and object keys are sorted, while numbers keep their text and duplicate keys are kept.
   The mirror's reformatting of JSON text is reported by the data layer (verdict `equivalent`).

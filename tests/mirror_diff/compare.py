@@ -6,6 +6,7 @@ differently. Everything else (numeric scale, text, dates) must match exactly. Ro
 compared as far as the statement's top-level ORDER BY determines it.
 """
 
+import json
 import re
 
 from psqlsession import NULL_TOKEN
@@ -66,6 +67,34 @@ def norm_error(message):
     return " ".join(m.split()).rstrip("'").strip()
 
 
+# ---- JSON ----------------------------------------------------------------------------------------
+class _JsonNumber(str):
+    """A JSON number kept as its text, so 0.1234567890123456789 and 0.12345678901234568 differ."""
+
+
+class _JsonObject(list):
+    """A JSON object as its (key, value) pairs, so duplicate keys (json, not jsonb) are kept."""
+
+
+def canonical_json(text):
+    """JSON text with insignificant whitespace removed and object keys sorted (stable for duplicate
+    keys); numbers keep their text. Raises ValueError for text that isn't JSON."""
+    value = json.loads(text, parse_float=_JsonNumber, parse_int=_JsonNumber, parse_constant=_JsonNumber,
+                       object_pairs_hook=_JsonObject)
+    return _dump_json(value)
+
+
+def _dump_json(v):
+    if isinstance(v, _JsonNumber):
+        return str(v)
+    if isinstance(v, _JsonObject):
+        return "{" + ",".join(json.dumps(k, ensure_ascii=False) + ":" + _dump_json(x)
+                              for k, x in sorted(v, key=lambda kv: kv[0])) + "}"
+    if isinstance(v, list):
+        return "[" + ",".join(_dump_json(x) for x in v) + "]"
+    return json.dumps(v, ensure_ascii=False)
+
+
 # ---- ORDER BY ------------------------------------------------------------------------------------
 def mask(sql):
     """sql with the inside of string literals, quoted identifiers and parentheses replaced by
@@ -95,13 +124,25 @@ _CLAUSE_END = re.compile(r"\b(limit|offset|fetch|for\s+(update|share|no\s+key|ke
 
 
 def top_level_order_by(sql):
-    """(ORDER BY items of the outermost query or None, whether LIMIT/FETCH cuts the result)."""
+    """(ORDER BY items of the outermost query or None, limit). limit is None without LIMIT/FETCH,
+    the row count of a literal LIMIT n / FETCH FIRST n ROWS ONLY, or -1 when the count isn't a
+    literal (an expression, a parameter, WITH TIES)."""
     sql = sql.rstrip().rstrip(";")
     m = mask(sql)
-    limited = bool(re.search(r"\b(limit\s+(?!all\b)|fetch\s+(first|next)\b)", m, re.I))
+    limit = None
+    lim = re.search(r"\blimit\s+(?!all\b)(\S+)", m, re.I)
+    fetch = re.search(r"\bfetch\s+(first|next)\b(.*?)\brows?\b\s*(only|with\s+ties)", m, re.I | re.S)
+    if lim:
+        limit = int(lim.group(1)) if re.fullmatch(r"\d+", lim.group(1)) else -1
+    elif fetch:
+        n = fetch.group(2).strip()
+        if re.search(r"with\s+ties", fetch.group(3), re.I):
+            limit = -1
+        else:
+            limit = 1 if not n else (int(n) if re.fullmatch(r"\d+", n) else -1)
     found = list(re.finditer(r"\border\s+by\b", m, re.I))
     if not found:
-        return None, limited
+        return None, limit
     start = found[-1].end()
     end = _CLAUSE_END.search(m, start)
     stop = end.start() if end else len(sql)
@@ -110,7 +151,24 @@ def top_level_order_by(sql):
         items.append(sql[k:start + c.start()].strip())
         k = start + c.end()
     items.append(sql[k:stop].strip())
-    return [i for i in items if i], limited
+    return [i for i in items if i], limit
+
+
+def strip_top_level_limit(sql):
+    """sql without its top-level LIMIT / OFFSET / FETCH clauses (None if it has none)."""
+    sql = sql.rstrip().rstrip(";")
+    m = mask(sql)
+    hits = [x.start() for x in re.finditer(r"\b(limit|offset|fetch)\b", m, re.I)]
+    return sql[:min(hits)].rstrip() if hits else None
+
+
+def rows_subset(sub_rows, full_rows, types=None):
+    """True if every row of sub_rows (with multiplicity) is in full_rows."""
+    full = _multiset(canon_rows([tuple(r) for r in full_rows], types))
+    for r, n in _multiset(canon_rows([tuple(r) for r in sub_rows], types)).items():
+        if full.get(r, 0) < n:
+            return False
+    return True
 
 
 def _item_expr(item):
@@ -148,8 +206,11 @@ def _multiset(rows):
     return d
 
 
-def rows_match(a_rows, b_rows, types=None, order_items=None, names=None, limited=False):
-    """(equal, how). how: exact | float | multiset | ties | unordered-limit | order | rows."""
+def rows_match(a_rows, b_rows, types=None, order_items=None, names=None, limit=None):
+    """(equal, how). how: exact | float | multiset | ties | order-unverified | order | rows |
+    limit-unverifiable. limit is as returned by top_level_order_by. limit-unverifiable means the
+    rows differ where a LIMIT may legitimately pick different rows: the caller can't call it
+    either way."""
     ra, rb = [tuple(r) for r in a_rows], [tuple(r) for r in b_rows]
     if ra == rb:
         return True, "exact"
@@ -159,12 +220,11 @@ def rows_match(a_rows, b_rows, types=None, order_items=None, names=None, limited
         return False, "rows"
     keys = order_key_columns(order_items, names or []) if order_items else []
     if not order_items or not keys:
-        if order_items is None and limited:
-            # LIMIT without ORDER BY: any subset of that size is a correct answer.
-            return True, "unordered-limit"
         if _multiset(ca) == _multiset(cb):
-            return True, via or "multiset"
-        return False, "rows"
+            # ORDER BY whose leading item isn't an output column: only the multiset is checked.
+            return True, via or ("order-unverified" if order_items else "multiset")
+        # Without a usable sort key, LIMIT may keep any subset of that size.
+        return False, "limit-unverifiable" if limit is not None else "rows"
     if ca == cb:
         return True, via or "exact"
     # Rows must come in the same ORDER BY key sequence; rows with equal keys may be permuted.
@@ -177,14 +237,19 @@ def rows_match(a_rows, b_rows, types=None, order_items=None, names=None, limited
         j = i
         while j < len(ca) and key(ca[j]) == key(ca[i]):
             j += 1
-        last = j == len(ca)
-        if not (limited and last) and _multiset(ca[i:j]) != _multiset(cb[i:j]):
-            return False, "rows"
+        if _multiset(ca[i:j]) != _multiset(cb[i:j]):
+            if j < len(ca) or limit is None:
+                return False, "rows"
+            # The last group of equal keys may be cut by LIMIT, but only if LIMIT cut the result.
+            if limit == -1:
+                return False, "limit-unverifiable"
+            if len(ca) != limit:
+                return False, "rows"
         i = j
     return True, "ties"
 
 
-def results_match(a, b, types=None, order_items=None, names=None, limited=False):
+def results_match(a, b, types=None, order_items=None, names=None, limit=None):
     """Compare two psqlsession Results: (equal, how). Both erroring is equal only with the same
     SQLSTATE and normalised message; a timeout or a dead session never matches."""
     for r in (a, b):
@@ -198,7 +263,7 @@ def results_match(a, b, types=None, order_items=None, names=None, limited=False)
                 return True, "same-error"
             return False, "different-error"
         return False, "error-vs-rows"
-    return rows_match(a.rows, b.rows, types, order_items, names, limited)
+    return rows_match(a.rows, b.rows, types, order_items, names, limit)
 
 
 # ---- window frames -------------------------------------------------------------------------------

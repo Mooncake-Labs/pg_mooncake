@@ -41,8 +41,8 @@ class Comparator(unittest.TestCase):
         self.assertTrue(compare.rows_match([["-0"]], [["0"]], ["double precision"])[0])
 
     def test_order_by_enforced(self):
-        items, limited = compare.top_level_order_by("SELECT a, b FROM t ORDER BY a")
-        self.assertEqual((items, limited), (["a"], False))
+        items, limit = compare.top_level_order_by("SELECT a, b FROM t ORDER BY a")
+        self.assertEqual((items, limit), (["a"], None))
         eq, how = compare.rows_match([["1", "x"], ["2", "y"]], [["2", "y"], ["1", "x"]], None, items, ["a", "b"])
         self.assertEqual((eq, how), (False, "order"))
         self.assertTrue(compare.rows_match([["1", "x"], ["2", "y"]], [["2", "y"], ["1", "x"]])[0])
@@ -53,17 +53,25 @@ class Comparator(unittest.TestCase):
         self.assertEqual(compare.rows_match(rows_a, rows_b, None, ["a"], ["a", "b"]), (True, "ties"))
         self.assertFalse(compare.rows_match(rows_a, [["1", "y"], ["1", "q"], ["2", "z"]], None, ["a"], ["a", "b"])[0])
 
-    def test_limit_last_tie_group_lenient(self):
+    def test_limit_last_tie_group_lenient_only_when_cut(self):
         a = [["1", "x"], ["2", "y"]]
         b = [["1", "x"], ["2", "w"]]
-        self.assertTrue(compare.rows_match(a, b, None, ["a"], ["a", "b"], limited=True)[0])
-        self.assertFalse(compare.rows_match(a, b, None, ["a"], ["a", "b"], limited=False)[0])
+        self.assertTrue(compare.rows_match(a, b, None, ["a"], ["a", "b"], limit=2)[0])
+        self.assertFalse(compare.rows_match(a, b, None, ["a"], ["a", "b"], limit=5)[0])
+        self.assertFalse(compare.rows_match(a, b, None, ["a"], ["a", "b"], limit=None)[0])
+        self.assertEqual(compare.rows_match(a, b, None, ["a"], ["a", "b"], limit=-1), (False, "limit-unverifiable"))
+
+    def test_limit_without_order_needs_equal_rows(self):
+        self.assertEqual(compare.rows_match([["7"]], [["100"]], None, None, ["c"], limit=1), (False, "limit-unverifiable"))
+        self.assertTrue(compare.rows_match([["1"], ["2"]], [["2"], ["1"]], None, None, ["c"], limit=2)[0])
+        self.assertEqual(compare.top_level_order_by("SELECT * FROM t FETCH FIRST 3 ROWS ONLY"), (None, 3))
+        self.assertEqual(compare.top_level_order_by("SELECT * FROM t ORDER BY a LIMIT (SELECT 1)"), (["a"], -1))
 
     def test_order_by_only_top_level(self):
         sql = "SELECT * FROM (SELECT a FROM t ORDER BY a) s"
-        self.assertEqual(compare.top_level_order_by(sql), (None, False))
+        self.assertEqual(compare.top_level_order_by(sql), (None, None))
         sql = "SELECT a, 'order by x' FROM t ORDER BY 2 DESC NULLS LAST, a LIMIT 5"
-        self.assertEqual(compare.top_level_order_by(sql), (["2 DESC NULLS LAST", "a"], True))
+        self.assertEqual(compare.top_level_order_by(sql), (["2 DESC NULLS LAST", "a"], 5))
         self.assertEqual(compare.order_key_columns(["2 DESC NULLS LAST", "t.a"], ["a", "b"]), [1, 0])
         self.assertEqual(compare.order_key_columns(["f(a)", "a"], ["a"]), [])
 
@@ -75,6 +83,21 @@ class Comparator(unittest.TestCase):
         self.assertEqual(match(same, other), (False, "different-error"))
         self.assertFalse(match(R(timed_out=True), R(timed_out=True))[0])
         self.assertFalse(match(R(died=True), R(died=True))[0])
+
+    def test_limit_subset_helpers(self):
+        self.assertEqual(compare.strip_top_level_limit("SELECT * FROM (SELECT a FROM t LIMIT 2) s LIMIT 3 OFFSET 1;"),
+                         "SELECT * FROM (SELECT a FROM t LIMIT 2) s")
+        self.assertIsNone(compare.strip_top_level_limit("SELECT a FROM t"))
+        self.assertTrue(compare.rows_subset([["2"]], [["1"], ["2"]]))
+        self.assertFalse(compare.rows_subset([["7"]], [["100"]]))
+
+    def test_json_keeps_numbers_and_duplicate_keys(self):
+        c = compare.canonical_json
+        self.assertEqual(c('{"b": 1, "a": [1, 2]}'), c('{"a":[1,2],"b":1}'))
+        self.assertNotEqual(c('{"price": 0.1234567890123456789012345}'), c('{"price":0.12345678901234568}'))
+        self.assertNotEqual(c('[1e400]'), c('[1e999]'))
+        self.assertNotEqual(c('{"a": 1, "a": 2}'), c('{"a": 2}'))
+        self.assertEqual(c('{"a": 1, "a": 2}'), c('{"a":1,"a":2}'))
 
     def test_divergence_events(self):
         ev = compare.divergence_events([("id", "integer"), ("c", "character(3)")],

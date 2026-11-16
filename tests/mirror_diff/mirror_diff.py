@@ -11,8 +11,10 @@ copied into this repository) and checks three things:
          copy, CDC insert, CDC update that leaves the value unchanged, CDC delete, and after
          create_snapshot (data.type.<type>). Types defined by a file (enum, domain, composite,
          range) are probed in that file's database (data.type.<file>.<type>). Verdicts: exact,
-         rejected (create_table refused the table), equivalent (only JSON formatting differs),
-         lossy (silent divergence), errored, crashed. Only exact passes.
+         rejected-values (values create_table refused by name are dropped; the rest is exact),
+         rejected (create_table refused the table), equivalent (only JSON whitespace or key
+         order differs), stale (a fenced read missed a write), lossy (silent divergence),
+         errored, crashed. Only exact passes.
 
   cdc    Each regress file is run statement by statement against heap tables while every table
          in schema public is mirrored into schema "mc" (fixtures up front, the file's own tables
@@ -108,7 +110,7 @@ VOLATILE = re.compile(
     r"pg_column_size|pg_column_compression|explain|for\s+(update|share|no\s+key|key))\b", re.I)
 SCHEMA_MIRROR = "mc"
 CLUSTER_MARKER = "mirror_diff.cluster"  # written into data directories this harness created
-VERDICT_ORDER = ["crashed", "lossy", "errored", "equivalent", "rejected", "rejected-values", "exact"]
+VERDICT_ORDER = ["crashed", "lossy", "stale", "errored", "equivalent", "rejected", "rejected-values", "exact"]
 
 
 def ident_re(name):
@@ -473,6 +475,10 @@ duckdb.autoinstall_known_extensions = false
         for i, line in enumerate(lines):
             if "was terminated by signal" in line:
                 trap = next((ln.strip() for ln in reversed(lines[max(0, i - 60):i]) if "TRAP:" in ln), "")
+                if not trap and i + 1 < len(lines) and "Failed process was running:" in lines[i + 1]:
+                    # Release builds have no TRAP line; name the statement instead.
+                    trap = (re.sub(r"^.*?LOG:\s+", "", line.strip()) + "; "
+                            + re.sub(r"^.*?DETAIL:\s+", "", lines[i + 1].strip()))
                 out.append((line.strip(), trap))
         return out
 
@@ -522,7 +528,7 @@ def json_norm(rows, idx):
         for i in idx:
             if i < len(r) and r[i] != NULL_TOKEN:
                 try:
-                    r[i] = json.dumps(json.loads(r[i]), separators=(",", ":"), ensure_ascii=False, sort_keys=True)
+                    r[i] = compare.canonical_json(r[i])
                 except ValueError:
                     pass
         out.append(r)
@@ -552,7 +558,7 @@ def json_equivalent(a, b):
             cells = []
             for c in r:
                 try:
-                    cells.append(json.dumps(json.loads(c), sort_keys=True))
+                    cells.append(compare.canonical_json(c))
                 except (ValueError, TypeError):
                     cells.append(c)
             out.append(tuple(cells))
@@ -670,6 +676,7 @@ class FileRun:
             self.rep.result(f"stmt.{self.name}.{m.group(2)}", "PASS" if good else "FAIL",
                             "" if good else f"{r.outcome()}: {r.message[:200]} :: {one_line(text, 160)}")
         if r.died and len(self.srv.backend_crashes()) > crashes:
+            self.h.crashes_seen = len(self.srv.backend_crashes())
             line, trap = self.srv.backend_crashes()[-1]
             self.rep.result(f"backend.{self.name}.L{self.unit_line}", "FAIL",
                             f"Postgres backend crashed (server crash recovery): {trap or line} during: {one_line(text, 160)}")
@@ -868,7 +875,7 @@ class FileRun:
                 return False
         if not mir.ok:
             evs = [{"kind": "mirror-error", "detail": f"mirror read failed: {mir.outcome()} {mir.sqlstate} "
-                                                      f"{one_line(mir.message, 200)}"}]
+                                                      f"{one_line(mir.message, 500)}"}]
         else:
             evs = compare.divergence_events([(c[0], c[1]) for c in cols], heap.rows, mir.rows)
         for e in evs:
@@ -933,17 +940,45 @@ class FileRun:
             return
         q["masked_by"] = self.masking(refs, unit.sql)
         names, types = self.describe(unit, in_txn) if heap.ok else ([], [])
-        order_items, limited = compare.top_level_order_by(unit.sql)
-        q.update(types=types, order_by=order_items, limited=limited)
+        order_items, limit = compare.top_level_order_by(unit.sql)
+        q.update(types=types, order_by=order_items, limit=limit)
 
         def match(a, b):
-            return compare.results_match(a, b, types, order_items, names, limited)
+            return compare.results_match(a, b, types, order_items, names, limit)
         mir = self.shadow(unit, mirror=True, in_txn=in_txn)
         eq, how = match(heap, mir)
         q["how"] = how
         if eq:
             q["status"] = "PASS"
             self.rep.stat(f"query.pass_{how}")
+            self.queries.append(q)
+            return
+        if how == "limit-unverifiable":
+            # Any rows of the unlimited result are a correct answer: check the mirror's are.
+            full_sql = compare.strip_top_level_limit(unit.sql)
+            full = self.run(full_sql + ";") if full_sql and not in_txn else None
+            if full is not None and full.ok and compare.rows_subset(mir.rows, full.rows, types):
+                q.update(status="PASS", how="limit-subset")
+                self.rep.stat("query.pass_limit-subset")
+            elif full is not None and full.ok:
+                # Classify like any other difference, with "is a subset of the unlimited result"
+                # standing in for "equals the heap result".
+                duck = self.shadow(unit, mirror=False, in_txn=in_txn)
+                duck_ran = self.ran_in_duckdb(unit, in_txn)
+                if duck_ran and duck.ok and compare.rows_subset(duck.rows, full.rows, types):
+                    q.update(status="FAIL", verdict="mooncake",
+                             reason="mirror rows are not in the heap's result without LIMIT; DuckDB on the heap tables' are")
+                elif duck_ran and duck.ok and mir.ok and compare.rows_match(duck.rows, mir.rows, types)[0]:
+                    q.update(status="ENGINE", verdict="engine",
+                             reason="DuckDB semantics (DuckDB on the heap tables gives the mirror's rows, outside the heap's result)")
+                else:
+                    q.update(status="FAIL", verdict="unclassified",
+                             reason="mirror rows are not in the heap's result without LIMIT")
+                q.update(sample=diff_sample(heap, mir), duck=duck.outcome() if duck_ran else "not-run-by-duckdb")
+            else:
+                q.update(status="SKIP", reason="LIMIT without a deterministic order picked different rows",
+                         sample=diff_sample(heap, mir))
+                self.rep.stat("query.limit_unverifiable")
             self.queries.append(q)
             return
         duck = self.shadow(unit, mirror=False, in_txn=in_txn)
@@ -1277,12 +1312,18 @@ class ProbeRun:
             return
         seen.append(digest)
         self.h.seen.add(("table", rel, digest))
+        self.h.last_events = []
         verdict, detail = self.h.mirror_and_compare(self, f"public.{qident(rel)}", rel, f"md.{rel}", sel, cols)
         check = f"data.copy.{self.name}.{rel}" + (f".s{len(seen)}" if len(seen) > 1 else "")
         types = sorted({c[1] for c in cols})
         rec = {"verdict": verdict, "types": types}
+        base = f"{verdict}: types=[{','.join(types)}]"
+        # One event per diverging column, so a listed bug on one column can't hide another.
+        parts = self.h.last_events if verdict in ("lossy", "equivalent") and self.h.last_events else [detail]
+        events = [{"kind": verdict, "text": f"{base} {d}"} for d in parts]
         self.rep.result(check, "PASS" if verdict == "exact" else "FAIL",
-                        "" if verdict == "exact" else f"{verdict}: types=[{','.join(types)}] {detail}", record=rec)
+                        "" if verdict == "exact" else f"{base} {detail}", record=rec,
+                        events=None if verdict == "exact" else events)
         self.q(f"DROP TABLE IF EXISTS md.{qident(rel)};", timeout=self.h.args.ddl_timeout)
 
 
@@ -1344,6 +1385,8 @@ class Harness:
         self.crash_types = {}  # column type -> (where, panic site) of a create_table that crashed moonlink
         self.good_types = set()
         self.panics_seen = 0
+        self.crashes_seen = 0
+        self.last_events = []   # divergence details of the last lossy/equivalent converge()
         self.probe_seq = 0
         self.last_verdict = None
         self.server_num = 0
@@ -1460,28 +1503,41 @@ class Harness:
                              [(c[0], c[1]) for c in cols])
 
     def converge(self, run, heap_sql, mirror_sql, cols):
+        """Verdict of one mirror read. The mirror is read right after a fence commit in the session
+        that wrote, so read-your-writes must already show the heap's rows; one that matches only
+        when read again is a stale read. A moonlink panic since the heap read is a crash even if
+        the rows match."""
+        before = self.srv.panics()
         heap = run.q(heap_sql + ";")
         if not heap.ok:
             return "errored", f"heap query failed: {heap.message[:200]}"
         deadline = time.monotonic() + self.args.converge_secs
-        before = self.srv.panics()
+        t0, first = time.monotonic(), None
         while True:
+            run.q("SELECT pg_current_xact_id() \\g /dev/null")
             mir = run.q(mirror_sql + ";")
-            if mir.ok and compare.rows_match(heap.rows, mir.rows)[0]:
-                return "exact", ""
+            first = first or mir
             if self.srv.panics() > before or mir.died:
                 p = self.srv.panic_lines()
                 self.panics_seen = len(p)
                 run.recover()
-                site = panic_site(p[-1]) if len(p) > before else "none"
-                return "crashed", f"mirror scan {mir.outcome()}; moonlink panicked at {site}: {one_line(mir.message, 160)}"
+                sites = ", ".join(sorted({panic_site(ln) for ln in p[before:]})) or "none"
+                return "crashed", f"mirror scan {mir.outcome()}; moonlink panicked at {sites}: {one_line(mir.message, 160)}"
+            if mir.ok and compare.rows_match(heap.rows, mir.rows)[0]:
+                if mir is first:
+                    return "exact", ""
+                was = (f"error {one_line(first.message, 120)}" if not first.ok else
+                       "; ".join(e["detail"] for e in compare.divergence_events(cols, heap.rows, first.rows)))
+                return "stale", (f"stale read: matched only {time.monotonic() - t0:.1f}s after the fenced read, "
+                                 f"which gave {one_line(was, 200)}")
             if mir.timed_out or time.monotonic() >= deadline:
                 break
             time.sleep(0.5)
         if not mir.ok:
-            return "errored", f"mirror scan {mir.outcome()}: {one_line(mir.message, 200)}"
+            return "errored", f"mirror scan {mir.outcome()}: {one_line(mir.message, 400)}"
         events = compare.divergence_events(cols, heap.rows, mir.rows)
-        details = "; ".join(e["detail"] for e in events)
+        self.last_events = [e["detail"] for e in events]
+        details = "; ".join(self.last_events)
         if all(e.get("type") in ("json", "jsonb") for e in events) and json_equivalent(heap, mir):
             return "equivalent", details
         return "lossy", details
@@ -1491,6 +1547,7 @@ class Harness:
         self.probe_seq += 1
         k = self.probe_seq
         src, cdc = f"md_ps{k}", f"md_pc{k}"
+        panics_before = self.srv.panics()
         what = f"type={typ} typtype={typtype}"
         r = run.q(f"CREATE TABLE public.{src} AS SELECT row_number() OVER () AS id, v FROM ({values_sql}) s;")
         if r.ok:
@@ -1501,13 +1558,18 @@ class Harness:
             return
         n = run.q(f"SELECT count(*) FROM public.{src};").rows
         n = n[0][0] if n else "?"
-        cols = [("id", "bigint", "b", True, "N", 0), ("v", typ, typtype, True, "", 0)]
+        oid = run.q(f"SELECT atttypid FROM pg_attribute WHERE attrelid = 'public.{src}'::regclass AND attname = 'v';").rows
+        oid = int(oid[0][0]) if oid and oid[0] and oid[0][0].isdigit() else 0
+        cols = [("id", "bigint", "b", True, "N", 20), ("v", typ, typtype, True, "", oid)]
         steps = {}
         # create_table rejects a table holding a value the mirror can't store (and names it). Each such
         # value is recorded and removed, so the type's other values are still checked.
         refused = []
+        step_events = {}
         for _ in range(self.args.max_rejected_values):
+            self.last_events = []
             steps["copy"] = self.mirror_and_compare(run, f"public.{src}", src, f"md.{src}", "id, v", cols)
+            step_events["copy"] = list(self.last_events)
             bad = re.search(r"cannot convert '(.*?)': (.*)$", steps["copy"][1]) if steps["copy"][0] == "rejected" else None
             if not bad:
                 break
@@ -1542,8 +1604,10 @@ class Harness:
                         if not sr.ok:
                             steps[step] = ("errored", f"create_snapshot after {step}: {sr.outcome()} {one_line(sr.message, 160)}")
                             break
+                    self.last_events = []
                     steps[step] = self.converge(run, f"SELECT id, v FROM public.{cdc}", f"SELECT id, v FROM md.{cdc}",
                                                 [("id", "bigint"), ("v", typ)])
+                    step_events[step] = list(self.last_events)
                     if steps[step][0] != "exact":
                         break
             else:
@@ -1558,14 +1622,33 @@ class Harness:
             overall = next(o for o in VERDICT_ORDER if o in seen and o != "rejected")
         if refused and overall == "exact":
             overall = "rejected-values"
+        if self.srv.panics() > panics_before and overall != "crashed":
+            # A panic in the source DML or create_snapshot steps, with a mirror that still matched.
+            lines = self.srv.panic_lines()
+            self.panics_seen = len(lines)
+            overall = "crashed"
+            steps["probe"] = ("crashed", "moonlink panicked at " +
+                              ", ".join(sorted({panic_site(ln) for ln in lines[panics_before:]})))
         detail = "; ".join(f"{s}={v}" + (f" ({d})" if d and v != "exact" else "") for s, (v, d) in steps.items())
         if refused:
             reasons = sorted({r for _, r in refused})
             detail += (f"; {len(refused)} value(s) rejected at create_table: "
                        + "; ".join(reasons)[:300] + " [" + ", ".join(v[:40] for v, _ in refused[:5]) + "]")
         self.last_verdict = overall
-        self.rep.result(check, "PASS" if overall == "exact" else "FAIL", f"{overall}: {what} {n} values ({origin}); {detail}",
-                        record={"type": typ, "typtype": typtype, "verdict": overall, "steps": steps, "origin": origin})
+        base = f"{overall}: {what} {n} values ({origin})"
+        # One event per step that isn't exact (per diverging column) and per refused value, matched
+        # separately against expected.txt.
+        events = []
+        for step, (v, d) in steps.items():
+            if v == "exact":
+                continue
+            parts = step_events.get(step) if v in ("lossy", "equivalent") and step_events.get(step) else [d]
+            events += [{"kind": v, "text": f"{base}; {step}={v} ({p})"} for p in parts]
+        events += [{"kind": "rejected-value", "text": f"{base}; value rejected at create_table: {r} [{v[:40]}]"}
+                   for v, r in refused]
+        self.rep.result(check, "PASS" if overall == "exact" else "FAIL", f"{base}; {detail}",
+                        record={"type": typ, "typtype": typtype, "verdict": overall, "steps": steps, "origin": origin},
+                        events=events or None)
 
     # ---- main ------------------------------------------------------------------------------
     def selection(self):
@@ -1616,9 +1699,30 @@ class Harness:
         self.dbs = []
         self.template()
         self.panics_seen = self.srv.panics()
+        self.crashes_seen = len(self.srv.backend_crashes())
+
+    def sweep(self, kind, name):
+        """Panics and crash restarts in the unit's server log that no check reported (they happened
+        outside a statement the harness watches: a fence, a txn-state probe, between statements)."""
+        lines = self.srv.panic_lines()
+        if len(lines) > self.panics_seen:
+            new = lines[self.panics_seen:]
+            self.rep.result(f"panic.{kind}.{name}", "FAIL",
+                            f"{len(new)} moonlink panic(s) at {', '.join(sorted({panic_site(ln) for ln in new}))} "
+                            "not attributed to a check", record={"panics": new[:5]})
+            self.panics_seen = len(lines)
+        crashes = self.srv.backend_crashes()
+        if len(crashes) > self.crashes_seen:
+            new = crashes[self.crashes_seen:]
+            self.rep.result(f"backend.{kind}.{name}", "FAIL",
+                            f"{len(new)} Postgres crash restart(s) not attributed to a statement: "
+                            + "; ".join(sorted({one_line(trap or re.sub(r'^.*?LOG:\s+', '', line), 200) for line, trap in new})))
+            self.crashes_seen = len(crashes)
 
     def end(self, kind, name):
-        """moonlink must still answer after the file (no crash loop), then tear down."""
+        """No unreported panic or crash in the unit's log, and moonlink still answers after the
+        file (no crash loop); then tear down."""
+        self.sweep(kind, name)
         db = self.dbs[-1] if self.dbs else None
         if db is not None:
             why = []
@@ -1776,7 +1880,10 @@ def parse_args(argv):
 
 def requalify(rec, status, detail):
     """Re-apply the classifier's SKIP rules for a mirror query that errored (a finished run's
-    record keeps the outcomes and error texts, not the rows)."""
+    record keeps the outcomes and error texts, not the rows). A FAIL the classifier attributed to
+    the mirror (DuckDB on the heap tables agreed with the heap) stays a FAIL."""
+    if rec.get("verdict") == "mooncake":
+        return status, detail
     msg = rec.get("mirror_error") or ""
     if compare.DUCKDB_ROLE_ERROR.search(msg):
         return "SKIP", f"the session's role may not run DuckDB: {rec.get('sql', '')[:160]}"

@@ -93,7 +93,7 @@ export PGHOST=/tmp PGDATABASE=postgres PGPORT=${PGPORT:-$((5400 + MAJOR))}
 unset PGTZ PGOPTIONS
 # moonlink's own log lines (e.g. "Received SIGTERM, shutting down") are INFO; keep its default level.
 unset RUST_LOG
-SCEN=""; DATA=""; OUT=""; FENCE_SRC=""; FENCE_MC=""; FENCE_N=0; RESNAPSHOT_OK=0; ALLOWED_EXIT_LINES=""; WAIT_ERR=""
+SCEN=""; TERM_PID=""; DATA=""; OUT=""; FENCE_SRC=""; FENCE_MC=""; FENCE_N=0; RESNAPSHOT_OK=0; ALLOWED_EXIT_LINES=""; WAIT_ERR=""
 CLUSTER_STOPPED=0; LAST_STOP_LINES=""
 
 [[ -n $PG_PREFIX && -x $BIN/psql ]] || { echo "no psql in ${PG_PREFIX:-<unset>}/bin (set PG_PREFIX)" >&2; exit 2; }
@@ -1034,6 +1034,21 @@ raw_psql() {
   timeout -k 5 "$secs" "$BIN/psql" -X -qAt -v ON_ERROR_STOP=0 "$@" > "$out" 2> "$err"
 }
 
+# keep_moonlink_down: the moonlink worker restarts about 15s after a SIGTERM (bgw_restart_time).
+# The "while down" checks must not race that restart, so a worker that is back is stopped again;
+# each such exit gets its own excused log range. TERM_PID follows the latest stopped worker.
+KEEP_DOWN_KILLS=0
+keep_moonlink_down() {
+  local p from
+  p=$(moonlink_pid)
+  [[ -n $p ]] || return 0
+  from=$(wc -l < "$OUT/postgres.log")
+  kill -TERM "$p" 2>/dev/null
+  poll_until 10 moonlink_gone
+  ALLOWED_EXIT_LINES+=" $from $(wc -l < "$OUT/postgres.log")"
+  TERM_PID=$p; KEEP_DOWN_KILLS=$((KEEP_DOWN_KILLS + 1))
+}
+
 # drop_while_down <check> <mirror> <file prefix>: with the bgworker gone, DROP of a mirror succeeds
 # with a WARNING that moonlink did not drop it. The bgworker restarts 15s after it exits (if it
 # does), and the DROPs run a few seconds after the SIGTERM; one that would run after the restart
@@ -1119,7 +1134,7 @@ SQL
   # Stale stream: the session's connection dies with moonlink. Its next call must detect that and
   # reconnect (reporting that moonlink is unreachable) instead of failing on the dead connection, and
   # so must the call after it.
-  pid=$(moonlink_pid); term_pid=$pid; log_before=$(wc -l < "$OUT/postgres.log")
+  pid=$(moonlink_pid); term_pid=$pid; TERM_PID=$pid; KEEP_DOWN_KILLS=0; log_before=$(wc -l < "$OUT/postgres.log")
   if [[ -z $pid ]]; then
     result stale_stream_first_call_reconnects skip "no moonlink bgworker found"; result stale_stream_reconnects skip "no moonlink bgworker found"
   else
@@ -1146,22 +1161,27 @@ SQL
   else result bgworker_exited_after_term 1 "bgworker pid $term_pid still running 10s after SIGTERM"; fi
   # The SIGTERMed worker's own exit (non-zero is how a fixed worker gets restarted) is not abnormal.
   ALLOWED_EXIT_LINES+=" $log_before $(wc -l < "$OUT/postgres.log")"
+  keep_moonlink_down
   raw_psql 30 "$o.dh.out" "$o.dh.err" -c "DROP TABLE h"; rc=$?
   if (( rc == 0 )) && ! grep -q 'ERROR:\|WARNING:' "$o.dh.err"; then result drop_heap_while_down 0
   else result drop_heap_while_down 1 "rc=$rc $(one_line 240 < "$o.dh.err")"; fi
+  keep_moonlink_down
   drop_while_down drop_mirror_while_down s_mc "$o.dm"
   # s4_mc too, for the re-create checks after the restart (moonlink keeps its table).
+  keep_moonlink_down
   drop_while_down drop_second_mirror_while_down s4_mc "$o.d4"
+  keep_moonlink_down
   raw_psql 30 "$o.lt.out" "$o.lt.err" -c "SELECT count(*) FROM mooncake.list_tables()"; rc=$?
   if grep -q 'ERROR:' "$o.lt.err" && ! grep -qi 'server closed the connection\|terminated abnormally' "$o.lt.err" && pg_alive; then
     result list_tables_errors_while_down 0 "$(grep -m1 'ERROR:' "$o.lt.err" | cut -c1-120)"
   else result list_tables_errors_while_down 1 "rc=$rc $(one_line 240 < "$o.lt.err") $(one_line 40 < "$o.lt.out")"; fi
 
   # A bgworker that exited after SIGTERM must come back (restart_time is 15s).
+  info moonlink_kept_down "worker stopped again $KEEP_DOWN_KILLS time(s) during the while-down checks"
   if [[ -z $term_pid ]]; then result bgworker_restarted_after_term skip "no moonlink bgworker found"
-  elif poll_until 30 moonlink_restarted "$term_pid" && wait_ready; then
-    result bgworker_restarted_after_term 0 "pid $term_pid -> $(moonlink_pid)"
-  else result bgworker_restarted_after_term 1 "no new moonlink bgworker 30s after SIGTERM (pid before: $term_pid, now: [$(moonlink_pid)])"; fi
+  elif poll_until 30 moonlink_restarted "$TERM_PID" && wait_ready; then
+    result bgworker_restarted_after_term 0 "pid $TERM_PID -> $(moonlink_pid)"
+  else result bgworker_restarted_after_term 1 "no new moonlink bgworker 30s after SIGTERM (pid before: $TERM_PID, now: [$(moonlink_pid)])"; fi
 
   stop fast clean_stop_before_restart; start
   if wait_ready; then result restart_ready 0; else result restart_ready 1 "mooncake.list_tables() not answering within 60s"; fi

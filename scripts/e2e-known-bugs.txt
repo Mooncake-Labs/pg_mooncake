@@ -71,11 +71,6 @@ bug initial-copy-dir-leak class=limitation Dropping a mirror leaves its empty in
 
 check main.drop_all_files_removed initial-copy-dir-leak ^d pg_mooncake/initial_copy( d pg_mooncake/initial_copy/table_[0-9]+)*$
 
-# ---- moonlink unhealthy -------------------------------------------------------------------------
-bug bgworker-not-restarted class=blocking A moonlink bgworker that exits cleanly (e.g. on SIGTERM) is never restarted
-
-check moonlink_down.bgworker_restarted_after_term bgworker-not-restarted ^no new moonlink bgworker [0-9]+s after SIGTERM \(pid before: [0-9]+, now: \[\]\)$
-
 # ---- sessions that crash the backend (pg_duckdb 7daa8e5) ------------------------------------------
 bug pgduckdb-timezone-hook-crash class=blocking After any DuckDB query in a session, a config reload or a TimeZone reset at transaction end (SET LOCAL ... COMMIT, SET ... ROLLBACK) runs pg_duckdb's TimeZone hook outside a transaction and crashes the backend (crash recovery for the whole server)
 # The relcache.c assertion moves between PostgreSQL minor releases, so only its text is pinned; the

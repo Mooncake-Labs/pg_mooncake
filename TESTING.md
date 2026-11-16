@@ -147,3 +147,27 @@ The gate is:
 
 A fix removes the bug's entry, which its `XPASS` and `FIXED` reports show is safe. Moving a bug from `blocking` to
 `limitation` is a release decision, not a test change.
+
+## Differential tests from the PostgreSQL regression suite (`tests/mirror_diff`)
+
+`tests/mirror_diff/mirror_diff.py` uses the PostgreSQL regression suite as a corpus. It mirrors the suite's tables,
+replays its files against the heap tables while they are mirrored, and checks that every column type survives the
+initial copy, CDC and `mooncake.create_snapshot`, that mirrors equal their heap tables after each DML statement or
+COMMIT, and that each SELECT on a mirror (run by DuckDB) returns what Postgres returns. It needs Python 3.8 or later,
+an installed PostgreSQL with pg_duckdb and pg_mooncake, and a PostgreSQL source tree of the same major version, whose
+`src/test/regress` it reads at run time (no PostgreSQL files are copied here).
+
+```bash
+python3 tests/mirror_diff/mirror_diff.py --pg-src /path/to/postgresql-17.x --bindir /path/to/pg17/bin \
+    --duckdb-extension-dir /path/to/duckdb_extensions --workdir /tmp/mirror_diff | tee mirror_diff.log
+python3 tests/mirror_diff/test_mirror_diff.py   # unit tests, no database
+```
+
+A full run takes one to three hours; `--files numeric,join` runs a subset (the gate then reports `INCOMPLETE`) and
+`--resume` continues an interrupted run. The output lines, the known-differences file
+(`tests/mirror_diff/expected.txt`, `bug <name> class=blocking|class=limitation ...`) and the `GATE mirror_diff` line
+and exit status follow the [end-to-end gate](#end-to-end-gate-scriptse2e-smokesh) and its
+[release policy](#release-policy-blocking-and-limitation), with one difference: a plain SKIP (a query DuckDB can't
+plan, a volatile or side-effecting statement) doesn't fail the mirror_diff gate; only an
+unverified SKIP (a mirror that couldn't be checked) does. `tests/mirror_diff/README.md` describes the checks, the
+comparison rules, the SKIPs and the rule syntax.

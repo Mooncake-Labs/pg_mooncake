@@ -1,6 +1,6 @@
 # pg_mooncake architecture
 
-**[pins]** Describes pg_mooncake 0.3.0 (unreleased) with moonlink `de5de558` (its v0.3-dev branch), pg_duckdb `12b6de7` (`7daa8e5` plus the upstream TimeZone hook fix), duckdb_mooncake `bd9e5f3`, and
+**[pins]** Describes pg_mooncake 0.3.0 (unreleased) with moonlink `977dc549` (its v0.3-dev branch), pg_duckdb `12b6de7` (`7daa8e5` plus the upstream TimeZone hook fix), duckdb_mooncake `bd9e5f3`, and
 DuckDB v1.4.1. Statements tagged **[pins]** must be re-verified when a submodule pin moves.
 
 ## Processes and data flow

@@ -93,8 +93,10 @@ pg_mooncake 0.3.0 runs on a slimmed-down moonlink.
   that cannot be loaded. ([moonlink PR 2365][ml-2365])
 - Lower write amplification under steady writes, and bounded memory and cache use. ([moonlink PR 2366][ml-2366])
 - `mooncake.create_snapshot` could return before the data was durable in Iceberg. ([moonlink PR 2369][ml-2369])
-<!-- RC: add the initial-copy performance fix (the moonlink PR after de5de55) and move the moonlink submodule to the
-     release commit. -->
+- The initial copy of a new mirror converts dates, timestamps and copied rows without allocating per value, which fixes
+  its slowdown against 0.2. ([moonlink PR 2370][ml-2370])
+<!-- RC: add the two remaining moonlink follow-ups (stream-abort liveness; a text value of backslash-N read as NULL by the
+     initial copy) and move the moonlink submodule to the release commit. -->
 
 ### Removed
 - `mooncake.load_files`.
@@ -131,6 +133,7 @@ pg_mooncake 0.3.0 runs on a slimmed-down moonlink.
 [ml-2367]: https://github.com/Mooncake-Labs/moonlink/pull/2367
 [ml-2368]: https://github.com/Mooncake-Labs/moonlink/pull/2368
 [ml-2369]: https://github.com/Mooncake-Labs/moonlink/pull/2369
+[ml-2370]: https://github.com/Mooncake-Labs/moonlink/pull/2370
 
 ## 0.1.2 (2025-02-11)
 ### Added

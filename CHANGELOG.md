@@ -1,24 +1,37 @@
 ## 0.3.0 (unreleased) <!-- RC: set the date -->
 
-pg_mooncake 0.3.0 runs on a slimmed-down moonlink. <!-- RC: post-bump: true only with the moonlink submodule bump. -->
+pg_mooncake 0.3.0 runs on a slimmed-down moonlink.
 **Mirrors created with 0.2.x must be dropped and re-created after upgrading**; see [Upgrading from 0.2](README.md#upgrading-from-02).
 
 ### Changed
 - Moonlink no longer keeps its own write-ahead log. The replication slot is acknowledged only up to what is persisted
   in Iceberg, and the rest is replayed from the slot after a restart. Postgres retains more `pg_wal` as a result (idle
-  tables are force-snapshotted every 300 s). <!-- RC: post-bump: true only with the moonlink submodule bump. -->
+  tables are force-snapshotted every 300 s). ([moonlink PR 2356][ml-2356])
 - A mirror that can no longer be kept in sync enters an errored state instead of silently diverging or stopping
   replication for other mirrors. Queries on it fail with
   `mirror <name> is out of sync: <reason>; drop and re-create it with mooncake.create_table`. The state survives restarts.
-  <!-- RC: post-bump: true only with the moonlink submodule bump. -->
-- `TRUNCATE` of a source table, and schema changes to a source table (for example `ALTER TABLE ... ADD COLUMN`), put
-  its mirrors into the errored state. <!-- RC: post-bump: true only with the moonlink submodule bump. -->
+  ([moonlink PR 2357][ml-2357])
+- `TRUNCATE` of a source table, and schema changes to a source table (for example `ALTER TABLE ... ADD COLUMN`), put its
+  mirrors into the errored state. So do changes the replication stream does not show: a column dropped and re-added,
+  partitions attached with rows or detached, and changes made while moonlink was stopped. ([moonlink PR 2360][ml-2360],
+  [moonlink PR 2368][ml-2368])
 - `mooncake.create_table` sets `REPLICA IDENTITY FULL` on the source table (and each partition of a partitioned table),
-  so updates keep unchanged TOAST values. Changing it back puts the mirror into the errored state.
-  <!-- RC: post-bump: true only with the moonlink submodule bump. -->
-- Unsupported source columns are rejected by `mooncake.create_table` with an error instead of being mirrored wrongly.
-  <!-- RC: post-bump: true only with the moonlink submodule bump. -->
-  <!-- RC: list the final rejected types/typmods (numeric precision, multi-dimensional arrays, inheritance parents). -->
+  so updates keep unchanged TOAST values. Changing it back puts the mirror into the errored state. ([moonlink PR
+  2360][ml-2360])
+- `mooncake.create_table` refuses, with the reason, a source it cannot mirror exactly: a column of a type mirrors cannot
+  store (`interval`, `inet`), a multi-dimensional array column, generated columns, a table with inheritance children, a
+  partitioned table without a primary key or with an unlogged or foreign partition, a partitioned table and one of its
+  own partitions both mirrored, and a source the connection's role cannot `SELECT`. ([moonlink PR 2360][ml-2360],
+  [moonlink PR 2368][ml-2368])
+- Values are stored as Postgres has them (`numeric`, `json`/`jsonb`, arrays, dates before year 1 and after 9999,
+  domains, enums), or the mirror enters the errored state: for example on `infinity` dates and timestamps,
+  multi-dimensional array values, or more than 10 fractional digits in an unconstrained `numeric`. ([moonlink PR
+  2360][ml-2360], [moonlink PR 2368][ml-2368])
+- A query that reads a mirror at the session's last commit waits at most 30 s for moonlink to reach it, then fails with
+  a retryable error naming the LSN. ([moonlink PR 2365][ml-2365])
+- moonlink deletes Iceberg files it no longer needs. Set `MOONLINK_ICEBERG_GC=dry-run` in the server's environment to
+  only log them, or `off` to keep everything. A full disk pauses mirrors for up to 30 minutes (or until 512 MiB of
+  changes wait in memory) before erroring them. ([moonlink PR 2365][ml-2365])
 - Failures talking to moonlink are reported as regular Postgres errors (`mooncake.<procedure> failed: ...`), and the
   next call reconnects.
 - `DROP TABLE` of a mirror always succeeds. If moonlink is down or does not answer, the drop completes with a `WARNING`
@@ -61,14 +74,38 @@ pg_mooncake 0.3.0 runs on a slimmed-down moonlink. <!-- RC: post-bump: true only
 - Building from source with the Rust toolchain pinned in `rust-toolchain.toml` works again: Cargo now prefers
   dependency versions that support it.
 - Dropping a mirror created by 0.2 whose name needs quoting (mixed case, `$`) also removes it from moonlink.
-<!-- RC: add the final moonlink fix list (replication, recovery, data-type and read-path fixes) with upstream PR links. -->
+
+### Fixed in moonlink
+- A restart or a reconnect no longer loses or duplicates rows once a mirror's initial copy has been persisted (see Known
+  limitations for a restart right after `mooncake.create_table`), and `pg_wal` no longer grows behind idle or empty
+  mirrors. ([moonlink PR 2364][ml-2364])
+- A mirror that cannot follow its source no longer crashes the background worker, stops replication for the other
+  mirrors, or silently diverges: it enters the errored state, and dropping it no longer hangs. A mirror that cannot be
+  restored at startup is errored too, instead of making the worker crash-loop. ([moonlink PR 2357][ml-2357], [moonlink
+  PR 2360][ml-2360])
+- Wrong data without an error: arrays came back empty, unconstrained `numeric` values had their digits shifted,
+  `TRUNCATE` of a source was ignored, and an `UPDATE` that left a TOASTed column unchanged emptied it in the mirror.
+  ([moonlink PR 2360][ml-2360])
+- A large `numeric` value (more than 96 bits, such as 38 digits) no longer panics moonlink's statistics and errors the
+  mirror. ([moonlink PR 2368][ml-2368])
+- Scans no longer break the RPC connection when they race with replication, and a read right after a commit no longer
+  returns stale rows. ([moonlink PR 2358][ml-2358])
+- Failed flushes, Iceberg commits, compactions and index merges are retried, or error only their table, instead of
+  panicking or losing the table. Iceberg metadata writes are atomic, so an interrupted write no longer leaves a table
+  that cannot be loaded. ([moonlink PR 2365][ml-2365])
+- Lower write amplification under steady writes, and bounded memory and cache use. ([moonlink PR 2366][ml-2366])
+- `mooncake.create_snapshot` could return before the data was durable in Iceberg. ([moonlink PR 2369][ml-2369])
+- The initial copy of a new mirror converts dates, timestamps and copied rows without allocating per value, which fixes
+  its slowdown against 0.2. ([moonlink PR 2370][ml-2370])
+<!-- RC: add the two remaining moonlink follow-ups (stream-abort liveness; a text value of backslash-N read as NULL by the
+     initial copy) and move the moonlink submodule to the release commit. -->
 
 ### Removed
 - `mooncake.load_files`.
-- From moonlink: <!-- RC: post-bump: true only with the moonlink submodule bump. -->
-  its write-ahead log, the REST API, Kafka and REST event ingestion, OpenTelemetry ingestion and export,
-  standalone deployment, the DataFusion integration, Delta Lake output, REST and Glue Iceberg catalogs, and GCS
-  storage. pg_mooncake stores mirrors on the local filesystem with a filesystem Iceberg catalog.
+- From moonlink: its write-ahead log, the REST API, Kafka and REST event ingestion, OpenTelemetry ingestion and
+  export, standalone deployment, the DataFusion integration, Delta Lake output, REST and Glue Iceberg catalogs, GCS
+  storage, and the Postgres metadata store. pg_mooncake stores mirrors on the local filesystem with a filesystem
+  Iceberg catalog. ([moonlink PR 2353][ml-2353], [moonlink PR 2356][ml-2356], [moonlink PR 2367][ml-2367])
 
 ### Performance
 <!-- RC: numbers from the release benchmark against 0.2.x: write amplification, freshness, query latency,
@@ -82,7 +119,29 @@ pg_mooncake 0.3.0 runs on a slimmed-down moonlink. <!-- RC: post-bump: true only
   a leftover is removed when a mirror with the same name is created again.
 - Identifiers containing `.` are rejected.
 - Moonlink calls other than the one made by `DROP TABLE` have no timeout.
+- `character(n)` values come back without their trailing padding.
+- If moonlink restarts within about half a second after `mooncake.create_table` returns (a fast server stop or restart,
+  or the moonlink worker being stopped), the new mirror loses the rows of its initial copy, without an error. To avoid
+  it, write to the source table and run `CALL mooncake.create_snapshot('<mirror>')` in the same session after
+  `mooncake.create_table`; if it happened, drop and re-create the mirror.
+  <!-- RC: remove this entry if the moonlink fix for losing the initial copy on an early restart lands before the tag. -->
+- Composite and domain-over-composite columns read back from a mirror as DuckDB STRUCT values, e.g.
+  `{'f1': 1, 'f2': 'foo'}` instead of `(1,foo)`. The values are preserved; compare or extract fields (`(c).f1`) rather
+  than the row text. Comparing the whole value with a row (`c = ROW(1, 'foo')::t`) fails in DuckDB.
 <!-- RC: replace with the final list from the release-gate run. -->
+
+[ml-2353]: https://github.com/Mooncake-Labs/moonlink/pull/2353
+[ml-2356]: https://github.com/Mooncake-Labs/moonlink/pull/2356
+[ml-2357]: https://github.com/Mooncake-Labs/moonlink/pull/2357
+[ml-2358]: https://github.com/Mooncake-Labs/moonlink/pull/2358
+[ml-2360]: https://github.com/Mooncake-Labs/moonlink/pull/2360
+[ml-2364]: https://github.com/Mooncake-Labs/moonlink/pull/2364
+[ml-2365]: https://github.com/Mooncake-Labs/moonlink/pull/2365
+[ml-2366]: https://github.com/Mooncake-Labs/moonlink/pull/2366
+[ml-2367]: https://github.com/Mooncake-Labs/moonlink/pull/2367
+[ml-2368]: https://github.com/Mooncake-Labs/moonlink/pull/2368
+[ml-2369]: https://github.com/Mooncake-Labs/moonlink/pull/2369
+[ml-2370]: https://github.com/Mooncake-Labs/moonlink/pull/2370
 
 ## 0.1.2 (2025-02-11)
 ### Added

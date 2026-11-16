@@ -124,11 +124,5 @@ fn set_signal_mask(mask: &libc::sigset_t) {
 fn service_config() -> ServiceConfig {
     ServiceConfig {
         base_path: "pg_mooncake".to_owned(),
-        data_server_uri: None,
-        rest_api_port: None,
-        otel_ingestion_api_port: None,
-        tcp_port: None,
-        log_directory: None,
-        otel_export_target: None,
     }
 }

@@ -38,11 +38,15 @@ extern "C-unwind" fn moonlink_main(_arg: pg_sys::Datum) {
         })
         .build()
         .expect("failed to build the moonlink runtime");
+    // The main thread's stack size: moonlink's startup and recovery run inline in this future, and have overflowed a
+    // smaller stack in debug builds.
     let moonlink = std::thread::Builder::new()
         .name("moonlink".to_owned())
+        .stack_size(MOONLINK_THREAD_STACK_SIZE)
         .spawn(move || runtime.block_on(start_with_config(service_config())))
         .expect("failed to start the moonlink thread");
     set_signal_mask(&original_mask);
+    wait_for_moonlink(&moonlink);
     // An error is raised here, under pg_guard, so it is reported like any other worker error, as before.
     match moonlink.join() {
         Ok(result) => result.unwrap(),
@@ -54,6 +58,29 @@ extern "C-unwind" fn moonlink_main(_arg: pg_sys::Datum) {
     if !postmaster_stopping() {
         log!("moonlink stopped on SIGTERM outside a server shutdown; exiting with code 1 so that it is restarted");
         unsafe { pg_sys::proc_exit(1) };
+    }
+}
+
+const MOONLINK_THREAD_STACK_SIZE: usize = 8 << 20;
+
+/// Waits for the moonlink thread to finish. A SIGTERM that arrives before moonlink has installed its own handler
+/// reaches only pgrx's, and moonlink would never stop: once one has arrived, raise it again on this thread (the only
+/// one that takes it) until moonlink is gone. moonlink waits for SIGTERM once, so repeats are harmless.
+fn wait_for_moonlink(moonlink: &std::thread::JoinHandle<moonlink_service::Result<()>>) {
+    const POLL_INTERVAL: Duration = Duration::from_millis(200);
+    const RAISE_INTERVAL: Duration = Duration::from_secs(2);
+    let mut last_raise: Option<std::time::Instant> = None;
+    let mut sigterm = false;
+    while !moonlink.is_finished() {
+        std::thread::sleep(POLL_INTERVAL);
+        sigterm |= BackgroundWorker::sigterm_received();
+        if sigterm
+            && !moonlink.is_finished()
+            && last_raise.is_none_or(|at| at.elapsed() >= RAISE_INTERVAL)
+        {
+            unsafe { libc::raise(libc::SIGTERM) };
+            last_raise = Some(std::time::Instant::now());
+        }
     }
 }
 

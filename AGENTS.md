@@ -2,7 +2,7 @@
 
 Guidance for AI coding agents and contributors. Architecture and the full wire format: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
 
-Statements tagged **[pins]** describe the current submodule pins (moonlink `977dc549` (its v0.3-dev branch), pg_duckdb `12b6de7` (`7daa8e5` plus the upstream TimeZone hook fix),
+Statements tagged **[pins]** describe the current submodule pins (moonlink `0e38b435` (its v0.3-dev branch), pg_duckdb `12b6de7` (`7daa8e5` plus the upstream TimeZone hook fix),
 duckdb_mooncake `bd9e5f3`). Re-verify them whenever a submodule pin moves.
 
 ## 1. Contract with duckdb_mooncake: never change these
@@ -204,10 +204,6 @@ summary. Product behavior (fix with a test; don't paper over it):
   Postgres privileges on relations it scans through the mooncake table AM, so per-mirror GRANTs are not enforced.
 - Dropping a mirror leaves its empty directory under `$PGDATA/pg_mooncake/initial_copy`.
   `.moonlink_atomic_tmp/` and `source_fingerprints/` there are moonlink's own and stay, empty once every mirror is gone.
-- A moonlink restart (fast stop, or SIGTERM to the worker) within about 0.5 s after `create_table` returns loses the
-  mirror's initial-copy rows for good, without an error: the copy is not yet in an Iceberg snapshot, and the slot
-  resumes after it. Workaround: write to the source and `CALL mooncake.create_snapshot(...)` in the same session after
-  `create_table` (a fresh session's `create_snapshot` returns at once and does not help).
 - Calls other than `DropTable` have no timeout: a hung moonlink blocks them until it answers.
 - Identifiers containing `.` are rejected (moonlink splits source names on `.`).
 

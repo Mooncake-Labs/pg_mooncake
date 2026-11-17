@@ -5,7 +5,6 @@ use native_tls::TlsConnector;
 use pgrx::{direct_function_call, prelude::*};
 use postgres::Client;
 use postgres_native_tls::MakeTlsConnector;
-use std::ffi::CString;
 
 #[pg_extern(sql = "
 CREATE PROCEDURE mooncake.create_snapshot(dst text) LANGUAGE c AS 'MODULE_PATHNAME', '@FUNCTION_NAME@';
@@ -28,7 +27,7 @@ fn create_table(dst: &str, src: &str, src_uri: Option<&str>, table_config: Optio
     let mut client = create_mooncake_table(&dst.quoted(), &dst_uri, &src.quoted(), &src_uri);
     let created_oid = relation_oid(&mut client, &dst.quoted());
     let table_config = table_config.unwrap_or("{}").to_owned();
-    let result = remove_orphans(&dst).and_then(|cleanup_error| {
+    let result = remove_orphan(&dst).and_then(|cleanup_error| {
         rpc!(
             moonlink_rpc::create_table,
             DATABASE.clone(),
@@ -70,16 +69,16 @@ fn create_table(dst: &str, src: &str, src_uri: Option<&str>, table_config: Optio
 /// Fails only when moonlink is unreachable. A server-side error is returned as `Ok(Some(error))` for the caller to
 /// mention if `CreateTable` fails too: moonlink refuses to register a key that is still taken, so `CreateTable` then
 /// decides, and an orphan can never end up behind the new table.
-fn remove_orphans(dst: &TableName) -> Result<Option<String>, String> {
-    let mut cleanup_error = None;
-    for key in dst.moonlink_keys() {
-        match rpc!(moonlink_rpc::drop_table, DATABASE.clone(), key.clone()) {
-            Ok(_) => {}
-            Err(e) if e.is_unreachable() => return Err(e.to_string()),
-            Err(e) => cleanup_error = Some(format!("{key}: {e}")),
-        }
+fn remove_orphan(dst: &TableName) -> Result<Option<String>, String> {
+    match rpc!(
+        moonlink_rpc::drop_table,
+        DATABASE.clone(),
+        dst.moonlink_name()
+    ) {
+        Ok(_) => Ok(None),
+        Err(e) if e.is_unreachable() => Err(e.to_string()),
+        Err(e) => Ok(Some(e.to_string())),
     }
-    Ok(cleanup_error)
 }
 
 #[pg_extern(sql = "
@@ -158,36 +157,8 @@ pub(crate) struct TableName {
 impl TableName {
     /// Unquoted `schema.table`: the key moonlink registers the table under. duckdb_mooncake looks tables up
     /// by unquoted `schema.table` too, and moonlink's Postgres connector splits source names on '.'.
-    fn moonlink_name(&self) -> String {
+    pub(crate) fn moonlink_name(&self) -> String {
         format!("{}.{}", self.schema, self.table)
-    }
-
-    /// Every key moonlink may hold this mirror under. pg_mooncake 0.2 registered mirrors under the quoted name
-    /// (`public."Mc$1"`), so a mirror created by 0.2 is also dropped under that key.
-    pub(crate) fn moonlink_keys(&self) -> Vec<String> {
-        let mut keys = vec![self.moonlink_name()];
-        keys.extend(self.legacy_moonlink_name());
-        keys
-    }
-
-    fn legacy_moonlink_name(&self) -> Option<String> {
-        let schema = spi::quote_identifier(&self.schema);
-        let table = spi::quote_identifier(&self.table);
-        if schema == self.schema && table == self.table {
-            return None;
-        }
-        // A relation literally named like the quoted form owns that key as its current, unquoted key.
-        let (Ok(schema_c), Ok(table_c)) =
-            (CString::new(schema.as_str()), CString::new(table.as_str()))
-        else {
-            return None;
-        };
-        let owned = unsafe {
-            let namespace = pg_sys::get_namespace_oid(schema_c.as_ptr(), true);
-            namespace != pg_sys::InvalidOid
-                && pg_sys::get_relname_relid(table_c.as_ptr(), namespace) != pg_sys::InvalidOid
-        };
-        (!owned).then(|| format!("{schema}.{table}"))
     }
 
     /// Quoted form for SQL that pg_mooncake runs itself.
@@ -252,7 +223,7 @@ fn get_loopback_uri() -> String {
 }
 
 fn uri_encode(input: &str) -> String {
-    // https://docs.aws.amazon.com/AmazonS3/latest/API/sigv4-query-string-auth.html
+    // Percent-encodes all but RFC 3986's unreserved characters (https://www.rfc-editor.org/rfc/rfc3986#section-2.3).
     const HEX_DIGITS: &[u8; 16] = b"0123456789ABCDEF";
     let mut result = String::with_capacity(input.len() * 3);
     for byte in input.bytes() {
@@ -280,10 +251,18 @@ fn relation_oid(client: &mut Client, quoted_name: &str) -> Option<i64> {
 
 /// Creates the Postgres mirror table and returns the connection it was created on.
 fn create_mooncake_table(dst: &str, dst_uri: &str, src: &str, src_uri: &str) -> Client {
-    let tls_connector = TlsConnector::new().expect("error creating tls connector");
+    let tls_connector = TlsConnector::new()
+        .unwrap_or_else(|e| error!("mooncake.create_table failed: could not set up TLS: {e}"));
     let make_tls_connector = MakeTlsConnector::new(tls_connector);
-    let mut client = Client::connect(src_uri, make_tls_connector.clone())
-        .unwrap_or_else(|_| panic!("error connecting to server: {src_uri}"));
+    let connect = |uri: &str| {
+        Client::connect(uri, make_tls_connector.clone()).unwrap_or_else(|e| {
+            error!(
+                "mooncake.create_table failed: could not connect to {uri}: {}",
+                libpq_cause(&e)
+            )
+        })
+    };
+    let mut client = connect(src_uri);
 
     let get_columns_query = format!(
         "SELECT string_agg(
@@ -301,17 +280,34 @@ fn create_mooncake_table(dst: &str, dst_uri: &str, src: &str, src_uri: &str) -> 
     );
     let columns: String = client
         .query_one(&get_columns_query, &[])
-        .unwrap_or_else(|_| panic!("relation does not exist: {src}"))
+        .unwrap_or_else(|e| {
+            error!(
+                "mooncake.create_table failed: could not read the columns of {src}: {}",
+                libpq_cause(&e)
+            )
+        })
         .get(0);
 
     if dst_uri != src_uri {
-        client = Client::connect(dst_uri, make_tls_connector)
-            .unwrap_or_else(|_| panic!("error connecting to server: {dst_uri}"));
+        client = connect(dst_uri);
     }
 
     let create_table_query = format!("CREATE TABLE {dst} ({columns}) USING mooncake");
     client
         .simple_query(&create_table_query)
-        .unwrap_or_else(|_| panic!("error creating table: {dst}"));
+        .unwrap_or_else(|e| {
+            error!(
+                "mooncake.create_table failed: could not create {dst}: {}",
+                libpq_cause(&e)
+            )
+        });
     client
+}
+
+/// The server's message for an error the server reported, else the client-side error.
+fn libpq_cause(e: &postgres::Error) -> String {
+    match e.as_db_error() {
+        Some(db) => db.message().to_owned(),
+        None => e.to_string(),
+    }
 }

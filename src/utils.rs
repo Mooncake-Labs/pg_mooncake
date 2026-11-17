@@ -137,3 +137,18 @@ macro_rules! rpc {
     }};
 }
 pub(crate) use rpc;
+
+/// Whether `relid` is a mooncake mirror: a relation using the `mooncake` table access method.
+pub(crate) unsafe fn is_mirror(relid: pg_sys::Oid) -> bool {
+    let mooncake_am = pg_sys::get_table_am_oid(c"mooncake".as_ptr(), true);
+    if mooncake_am == pg_sys::InvalidOid {
+        return false;
+    }
+    let rel = pg_sys::RelationIdGetRelation(relid);
+    if rel.is_null() {
+        return false;
+    }
+    let relam = (*(*rel).rd_rel).relam;
+    pg_sys::RelationClose(rel);
+    relam == mooncake_am
+}

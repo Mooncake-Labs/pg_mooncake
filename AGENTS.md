@@ -1,9 +1,11 @@
-# AGENTS.md: working on pg_mooncake
+# Contributing to pg_mooncake
 
-Guidance for AI coding agents and contributors. Architecture and the full wire format: [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md).
+The contributor guide: the invariants a change must keep, where things live, how to build and test, and common
+pitfalls. The architecture and the wire format are described in [docs/ARCHITECTURE.md](docs/ARCHITECTURE.md), and the
+tests in [TESTING.md](TESTING.md).
 
-Statements tagged **[pins]** describe the current submodule pins (moonlink `0e38b435` (its v0.3-dev branch), pg_duckdb `12b6de7` (`7daa8e5` plus the upstream TimeZone hook fix),
-duckdb_mooncake `bd9e5f3`). Re-verify them whenever a submodule pin moves.
+Statements tagged **[pins]** hold at the submodule pins listed at the top of
+[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md). Re-verify them whenever a submodule pin moves.
 
 ## 1. Contract with duckdb_mooncake: never change these
 
@@ -13,9 +15,10 @@ Users get duckdb_mooncake as a **prebuilt binary**: `CREATE EXTENSION` runs
 No version is negotiated at runtime, so anything below that changes breaks every user on the default install, even
 when your local tests (with a locally built extension) pass.
 
-- **Do not modify `moonlink/src/moonlink_rpc` at all.** The `rpcs!{}` list is the wire format: bincode
-  `config::standard()`, where the enum *variant index* is encoded, so order matters. The list happens to be
-  alphabetical, so adding a variant "in order" silently renumbers the ones after it.
+- **Do not change the wire format** (described in [docs/ARCHITECTURE.md][wire-format]). The `rpcs!{}` list in
+  `moonlink/src/moonlink_rpc` defines it: bincode `config::standard()`, where the enum *variant index* is encoded, so
+  order matters. The list happens to be alphabetical, so adding a variant "in order" silently renumbers the ones after
+  it.
 - **Framing** (`moonlink_rpc/src/lib.rs` `write`/`read`): u32 **native-endian** length prefix, then the bincode payload.
 - **Responses are `RpcResult<T> = Result<T, moonlink_error::ErrorStruct>`.** Do not change `ErrorStruct`
   (`moonlink/src/moonlink_error/src/error.rs`: `message`, `status: ErrorStatus`, `source` with custom serde, `location`)
@@ -61,7 +64,8 @@ when your local tests (with a locally built extension) pass.
    slot is acknowledged only up to what every healthy mirror has persisted to Iceberg, and the rest is replayed from the
    slot after a restart (docs/ARCHITECTURE.md, "Consistency model"). **[pins]**
 5. **User-level recovery is "drop and re-create the mirror"** (`DROP TABLE <mirror>; CALL mooncake.create_table(...)`).
-   DROP must succeed no matter what state moonlink is in:
+   DROP must succeed no matter what state moonlink is in (the flow: docs/ARCHITECTURE.md, "Processes and data flow",
+   step 6):
    - An `object_access_hook` (`src/drop_tracking.rs`) records which dropped relations are mooncake mirrors (by
      `relam`, before the catalog rows go away; this covers cascades and `DROP SCHEMA`). The `sql_drop` trigger queues
      those, and a pre-commit transaction callback sends `DropTable` for each one that is still gone at top-level
@@ -76,8 +80,6 @@ when your local tests (with a locally built extension) pass.
      moonlink holds under the new mirror's name before registering it (the name was free in Postgres, so that table is
      an orphan), and drops the new Postgres table again if moonlink refuses it. So re-creating a mirror cleans up its
      orphan; to clean one up without re-creating: `CREATE TABLE <same name> (id int) USING mooncake; DROP TABLE <same name>;`.
-   - pg_mooncake 0.2 registered mirrors under the quoted name (`public."Mc$1"`, `quote_ident` of each part). DROP and the
-     create_table cleanup also send that key when it differs from the unquoted one (`TableName::moonlink_keys`).
    - RPC errors become normal Postgres ERRORs raised after the connection lock is released (`rpc!` in `src/utils.rs`).
      The lock is poison-tolerant. A connection that saw an IO or decode error is discarded, and a cached connection is
      probed (`MSG_PEEK`) before reuse, so the first call after a moonlink restart reconnects instead of failing.
@@ -107,7 +109,6 @@ when your local tests (with a locally built extension) pass.
 | Postgres CDC (slot, publication, confirmed-LSN feedback) | `moonlink/src/moonlink_connectors/src/pg_replicate*.rs`, `pg_replicate/` |
 | Table engine, Iceberg, union read, errored state **[pins]** | `moonlink/src/moonlink/src/{table_handler.rs,storage/,union_read/}` |
 | DuckDB side: catalog, scan, payload decoding, `dlsym`s, RPC client | `duckdb_mooncake/src/storage/*.cpp`, `src/include/pgmooncake.hpp`, `src/moonlink/moonlink.cpp`, `moonlink_ffi/src/lib.rs` |
-| Extension upgrade scripts | `sql/pg_mooncake--<old>--<new>.sql` |
 | Regression tests | `tests/pg_regress/{sql,expected}` |
 
 ## 4. Setup, build, test (standard toolchain)
@@ -164,8 +165,9 @@ and set `duckdb.allow_unsigned_extensions = true` and `duckdb.autoinstall_known_
    returned. If the `CreateTable` RPC fails, create_table drops the new table again on that connection.
 4. **Replication connections are keyed by `src_uri`** (`moonlink_connectors/src/replication_manager.rs`). The slot
    `moonlink_slot_<db>` and publication `moonlink_pub` are dropped when the last mirror of that `src_uri` is dropped.
-5. **No committed `Cargo.lock`** (`/Cargo.lock` is gitignored): the moonlink dependency graph resolves fresh, and
-   `postgres`/`postgres-native-tls` track the HEAD of a git branch. `.cargo/config.toml` makes the resolver prefer
+5. **No committed `Cargo.lock`** (`/Cargo.lock` is gitignored): the moonlink dependency graph resolves fresh.
+   `postgres`/`postgres-native-tls` are pinned to the rust-postgres revision moonlink uses (`make check-rust-postgres`
+   checks it). `.cargo/config.toml` makes the resolver prefer
    versions that support `rust-version` in `Cargo.toml`; keep that equal to the `rust-toolchain.toml` channel, or a fresh
    resolution picks crates the pinned compiler cannot build.
 6. **New regress test without an expected file:** `cargo pgrx regress` prompts "Accept [Y, n]?" and panics without a
@@ -180,46 +182,22 @@ and set `duckdb.allow_unsigned_extensions = true` and `duckdb.autoinstall_known_
    Parse table arguments with `parse_table` (Postgres identifier rules). Send `TableName::moonlink_name()` (unquoted
    `schema.table`) over RPC; use `TableName::quoted()` only in SQL you run yourself.
    Call moonlink with `rpc!(moonlink_rpc::<fn>, args..).unwrap_or_else(|e| error!("mooncake.x failed: {e}"))`.
-2. Use only **existing** RPCs (section 1: `moonlink_rpc` must not change). A feature that needs a new RPC is a
+2. Use only **existing** RPCs (section 1: the wire format must not change). A feature that needs a new RPC is a
    coordinated moonlink + duckdb_mooncake release, not a pg_mooncake change. If you do touch moonlink, the change has to
    land in the moonlink repo and the submodule pin has to move. An exhaustive `match` in `rpc_server.rs::handle_stream`
    and a `MoonlinkBackend` method go with every RPC.
-3. Every SQL API change needs an upgrade step in `sql/pg_mooncake--<old>--<new>.sql` (`cargo pgrx install` copies
-   files named `sql/pg_mooncake--*--*.sql` next to the generated install script). `default_version` in `pg_mooncake.control` follows
-   the Cargo version. Check the result by installing the previous release, creating a mirror, installing this build
-   and running `ALTER EXTENSION pg_mooncake UPDATE`; then compare `\dx+ pg_mooncake` with a fresh `CREATE EXTENSION`.
-4. Add a regress test (pitfall 6) and run `make test` for every supported major.
+3. Add a regress test (pitfall 6) and run `make test` for every supported major.
 
-## 7. Known bugs at the current pins **[pins]**
+## 7. Known limitations
 
-`scripts/e2e-known-bugs.txt` is the complete list, with a failure signature per check; keep it current rather than this
-summary. Product behavior (fix with a test; don't paper over it):
-- `char(n)` comes back without its trailing padding (no error).
-- Composite and domain-over-composite columns come back as DuckDB STRUCT text (`{'f1': 1, 'f2': foo}`, not `(1,foo)`);
-  field access (`(c).f1`) works, comparing the whole value with a row literal fails in DuckDB.
-- Unconstrained `numeric` is stored as `decimal(38,10)`: a value with more than 10 fractional digits errors the mirror.
-  `interval` and `inet` columns are rejected at `create_table`.
-- Reading mirrors as a non-superuser needs `duckdb.postgres_role` plus `pg_read_server_files` and
-  `pg_write_server_files` (pg_duckdb disables DuckDB's `LocalFileSystem` otherwise), and pg_duckdb does not check
-  Postgres privileges on relations it scans through the mooncake table AM, so per-mirror GRANTs are not enforced.
-- Dropping a mirror leaves its empty directory under `$PGDATA/pg_mooncake/initial_copy`.
-  `.moonlink_atomic_tmp/` and `source_fingerprints/` there are moonlink's own and stay, empty once every mirror is gone.
-- Calls other than `DropTable` have no timeout: a hung moonlink blocks them until it answers.
-- A server stop or crash during `create_table` leaves the empty `USING mooncake` table behind (the helper connection
-  dies before its cleanup `DROP` runs), and a retry fails until it is dropped.
-- Identifiers containing `.` are rejected (moonlink splits source names on `.`).
-
-End-to-end checks (`scripts/e2e-smoke.sh`, see TESTING.md): one
-`RESULT <scenario>.<check> PASS|FAIL|XFAIL(<bugs>)|XFAIL(limitation:<bugs>)|XPASS(<bugs>)|SKIP` line per check, then
-`SUMMARY`, a `BLOCKING` line naming the listed blocking bugs, and `GATE e2e-smoke PASS|FAIL|BLOCKED|INCOMPLETE`.
-Expected failures are listed in `scripts/e2e-known-bugs.txt`, each as `class=blocking` (must be fixed for a release;
-while one is listed the gate reports `BLOCKED` at best) or `class=limitation` (documented; its XFAILs don't fail the
-gate). Read results from that file rather than from hand-kept counts. `XPASS` means a known bug no longer reproduces:
-remove its lines, except for a bug whose description starts with `Intermittent:`, where XPASS (`KNOWN ... NOT-SEEN`)
-only means this run didn't hit it; keep that entry until its fix is in.
+The user-visible limitations are listed once, in [CHANGELOG.md](CHANGELOG.md#known-limitations). Fix them with a test;
+don't paper over them. The end-to-end gate's expected failures and their failure signatures are in
+`scripts/e2e-known-bugs.txt` (TESTING.md).
 
 ## 8. Conventions
 
 - Rust: `make format` (`cargo fmt` + `cargo clippy`). duckdb_mooncake C++: `make -C duckdb_mooncake format-all`.
 - Reads from another session are eventually consistent (about 0.5 s locally). Only the writing session gets
   read-your-writes (a scan waits for that backend's `XactLastCommitEnd`). Tests must poll, or read in the writing session.
+
+[wire-format]: docs/ARCHITECTURE.md#wire-format-moonlink_rpc-shared-with-the-prebuilt-duckdb_mooncake

@@ -8,28 +8,26 @@ section 4 for the build and cluster setup.
 
 ## CI
 
-`.github/workflows/ci.yml` runs on pull requests, pushes to `main` and `v0.3-dev`, and `v*` tags, with PostgreSQL from
-the PostgreSQL apt repository and the Rust toolchain from `rust-toolchain.toml`:
+`.github/workflows/ci.yml` runs on pull requests, pushes to the development branches, and `v*` tags, with PostgreSQL
+from the PostgreSQL apt repository and the Rust toolchain from `rust-toolchain.toml`:
 
-- `fmt` runs `cargo fmt --check`.
+- `fmt` runs `cargo fmt --check`, and `make check-rust-postgres` (rust-postgres pinned as in moonlink).
 - `duckdb_mooncake` builds `mooncake.duckdb_extension` from the submodule (cached per submodule commit) for the other
   jobs, and checks that it was built for `DUCKDB_VERSION` in the `Makefile`. That version must equal pg_duckdb's
   (`pg_duckdb/Makefile`); the setup action fails otherwise.
 - `test` builds pg_duckdb and runs `make test` on PostgreSQL 14 to 18, with that extension in `duckdb.extension_directory`
   as described below. The PostgreSQL 18 job also runs `cargo clippy -- -D warnings`.
 - `e2e` runs `scripts/e2e-build-info.sh` for the downloaded extension and then `scripts/e2e-smoke.sh` on PostgreSQL 17
-  and 18, on pushes and manual runs only (about 35 minutes each). It fails on unexpected failures (`fail=` > 0 in
-  `SUMMARY`), on more skipped checks than `E2E_MAX_SKIP`, or if no check passed, but not on known bugs (so
-  `GATE BLOCKED` alone does not fail it). The run summary lists the failures and fixed bugs; logs are attached as
-  artifacts.
+  and 18, on pushes and manual runs only (about 25 minutes each). It fails on unexpected failures (`fail=` > 0 in
+  `SUMMARY`), on more skipped checks than `E2E_MAX_SKIP`, or if no check passed. The run summary lists the failures and
+  fixed bugs; logs are attached as artifacts.
 - `release-markers` runs on `v*` tags only and fails while release markers remain (`scripts/check-release-markers.sh`).
 
 ## Release markers
 
 Statements in the release notes and docs that must be checked or filled in before a release carry a marker: an HTML
-comment whose text starts with `RC:` in Markdown, and a comment line starting with `RC:` in SQL. This includes every
-statement that is true only after the moonlink submodule bump. Resolve each one and delete it before tagging; the
-`release-markers` job fails a tag that still has any.
+comment whose text starts with `RC:` in Markdown, and a comment line starting with `RC:` in SQL. Resolve each one and
+delete it before tagging; the `release-markers` job fails a tag that still has any.
 
 ## End-to-end gate (`scripts/e2e-smoke.sh`)
 
@@ -47,7 +45,7 @@ community extension for DuckDB v1.4.1 uses, with the same moonlink wire protocol
 
 Requirements: Linux, bash 4 or later, GNU coreutils, GNU find, procps, and a PostgreSQL install (tested with 17 and 18)
 with pg_duckdb and pg_mooncake installed and the submodules checked out. The script checks its tool requirements before
-it starts. It runs about 20 minutes, creates clusters under `$E2E_DIR` on `$PGPORT`, and stops them when done.
+it starts. It runs about 25 minutes, creates clusters under `$E2E_DIR` on `$PGPORT`, and stops them when done.
 
 ```bash
 PG_PREFIX=/path/to/pg17 \
@@ -61,8 +59,8 @@ E2E_DIR=/tmp/pg_mooncake-e2e \
   `$(dirname "$(dirname "$(cargo pgrx info pg-config pg17)")")`.
 - `DUCKDB_EXTENSION_DIR` (required) becomes `duckdb.extension_directory` of every test cluster. Put a locally built
   `mooncake.duckdb_extension` in `<dir>/v1.4.1/linux_amd64/` (see "Using a locally built duckdb_mooncake" in
-  `AGENTS.md`). With an empty directory, `CREATE EXTENSION pg_mooncake` installs the community build instead; that
-  path has not been run with this script yet.
+  `AGENTS.md`). With an empty directory, `CREATE EXTENSION pg_mooncake` installs the community build instead, which
+  has no build record (next item), so the gate can't pass on it.
 - After building duckdb_mooncake and copying it there, run
   `scripts/e2e-build-info.sh <dir>/v1.4.1/linux_amd64/mooncake.duckdb_extension` from the checkout that built it. It
   writes `mooncake.duckdb_extension.build-info` (the file's sha256, the duckdb_mooncake commit, whether that checkout
@@ -75,22 +73,24 @@ E2E_DIR=/tmp/pg_mooncake-e2e \
 - Other settings (port, timeouts) are listed at the top of the script.
 
 Output is one line per item: `RESULT <scenario>.<check> <status> [detail]` with status `PASS`, `FAIL`,
-`XFAIL(<bugs>)`, `XFAIL(limitation:<bugs>)`, `XPASS(<bugs>)` or `SKIP`; `INFO` and `BUILD` lines (including
-`BUILD known_bugs=<file> sha256=<hash>`); `KNOWN <bug> FIXED|OPEN|UNKNOWN|NOT-RUN|NOT-SEEN ... class=<class>` per
-known bug; `SUMMARY`; `BLOCKING e2e-smoke <n> <bugs>`; and a last line `GATE e2e-smoke PASS|FAIL|BLOCKED|INCOMPLETE`.
-Exit status: 0 for PASS, 1 for FAIL, 4 for BLOCKED, 3 for INCOMPLETE (a subset of scenarios ran and passed), 2 for a
-usage or setup error. Cluster logs and query outputs stay under `$E2E_DIR/out-<major>-<scenario>/`.
+`XFAIL(limitation:<bugs>)`, `XPASS(<bugs>)` or `SKIP`; `INFO` and `BUILD` lines (including
+`BUILD known_bugs=<file> sha256=<hash>`); a `KNOWN <bug> ...` line per known bug; `SUMMARY`; and a last line
+`GATE e2e-smoke PASS|FAIL|INCOMPLETE`. Exit status: 0 for PASS, 1 for FAIL, 3 for INCOMPLETE (a subset of scenarios
+ran and passed), 2 for a usage or setup error. Cluster logs and query outputs stay under `$E2E_DIR/out-<major>-<scenario>/`.
 
-`scripts/e2e-known-bugs.txt` lists the failures known on the current submodules, each with a regex for its failure
-signature. A check that fails that way reports `XFAIL(<bugs>)`; one that fails in any other way is `FAIL`. When a fix
-makes a listed check pass, it reports `XPASS(<bugs>)`, and `KNOWN <bug> FIXED` means every check listed for that bug
-passed: remove its lines in the same change. For a bug whose description starts with `Intermittent:`, a run in which
-every listed check passed reports `NOT-SEEN` instead of `FIXED`: passing runs don't show that an intermittent bug is
-gone, so its entry stays until its fix is in. The known-bugs file must be a readable regular file. These are setup
-errors (exit 2): a missing file (or `KNOWN_BUGS` set to an empty value), a file that is empty or has no `bug` entries, a
-regex that matches the empty string or arbitrary text, a rule that accepts any crash restart without a `requires` line,
-a bug declared twice, and a bug name outside `[A-Za-z0-9_.-]`. `EMPTY_KNOWN_BUGS_OK=1` allows an existing file without
-entries, for a release with no known bugs; a missing file is always an error.
+### Known limitations and the gate
+
+`scripts/e2e-known-bugs.txt` lists the documented limitations the gate expects at the submodule pins, each with a regex
+for its failure signature; the same limitations are in the CHANGELOG's "Known limitations". A check that fails that
+way reports `XFAIL(limitation:<bugs>)` and doesn't count against the gate; one that fails in any other way is `FAIL`.
+When a fix makes a listed check pass, it reports `XPASS(<bugs>)`, and `KNOWN <bug> FIXED` means every check listed for
+that bug passed: remove its lines in the same change. A missing, empty or malformed known-bugs file is a setup error
+(exit 2).
+
+`GATE e2e-smoke PASS` (exit 0) means every check passed or failed only with a listed limitation, and none was skipped.
+That is what a release needs. A new failure is fixed, not added to the file: adding a limitation is a release decision.
+
+### What some checks require
 
 After unsupported source DDL (`ddl`, `ddl_drop`), a mirror passes if it equals the source, or if its scans fail with
 one ERROR line that names the mirror, says `schema changes are not supported` and gives the `drop and re-create`
@@ -121,53 +121,12 @@ also counts the crashes that no session check reported, so a crash elsewhere in 
 one. A crash during a stop ends it with `abnormal database system shutdown` instead of a restart, and `pg_ctl stop`
 still succeeds; that line counts as a crash too. The `config_reload` cases wait for the mirrors before each case, must
 read the mirror first (pg_duckdb's hook only runs once DuckDB is initialised) and then run without any error; the reload
-case also requires the backend's `pg_conf_load_time()` to advance. In `mirror_writes`, the contract a fix must meet for
-the multiple-assignment `UPDATE` and `INSERT ... ON CONFLICT DO UPDATE` is an ordinary `ERROR: cannot modify mirror ...`
-and no crash. No code emits that message yet; today plain writes fail with pg_duckdb's "not implemented" errors, which
-the plain-write controls accept as long as there is no crash.
+case also requires the backend's `pg_conf_load_time()` to advance. In `mirror_writes`, writes to a mirror, including
+the multiple-assignment `UPDATE` and `INSERT ... ON CONFLICT DO UPDATE`, must fail with an ordinary
+`ERROR: cannot modify mirror ...` and no crash.
 
-### Release policy: blocking and limitation
+## Differential tests (`tests/mirror_diff`), advisory
 
-Every known bug is declared once with a class, `bug <name> class=blocking|class=limitation <description>`:
-
-- `class=blocking`: the bug can crash-loop moonlink, panic, lose or silently change mirrored data, or leave mirrors
-  unusable. A release needs it fixed and its entry removed; while it is listed the gate can't pass. A check that
-  fails with it reports `XFAIL(<bugs>)`, which fails the gate.
-- `class=limitation`: a documented restriction that is loud (an error at `mooncake.create_table`) or harmless. It
-  ships and goes into the release notes. A check that fails only with limitations reports
-  `XFAIL(limitation:<bugs>)`, and it doesn't count against the gate.
-
-The gate is:
-
-- `FAIL` if any check is FAIL, SKIP or XFAIL of a blocking bug, or if no check passed;
-- otherwise `BLOCKED` while the file lists any `class=blocking` bug, even one the run didn't hit (for example an
-  intermittent one that reports `NOT-SEEN` or `UNKNOWN`); the `BLOCKING` line names them;
-- otherwise `INCOMPLETE` if not every scenario ran;
-- otherwise `PASS`, which is what a release needs.
-
-A fix removes the bug's entry, which its `XPASS` and `FIXED` reports show is safe. Moving a bug from `blocking` to
-`limitation` is a release decision, not a test change.
-
-## Differential tests from the PostgreSQL regression suite (`tests/mirror_diff`)
-
-`tests/mirror_diff/mirror_diff.py` uses the PostgreSQL regression suite as a corpus. It mirrors the suite's tables,
-replays its files against the heap tables while they are mirrored, and checks that every column type survives the
-initial copy, CDC and `mooncake.create_snapshot`, that mirrors equal their heap tables after each DML statement or
-COMMIT, and that each SELECT on a mirror (run by DuckDB) returns what Postgres returns. It needs Python 3.8 or later,
-an installed PostgreSQL with pg_duckdb and pg_mooncake, and a PostgreSQL source tree of the same major version, whose
-`src/test/regress` it reads at run time (no PostgreSQL files are copied here).
-
-```bash
-python3 tests/mirror_diff/mirror_diff.py --pg-src /path/to/postgresql-17.x --bindir /path/to/pg17/bin \
-    --duckdb-extension-dir /path/to/duckdb_extensions --workdir /tmp/mirror_diff | tee mirror_diff.log
-python3 tests/mirror_diff/test_mirror_diff.py   # unit tests, no database
-```
-
-A full run takes one to three hours; `--files numeric,join` runs a subset (the gate then reports `INCOMPLETE`) and
-`--resume` continues an interrupted run. The output lines, the known-differences file
-(`tests/mirror_diff/expected.txt`, `bug <name> class=blocking|class=limitation ...`) and the `GATE mirror_diff` line
-and exit status follow the [end-to-end gate](#end-to-end-gate-scriptse2e-smokesh) and its
-[release policy](#release-policy-blocking-and-limitation), with one difference: a plain SKIP (a query DuckDB can't
-plan, a volatile or side-effecting statement) doesn't fail the mirror_diff gate; only an
-unverified SKIP (a mirror that couldn't be checked) does. `tests/mirror_diff/README.md` describes the checks, the
-comparison rules, the SKIPs and the rule syntax.
+`tests/mirror_diff/mirror_diff.py` uses the PostgreSQL regression suite as a corpus: it mirrors the suite's tables and
+checks the mirrors and queries on them against the heap tables. A full run takes one to three hours. It is advisory,
+not a release gate; [tests/mirror_diff/README.md](tests/mirror_diff/README.md) describes how to run it and its checks.

@@ -49,6 +49,8 @@ jobs:
       - run: cargo fmt --check
       - name: Check that rust-postgres is pinned as in moonlink
         run: make check-rust-postgres
+      - name: Unit tests of tests/mirror_diff (no database)
+        run: python3 tests/mirror_diff/test_mirror_diff.py
 
   duckdb_mooncake:
     name: Build duckdb_mooncake
@@ -149,7 +151,7 @@ jobs:
 
       - name: cargo clippy
         if: matrix.pg == 18 && !cancelled()
-        run: cargo clippy --no-default-features --features "bgworker pg${{ matrix.pg }}" -- -D warnings
+        run: cargo clippy -- -D warnings
 
       - name: Show regression diffs and the server log
         if: failure()
@@ -157,18 +159,15 @@ jobs:
           cat tests/pg_regress/regression.diffs || true
           tail -n 300 "$HOME/.pgrx/${{ matrix.pg }}.log" || true
 
-  # Longer end-to-end gate (moonlink down/hung, restarts, crash, DDL; about 35 minutes per major). It reports known
-  # bugs (scripts/e2e-known-bugs.txt) as XFAIL, which makes the script's own GATE fail until they are fixed, so this
-  # job fails on unexpected failures (FAIL), on more skipped checks than the current baseline, or if nothing passed.
+  # Longer end-to-end gate (moonlink down/hung, restarts, crash, DDL; about 25 minutes per major). It passes only with
+  # GATE e2e-smoke PASS: every check passed or failed only with a limitation listed in scripts/e2e-known-bugs.txt, and
+  # none was skipped.
   e2e:
     name: e2e-smoke (PostgreSQL ${{ matrix.pg }})
     if: github.event_name != 'pull_request'
     needs: duckdb_mooncake
     runs-on: ubuntu-24.04
     timeout-minutes: 150
-    env:
-      # Checks the gate skips on a CI runner today; raise it only with a reason in the commit message.
-      E2E_MAX_SKIP: 6
     strategy:
       fail-fast: false
       matrix:
@@ -205,24 +204,16 @@ jobs:
           PG_PREFIX="/usr/lib/postgresql/$PG" E2E_DIR="$RUNNER_TEMP/e2e" BUILD_SRC="$GITHUB_WORKSPACE" \
             scripts/e2e-smoke.sh "$PG" | tee "$log"
           rc=${PIPESTATUS[0]}
-          summary=$(grep '^SUMMARY ' "$log")
           {
             echo '```'
-            echo "${summary:-no SUMMARY line; e2e-smoke.sh exited with $rc}"
-            grep -E '^(RESULT [^ ]+ (FAIL|XPASS)|KNOWN [^ ]+ FIXED|GATE )' "$log"
+            grep '^SUMMARY ' "$log" || echo "no SUMMARY line; e2e-smoke.sh exited with $rc"
+            grep -E '^(RESULT [^ ]+ (FAIL|XPASS|SKIP)|KNOWN [^ ]+ FIXED|GATE )' "$log"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
-          # Exit 2 is a usage or setup error. Known bugs, including blocking ones (GATE BLOCKED), are reported in the
-          # summary only.
-          count() { sed -n "s/.* $1=\([0-9]*\).*/\1/p" <<< "$summary"; }
-          if [[ $rc == 2 || -z $summary ]]; then
-            echo "e2e-smoke.sh did not run to a summary (exit $rc)" >&2; exit 1
+          if [[ $rc != 0 ]] || [[ $(tail -n 1 "$log") != "GATE e2e-smoke PASS" ]]; then
+            echo "e2e-smoke.sh exited with $rc, last line: $(tail -n 1 "$log")" >&2
+            exit 1
           fi
-          if (( $(count fail) > 0 )); then echo "unexpected failures: fail=$(count fail)" >&2; exit 1; fi
-          if (( $(count skip) > E2E_MAX_SKIP )); then
-            echo "skip=$(count skip) is above the baseline E2E_MAX_SKIP=$E2E_MAX_SKIP" >&2; exit 1
-          fi
-          if (( $(count pass) + $(count xpass) == 0 )); then echo "no check passed" >&2; exit 1; fi
 
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         if: always()
@@ -233,3 +224,22 @@ jobs:
             ${{ runner.temp }}/e2e/out-*
           if-no-files-found: ignore
           retention-days: 14
+
+  # Builds the Docker image (not pushed), with pg_duckdb and pg_mooncake from this commit.
+  docker:
+    name: docker build
+    if: github.event_name != 'pull_request'
+    runs-on: ubuntu-24.04
+    timeout-minutes: 150
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          persist-credentials: false
+      - name: Check out moonlink and pg_duckdb
+        run: git submodule update --init --recursive --depth 1 moonlink pg_duckdb
+      - name: Free disk space
+        run: |
+          # The image builds DuckDB and a fat-LTO release of pg_mooncake.
+          sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+          df -h / | tail -1
+      - run: docker build --tag pg_mooncake:ci .

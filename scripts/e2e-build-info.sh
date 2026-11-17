@@ -38,12 +38,10 @@ fi
 tmp=$(mktemp "$ext.build-info.XXXXXX")
 trap 'rm -f "$tmp"' EXIT
 {
-  echo "source=local-build"
   echo "duckdb_mooncake_commit=$commit"
   echo "duckdb_mooncake_dirty=$dirty"
   echo "moonlink_rpc_lock=$lock"
   echo "sha256=$sha"
-  echo "built_at=$(date -u -r "$ext" +%Y-%m-%dT%H:%M:%SZ)"
 } > "$tmp"
 mv -f "$tmp" "$ext.build-info"
 trap - EXIT

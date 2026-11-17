@@ -1,20 +1,13 @@
-# Known failures of scripts/e2e-smoke.sh on this branch with its submodules (moonlink v0.3-dev
-# 0e38b435; pg_duckdb v1.0.0-mooncake 12b6de7).
+# Known limitations that scripts/e2e-smoke.sh expects at this commit's submodule pins (moonlink, pg_duckdb,
+# duckdb_mooncake). Each is in the CHANGELOG's "Known limitations". A new failure is fixed, not added here.
 #
-#   bug <name> class=blocking|class=limitation <description>
+#   bug <name> <description>
 #   check <scenario.check> <bug> <regex>
-#   requires <scenario.check> <bug> <earlier scenario.check> <bug2>
 #
-# class=blocking: the bug can crash-loop moonlink, panic, lose or silently change mirrored data, or
-# make mirrors unusable. It must be fixed before a release; while one is listed the gate can't pass,
-# and a check that fails with it fails the gate.
-# class=limitation: a documented, loud or harmless restriction that ships in the release notes. A
-# check that fails only with limitations reports XFAIL(limitation:<bugs>) and doesn't fail the gate.
-# A bug may be declared only once.
-#
-# A listed check reports XFAIL(<bug>) only when each of its failure signatures matches the regex
-# (bash ERE) of one of its listed bugs; any other failure is a plain FAIL. A check may list several
-# bugs, one line each. Bug names use only [A-Za-z0-9_.-]. Signatures, one per line:
+# A check that fails only with listed limitations reports XFAIL(limitation:<bugs>) and doesn't fail the gate. It
+# does so only when each of its failure signatures matches the regex (bash ERE) of one of its listed bugs; any other
+# failure is a plain FAIL. A check may list several bugs, one line each. A bug may be declared only once, and bug
+# names use only [A-Za-z0-9_.-]. Signatures, one per line:
 #   most checks                   the RESULT detail
 #   no_moonlink_panics            "<file>:<line> x<n>" per panic location
 #   bgworker_no_abnormal_exits    "exited with exit code <c> x<n>", "was terminated by signal <s> x<n>"
@@ -35,20 +28,17 @@
 #                                 "session lost its connection, but no crash was logged: <stderr>"
 #                                 "unexpected output: [<stdout>] stderr: [<stderr>]"
 #                                 "unexpected stderr: [<stderr>] output: [<stdout>]"
-# A "requires <check> <bug> <earlier check> <bug2>" line makes the check's <bug> rule count only if
-# the earlier check failed with <bug2>, for failures whose text alone doesn't name the cause (a hung
-# DROP, a missing fence mirror). Panic sites are pinned to file:line per moonlink revision.
 
 # ---- types --------------------------------------------------------------------------------------
-bug numeric-fraction-over-10-digits class=limitation An unconstrained numeric value with more than 10 fractional digits (mirrors store unconstrained numeric as decimal(38, 10)) errors that mirror, which must then be dropped and re-created
+bug numeric-fraction-over-10-digits An unconstrained numeric value with more than 10 fractional digits (mirrors store unconstrained numeric as decimal(38, 10)) errors that mirror, which must then be dropped and re-created
 
 check schema.type.numeric numeric-fraction-over-10-digits ^mirror query failed \(rc=1\): ERROR: +\(PGDuckDB/(Duckdb_ExecCustomScan_Cpp|CreatePlan)\) (Prepared query returned an error: )?Error: mirror postgres\.public\.ty_[0-9]+_mc is out of sync: a change from the source table could not be applied: column c \(numeric\): cannot convert '[-0-9.]+': it has more than 10 fractional digits \(stored as decimal\(38, 10\)\); drop and re-create it
 check persist.type.numeric numeric-fraction-over-10-digits ^rc=1, panics during it: none: ERROR: +mooncake\.create_snapshot failed: mirror postgres\.public\.ty_[0-9]+_mc is out of sync: a change from the source table could not be applied: column c \(numeric\): cannot convert '[-0-9.]+': it has more than 10 fractional digits \(stored as decimal\(38, 10\)\); drop and re-create it
 check persist.type.numeric.after_snapshot numeric-fraction-over-10-digits ^mirror query failed \(rc=1\): ERROR: +\(PGDuckDB/(Duckdb_ExecCustomScan_Cpp|CreatePlan)\) (Prepared query returned an error: )?Error: mirror postgres\.public\.ty_[0-9]+_mc is out of sync: a change from the source table could not be applied: column c \(numeric\): cannot convert '[-0-9.]+': it has more than 10 fractional digits \(stored as decimal\(38, 10\)\); drop and re-create it
 check persist.type.numeric.after_restart numeric-fraction-over-10-digits ^mirror query failed \(rc=1\): ERROR: +\(PGDuckDB/(Duckdb_ExecCustomScan_Cpp|CreatePlan)\) (Prepared query returned an error: )?Error: mirror postgres\.public\.ty_[0-9]+_mc is out of sync: a change from the source table could not be applied: column c \(numeric\): cannot convert '[-0-9.]+': it has more than 10 fractional digits \(stored as decimal\(38, 10\)\); drop and re-create it
 
-bug char-padding-lost class=limitation char(n) values come back without their trailing blank padding (Postgres ignores those blanks in char(n) comparisons and length(); only the displayed value differs)
-bug interval-inet-unsupported class=limitation interval and inet source columns are rejected by mooncake.create_table
+bug char-padding-lost char(n) values come back without their trailing blank padding (Postgres ignores those blanks in char(n) comparisons and length(); only the displayed value differs)
+bug interval-inet-unsupported interval and inet source columns are rejected by mooncake.create_table
 
 check schema.type.char_3 char-padding-lost data mismatch.*< 1\|ab  --- > 1\|ab$
 check schema.type.interval interval-inet-unsupported ^setup: ERROR: +mooncake\.create_table failed: .*source table public\.ty_[0-9]+ cannot be mirrored: column c \(interval\) has a type mirrors cannot store
@@ -60,13 +50,13 @@ check persist.type.char_3.after_snapshot char-padding-lost data mismatch.*< 1\|a
 check persist.type.char_3.after_restart char-padding-lost data mismatch.*< 1\|ab  --- > 1\|ab$
 
 # ---- drop ---------------------------------------------------------------------------------------
-bug initial-copy-dir-leak class=limitation Dropping a mirror leaves its empty initial-copy directory under pg_mooncake/initial_copy
+bug initial-copy-dir-leak Dropping a mirror leaves its empty initial-copy directory under pg_mooncake/initial_copy
 
 check main.drop_all_files_removed initial-copy-dir-leak ^d pg_mooncake/initial_copy( d pg_mooncake/initial_copy/table_[0-9]+)*$
 
 # ---- roles and privileges -------------------------------------------------------------------------
-bug mirror-read-needs-server-file-roles class=limitation A role with duckdb.postgres_role but without pg_read_server_files cannot read mirrors (DuckDB's local file system is disabled for it); documented in the release notes
-bug mirror-privileges-not-enforced class=limitation Postgres privileges are not checked on mirrors: a role that can read mirrors reads every mirror, without a grant and after REVOKE ALL
+bug mirror-read-needs-server-file-roles A role with duckdb.postgres_role needs both pg_read_server_files and pg_write_server_files to read mirrors (otherwise DuckDB's local file system is disabled for it; either role alone is not enough)
+bug mirror-privileges-not-enforced Postgres privileges are not checked on mirrors: a role that can read mirrors reads every mirror, without a grant and after REVOKE ALL
 
 check roles.postgres_role_reads_granted_mirror mirror-read-needs-server-file-roles ^unexpected output: \[SELECT count\(\*\) FROM t_mc;\] stderr: \[ERROR: +\(PGDuckDB/Duckdb_ExecCustomScan_Cpp\) Permission Error: File system LocalFileSystem has been disabled by configuration\]$
 check roles.mirror_without_grant_denied mirror-privileges-not-enforced ^unexpected output: \[SELECT \* FROM secret_mc; 42\] stderr: \[\]$

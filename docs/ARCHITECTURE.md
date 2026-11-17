@@ -15,7 +15,7 @@
             │        reads parquet + puffin files directly ◄───┐          │  socket)  │
             │                                                   │          ▼           │
             │ bgworker "moonlink" (pg_mooncake.so → moonlink_service)                 │
-            │   Unix RPC server  $PGDATA/pg_mooncake/moonlink.sock                      │
+            │   Unix RPC server  <mooncake.data_directory>/moonlink.sock                │
             │   per src_uri:  logical replication client (slot moonlink_slot_<db>,     │
             │                 publication moonlink_pub) ◄── pgoutput from the source    │
             │   per mirror:   table handler → mem buffers → parquet + index files       │
@@ -27,10 +27,12 @@
 1. **`CREATE EXTENSION pg_mooncake CASCADE`** creates schema `mooncake`, the procedures/functions, the `mooncake`
    table access method, the `sql_drop` event trigger, and installs the DuckDB `mooncake` extension
    (`duckdb.install_extension('mooncake','community')`, a prebuilt download by default).
-2. **`_PG_init`** (needs `shared_preload_libraries`, after `pg_duckdb`) registers the `moonlink` background worker
-   (cargo feature `bgworker`; start at consistent state; restart after 15 s on non-zero exit) and registers the `mooncake`
-   AM with pg_duckdb (`RegisterDuckdbTableAm`).
-3. **The worker** runs `moonlink_service::start_with_config` with `base_path = "pg_mooncake"` (relative to `$PGDATA`):
+2. **`_PG_init`** (needs `shared_preload_libraries`, after `pg_duckdb`) reads `mooncake.data_directory` and, in the
+   postmaster, checks it (`src/data_directory.rs`). It registers the `moonlink` background worker (cargo feature
+   `bgworker`; start when recovery finishes, so not on standbys but on promotion; restart after 15 s on non-zero exit)
+   and registers the `mooncake` AM with pg_duckdb (`RegisterDuckdbTableAm`).
+3. **The worker** runs `moonlink_service::start_with_config` with `base_path` = `mooncake.data_directory` (default
+   `pg_mooncake`, relative to `$PGDATA`):
    sqlite metadata store, then recovery of every registered table from its latest Iceberg snapshot. A mirror with an
    errored marker stays errored; one that fails recovery is errored (or retried, for a transient failure). Replication
    then starts from each slot's confirmed position, so changes after the last snapshot are replayed from the slot. Then
@@ -91,7 +93,7 @@ n_pos, {data_file_number, data_file_row_number}[n_pos]              sorted
 data file paths (concatenated bytes), puffin file paths (concatenated bytes)
 ```
 
-## On-disk state (`$PGDATA/pg_mooncake`) **[pins]**
+## On-disk state (`mooncake.data_directory`, default `$PGDATA/pg_mooncake`) **[pins]**
 
 | Path | Contents |
 |---|---|

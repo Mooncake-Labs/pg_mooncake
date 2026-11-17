@@ -11,16 +11,19 @@ section 4 for the build and cluster setup.
 `.github/workflows/ci.yml` runs on pull requests, pushes to the development branches, and `v*` tags, with PostgreSQL
 from the PostgreSQL apt repository and the Rust toolchain from `rust-toolchain.toml`:
 
-- `fmt` runs `cargo fmt --check`, and `make check-rust-postgres` (rust-postgres pinned as in moonlink).
+- `fmt` runs `cargo fmt --check`, `make check-rust-postgres` (rust-postgres pinned as in moonlink), and the unit tests
+  of `tests/mirror_diff` (`test_mirror_diff.py`, no database).
 - `duckdb_mooncake` builds `mooncake.duckdb_extension` from the submodule (cached per submodule commit) for the other
   jobs, and checks that it was built for `DUCKDB_VERSION` in the `Makefile`. That version must equal pg_duckdb's
   (`pg_duckdb/Makefile`); the setup action fails otherwise.
-- `test` builds pg_duckdb and runs `make test` on PostgreSQL 14 to 18, with that extension in `duckdb.extension_directory`
-  as described below. The PostgreSQL 18 job also runs `cargo clippy -- -D warnings`.
+- `test` builds pg_duckdb and runs `make test` on PostgreSQL 14 to 18, with that extension in
+  `duckdb.extension_directory` as described below. The PostgreSQL 18 job also runs `cargo clippy -- -D warnings` with
+  the default features.
 - `e2e` runs `scripts/e2e-build-info.sh` for the downloaded extension and then `scripts/e2e-smoke.sh` on PostgreSQL 17
-  and 18, on pushes and manual runs only (about 25 minutes each). It fails on unexpected failures (`fail=` > 0 in
-  `SUMMARY`), on more skipped checks than `E2E_MAX_SKIP`, or if no check passed. The run summary lists the failures and
-  fixed bugs; logs are attached as artifacts.
+  and 18, on pushes and manual runs only (about 25 minutes each). It passes only if the script exits 0 with
+  `GATE e2e-smoke PASS` as its last line. The run summary lists the failures, skipped checks and fixed bugs; logs are
+  attached as artifacts.
+- `docker` builds the Docker image from the checkout (`docker build`, not pushed), on pushes and manual runs only.
 - `release-markers` runs on `v*` tags only and fails while release markers remain (`scripts/check-release-markers.sh`).
 
 ## Release markers
@@ -32,20 +35,23 @@ delete it before tagging; the `release-markers` job fails a tag that still has a
 ## End-to-end gate (`scripts/e2e-smoke.sh`)
 
 `scripts/e2e-smoke.sh` drives an installed pg_mooncake, pg_duckdb and duckdb_mooncake through mirrors on throwaway
-clusters: CDC bursts, every supported column type, unchanged TOAST values, identifiers, persistence after a snapshot
-and after a restart, moonlink being down or hung (and re-creating a mirror whose DROP only warned), source DDL and
-TRUNCATE, a clean restart after a mirror's source table was dropped, sessions that must survive a config reload and
-TimeZone resets after a mirror read, writes to mirrors (which must fail with `cannot modify mirror`), who can read
-mirrors (`duckdb.postgres_role`, the server-file roles, GRANT and REVOKE ALL), a clean restart after a large
-transaction, and a crash (`pg_ctl stop -m immediate`). A statement that crashes a backend (and so restarts every
-Postgres process) fails its check. After the crash, the moonlink background worker must come back without a
-crash loop, `mooncake.list_tables()` must answer, and dropping and re-creating the mirror must give the heap contents.
-It also checks that the duckdb_mooncake that DuckDB loads is built from the submodule commit that the DuckDB
-community extension for DuckDB v1.4.1 uses, with the same moonlink wire protocol.
+clusters: CDC bursts, every supported column type, unchanged TOAST values, identifiers, persistence after a snapshot and
+after a restart, moonlink being down or hung (and re-creating a mirror whose DROP only warned), source DDL and TRUNCATE,
+a clean restart after a mirror's source table was dropped, sessions that must survive a config reload and TimeZone
+resets after a mirror read, writes to mirrors (which must fail with `cannot modify mirror`), who can read mirrors
+(`duckdb.postgres_role`, the server-file roles, GRANT and REVOKE ALL), a clean restart after a large transaction, a
+crash (`pg_ctl stop -m immediate`), and `pg_basebackup` with `mooncake.data_directory` outside the data directory: plain
+and tar backups, a copy that must refuse to start on the primary's moonlink directory, a copy started with its own
+directory, and a standby that has no moonlink until it is promoted. A statement that crashes a backend (and so restarts
+every Postgres process) fails its check. After the crash, the moonlink background worker must come back without a crash
+loop, `mooncake.list_tables()` must answer, and dropping and re-creating the mirror must give the heap contents. It also
+checks that the duckdb_mooncake that DuckDB loads is built from the submodule commit that the DuckDB community extension
+for DuckDB v1.4.1 uses, with the same moonlink wire protocol.
 
 Requirements: Linux, bash 4 or later, GNU coreutils, GNU find, procps, and a PostgreSQL install (tested with 17 and 18)
 with pg_duckdb and pg_mooncake installed and the submodules checked out. The script checks its tool requirements before
-it starts. It runs about 25 minutes, creates clusters under `$E2E_DIR` on `$PGPORT`, and stops them when done.
+it starts. It runs about 25 minutes, creates clusters and their sockets under `$E2E_DIR` on `$PGPORT`, and stops them
+when done.
 
 ```bash
 PG_PREFIX=/path/to/pg17 \
@@ -73,19 +79,20 @@ E2E_DIR=/tmp/pg_mooncake-e2e \
 - Other settings (port, timeouts) are listed at the top of the script.
 
 Output is one line per item: `RESULT <scenario>.<check> <status> [detail]` with status `PASS`, `FAIL`,
-`XFAIL(limitation:<bugs>)`, `XPASS(<bugs>)` or `SKIP`; `INFO` and `BUILD` lines (including
-`BUILD known_bugs=<file> sha256=<hash>`); a `KNOWN <bug> ...` line per known bug; `SUMMARY`; and a last line
-`GATE e2e-smoke PASS|FAIL|INCOMPLETE`. Exit status: 0 for PASS, 1 for FAIL, 3 for INCOMPLETE (a subset of scenarios
-ran and passed), 2 for a usage or setup error. Cluster logs and query outputs stay under `$E2E_DIR/out-<major>-<scenario>/`.
+`XFAIL(limitation:<bugs>)`, `XPASS(<bugs>)` or `SKIP`; `BUILD` lines (including
+`BUILD known_bugs=<file> sha256=<hash>`); a `KNOWN <bug> FIXED|OPEN|UNKNOWN|NOT-RUN ...` line per known limitation;
+`SUMMARY`; and a last line `GATE e2e-smoke PASS|FAIL|INCOMPLETE`. Exit status: 0 for PASS, 1 for FAIL, 3 for INCOMPLETE
+(a subset of scenarios ran and passed), 2 for a usage or setup error. Cluster logs and query outputs stay under
+`$E2E_DIR/out-<major>-<scenario>/`.
 
 ### Known limitations and the gate
 
-`scripts/e2e-known-bugs.txt` lists the documented limitations the gate expects at the submodule pins, each with a regex
-for its failure signature; these limitations are among the CHANGELOG's "Known limitations". A check that fails that
-way reports `XFAIL(limitation:<bugs>)` and doesn't count against the gate; one that fails in any other way is `FAIL`.
-When a fix makes a listed check pass, it reports `XPASS(<bugs>)`, and `KNOWN <bug> FIXED` means every check listed for
-that bug passed: remove its lines in the same change. A missing, empty or malformed known-bugs file is a setup error
-(exit 2).
+`scripts/e2e-known-bugs.txt` lists the documented limitations the gate expects at the submodule pins: a
+`bug <name> <description>` line per limitation, and `check <scenario.check> <bug> <regex>` lines with the regex of its
+failure signature; these limitations are among the CHANGELOG's "Known limitations". A check that fails that way reports
+`XFAIL(limitation:<bugs>)` and doesn't count against the gate; one that fails in any other way is `FAIL`. When a fix
+makes a listed check pass, it reports `XPASS(<bugs>)`, and `KNOWN <bug> FIXED` means every check listed for that bug
+passed: remove its lines in the same change. A missing, empty or malformed known-bugs file is a setup error (exit 2).
 
 `GATE e2e-smoke PASS` (exit 0) means every check passed or failed only with a listed limitation, and none was skipped.
 That is what a release needs. A new failure is fixed, not added to the file: adding a limitation is a release decision.

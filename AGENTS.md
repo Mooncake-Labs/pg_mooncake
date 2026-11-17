@@ -33,8 +33,9 @@ when your local tests (with a locally built extension) pass.
   `pgmooncake_get_init_query`, `pgmooncake_get_lsn`, `pgmooncake_drop_cstring` (`src/duckdb_mooncake.rs`).
   `pgmooncake_drop_cstring` has no Rust caller, but it is not dead code: removing it makes the extension call a
   NULL function pointer.
-- **ATTACH string and naming**: `ATTACH DATABASE 'mooncake' (TYPE mooncake, URI 'pg_mooncake/moonlink.sock', DATABASE '<db>')`.
-  The socket path is relative to the backend's cwd (`$PGDATA`). Tables are addressed as **unquoted** `schema.table`
+- **ATTACH string and naming**: `ATTACH DATABASE 'mooncake' (TYPE mooncake, URI '<mooncake.data_directory>/moonlink.sock', DATABASE '<db>')`
+  (`pgmooncake_get_init_query`). With a relative `mooncake.data_directory`, such as the default `pg_mooncake`, the
+  socket path is relative to the backend's cwd (`$PGDATA`). Tables are addressed as **unquoted** `schema.table`
   (`format!("{}.{}", schema, table)` in `duckdb_mooncake/moonlink_ffi/src/lib.rs`), so pg_mooncake must register
   mirrors with moonlink under that exact string.
 
@@ -59,7 +60,7 @@ when your local tests (with a locally built extension) pass.
    moonlink threads.
 3. **`ServiceConfig` is built with a struct literal** in `src/bgworker.rs`. Adding or removing a field in
    `moonlink_service` needs a matching edit there. **[pins]**
-4. **On this path moonlink uses only the sqlite metadata store** (`$PGDATA/pg_mooncake/moonlink_metadata_store.sqlite`,
+4. **On this path moonlink uses only the sqlite metadata store** (`<mooncake.data_directory>/moonlink_metadata_store.sqlite`,
    the recovery source of truth) **and the filesystem Iceberg catalog.** It keeps no write-ahead log: the replication
    slot is acknowledged only up to what every healthy mirror has persisted to Iceberg, and the rest is replayed from the
    slot after a restart (docs/ARCHITECTURE.md, "Consistency model"). **[pins]**

@@ -10,14 +10,16 @@ tables of its own, and nothing is migrated from it; see [Coming from 0.1.x](READ
   then on applies every committed change of the source from a logical replication slot.
 - Queries on a mirror run in DuckDB, through pg_duckdb and the duckdb_mooncake extension. They read the mirror's
   Iceberg data plus the changes moonlink has not persisted yet.
-- moonlink runs inside Postgres as a background worker. It stores mirrors on the local filesystem under
-  `$PGDATA/pg_mooncake`, with a filesystem Iceberg catalog. Object storage such as S3, REST and Glue Iceberg catalogs,
-  Delta Lake output, and moonlink's standalone service, REST API, and Kafka and OpenTelemetry ingestion are not part of
-  this release. ([moonlink PR 2353][ml-2353], [moonlink PR 2356][ml-2356], [moonlink PR 2367][ml-2367])
+- moonlink runs inside Postgres as a background worker. It stores mirrors on the local filesystem in
+  `mooncake.data_directory` (`$PGDATA/pg_mooncake` by default), with a filesystem Iceberg catalog. Object storage such
+  as S3, REST and Glue Iceberg catalogs, Delta Lake output, and moonlink's standalone service, REST API, and Kafka and
+  OpenTelemetry ingestion are not part of this release. ([moonlink PR 2353][ml-2353], [moonlink PR 2356][ml-2356],
+  [moonlink PR 2367][ml-2367])
 - The bundled pg_duckdb is Mooncake-Labs/pg_duckdb `v1.0.0-mooncake.1`, on the DuckDB v1.4.1 that duckdb_mooncake
   needs. It carries the upstream fix for pg_duckdb's TimeZone hook (duckdb/pg_duckdb#981), so configuration reloads
   (`pg_reload_conf()`, `pg_ctl reload`, `SIGHUP`, including reloads by logrotate, systemd or package scripts) and time
   zone changes undone at the end of a transaction don't crash sessions that have run a DuckDB query.
+- The Docker image is `postgres:18` with the bundled pg_duckdb and pg_mooncake built from source.
 
 ### Usage
 - `mooncake.create_table(mirror, source [, src_uri [, table_config]])` creates a mirror; `src_uri` is a connection
@@ -51,6 +53,9 @@ tables of its own, and nothing is migrated from it; see [Coming from 0.1.x](READ
 - It returns only once the initial copy is persisted in Iceberg, so a restart right after it keeps the copied rows. A
   full disk during the copy, or dropping the mirror from another session, makes the call fail and leaves nothing
   behind. ([moonlink PR 2373][ml-2373], [moonlink PR 2374][ml-2374])
+- When `mooncake.create_table` fails before moonlink is involved, the error names the cause:
+  `mooncake.create_table failed: could not read the columns of <source>: ...`, `could not create <mirror>: ...` or
+  `could not connect to <uri>: ...`.
 - The initial copy stores the text value backslash-N (`\N`) as that text, not as NULL, and rejects a copied row with
   fewer columns than the table. ([moonlink PR 2371][ml-2371])
 
@@ -104,10 +109,12 @@ tables of its own, and nothing is migrated from it; see [Coming from 0.1.x](READ
   affect later calls in the session, and the next call reconnects, also after the moonlink worker restarted.
 - The moonlink background worker is restarted 15 s after it exits outside a server shutdown, including when it is
   stopped with SIGTERM (for example a `kill` of the worker). A fast shutdown stops it cleanly.
-- `mooncake.data_directory` (set at server start) is where moonlink stores mirrors: `pg_mooncake` under the data
-  directory by default, or an absolute path outside it. See the README's
+- `mooncake.data_directory`, read at server start, is the directory for moonlink's files and its socket: `pg_mooncake`
+  under the data directory by default, or an absolute path. Postgres creates it (mode 0700) and refuses to start if it
+  can't use it or another server's moonlink already does. See the README's
   [Backups and standbys](README.md#backups-and-standbys).
-  <!-- RC: confirm mooncake.data_directory semantics from the code PR -->
+- moonlink starts once recovery finishes: not on a standby, and on promotion. A promoted standby keeps the mirrors
+  whose files are in its `mooncake.data_directory`; drop and re-create the others.
 
 ### Performance
 Measured with the project's benchmark on an 8-vCPU, 62 GiB-RAM NVMe machine (PostgreSQL 17.10, release build, a
@@ -155,10 +162,11 @@ Measured with the project's benchmark on an 8-vCPU, 62 GiB-RAM NVMe machine (Pos
 - Identifiers containing `.` are rejected.
 - Only the writing session reads its own changes immediately. Other sessions see a change once moonlink applies it,
   about half a second later (longer after large transactions).
-- With the default `mooncake.data_directory`, `pg_basebackup` fails while any mirror exists (`file name too long for
-  tar format`), which also prevents creating a standby with it: moonlink's file names under `$PGDATA/pg_mooncake` are
-  longer than Postgres' tar format allows. Set `mooncake.data_directory` outside the data directory to use
+- With `mooncake.data_directory` inside the data directory, as it is by default, `pg_basebackup` fails while any
+  mirror exists (`file name too long for tar format`), which also prevents creating a standby with it: moonlink's file
+  names are longer than Postgres' tar format allows. Set `mooncake.data_directory` outside the data directory to use
   `pg_basebackup`. Mirror data is not part of a base backup; after a restore, drop and re-create the mirrors.
+- Mirrors can't be read on a standby; moonlink runs only on the primary.
 - If moonlink restarts while `mooncake.create_table` runs, the call fails. After a restart of only the moonlink worker,
   nothing is left behind and the call can be retried. After a server stop or crash, the new, empty mirror table stays in
   Postgres, and creating the mirror again fails until it is removed with `DROP TABLE`.

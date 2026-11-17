@@ -25,8 +25,8 @@ For new users, we recommend using the Docker image to get started quickly:
 docker run --name mooncake --rm -e POSTGRES_PASSWORD=password mooncakelabs/pg_mooncake
 ```
 
-<!-- RC: the image is built on the moving pgduckdb/pgduckdb:18-main tag, whose pg_duckdb (and DuckDB) is not the
-     bundled one; pin the base image to the pg_duckdb this release ships with. -->
+<!-- RC: publish mooncakelabs/pg_mooncake built from this release's Dockerfile (postgres:18 with the bundled pg_duckdb
+     and pg_mooncake built from source) and check that this command runs it. -->
 
 This will start Postgres with pg_mooncake preinstalled. You can then connect to it using `psql` with the default user `postgres`:
 ```bash
@@ -207,22 +207,34 @@ Unknown keys are ignored. Other moonlink settings, such as `"iceberg"` storage, 
 
 **Removing pg_mooncake.** Drop all mirrors first (`DROP TABLE <mirror>;`): `DROP EXTENSION pg_mooncake CASCADE` would
 drop the mirror tables without telling moonlink, which keeps replicating them. Then `DROP EXTENSION pg_mooncake;`, remove it
-from `shared_preload_libraries`, restart Postgres, and delete `$PGDATA/pg_mooncake/`.
+from `shared_preload_libraries`, restart Postgres, and delete the `mooncake.data_directory` directory
+(`$PGDATA/pg_mooncake/` by default).
 
 ## Backups and standbys
 
-<!-- RC: confirm mooncake.data_directory semantics from the code PR -->
-moonlink stores mirrors in the directory named by `mooncake.data_directory`, a setting that takes effect at server
-start (in `postgresql.conf`). The default, `pg_mooncake`, is relative to the data directory, so mirrors live in
-`$PGDATA/pg_mooncake/`. With that default, `pg_basebackup` fails while any mirror exists
-(`file name too long for tar format`): moonlink's file names there are longer than the 99 characters Postgres' tar
-stream allows, and this also stops `pg_basebackup` from creating a standby. To use `pg_basebackup` or streaming
-standbys, set `mooncake.data_directory` to an absolute path outside `$PGDATA`, for example
-`mooncake.data_directory = '/var/lib/pg_mooncake'`, and restart Postgres before creating mirrors.
+moonlink keeps all its files, including its RPC socket `moonlink.sock`, in the directory set by
+`mooncake.data_directory`. The setting is read at server start, so changing it needs a restart. The default,
+`pg_mooncake`, is relative to the data directory, so mirrors live in `$PGDATA/pg_mooncake/`; an absolute path puts them
+elsewhere. At startup Postgres creates the directory (mode 0700) if it is missing. It refuses to start if the directory
+is not owned by the server's user or not writable, if the socket path would be longer than 107 bytes, or if another
+server's moonlink already uses it (its `moonlink.sock` accepts connections).
 
-Mirror data is then not part of a base backup, and a standby has none. Mirrors can be rebuilt from their source tables:
-after restoring Postgres from a backup, drop and re-create the mirrors so that they take a new snapshot of their
-sources.
+**pg_basebackup.** With the default directory, `pg_basebackup` fails while any mirror exists
+(`file name too long for tar format`): moonlink's file names are longer than the 99 characters Postgres' tar stream
+allows. To use `pg_basebackup`, also to create a standby, set `mooncake.data_directory` to a directory outside the data
+directory, for example `mooncake.data_directory = '/var/lib/pg_mooncake'`, and restart Postgres before creating
+mirrors. A non-default directory inside the data directory gets a startup `WARNING` for the same reason. Mirror data
+is then not part of a base backup. A copy started on the same host inherits the setting from `postgresql.conf`: give
+it its own `mooncake.data_directory` before starting it, or it refuses to start while the original server runs.
+
+**Restoring.** A restored copy starts with an empty moonlink directory: `mooncake.list_tables()` is empty, and reading a
+mirror fails with an error (`Table <database>.<schema>.<mirror> not found`). Drop and re-create each mirror to take a
+new snapshot of its source.
+
+**Standbys.** moonlink runs only once recovery finishes, so not on a standby: there, mirrors can't be read (queries on
+them fail with an error) and `mooncake.list_tables()` fails with `failed to connect to moonlink`. moonlink starts when
+the standby is promoted. A promoted standby keeps the mirrors whose files are in its `mooncake.data_directory`; drop and
+re-create the others.
 
 ## Security
 

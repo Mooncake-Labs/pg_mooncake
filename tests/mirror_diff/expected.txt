@@ -1,4 +1,4 @@
-# Known differences of tests/mirror_diff on this branch with its submodules (moonlink 0e38b435,
+# Known differences of tests/mirror_diff on this branch with its submodules (moonlink 37b040f9,
 # pg_duckdb v1.0.0-mooncake 12b6de7, duckdb_mooncake bd9e5f3), measured on PostgreSQL 17 with
 # the regression suite of PostgreSQL 17.10. mirror_diff is advisory (see README.md): other
 # majors have regression files these rules don't cover. The bug classes are those of

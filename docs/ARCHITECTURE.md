@@ -1,6 +1,6 @@
 # pg_mooncake architecture
 
-**Submodule pins.** moonlink `0e38b435`, pg_duckdb `v1.0.0-mooncake.1` (Mooncake-Labs/pg_duckdb), duckdb_mooncake
+**Submodule pins.** moonlink `37b040f9`, pg_duckdb `v1.0.0-mooncake.1` (Mooncake-Labs/pg_duckdb), duckdb_mooncake
 `bd9e5f3`, on DuckDB v1.4.1. This is the only place the docs list them. Statements tagged **[pins]**, here and in
 [AGENTS.md](../AGENTS.md), hold at these pins and must be re-verified when a pin moves.
 

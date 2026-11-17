@@ -1,5 +1,6 @@
 #[cfg(feature = "bgworker")]
 mod bgworker;
+mod data_directory;
 mod drop_tracking;
 mod duckdb_mooncake;
 mod functions;
@@ -14,6 +15,7 @@ extension_sql_file!("./sql/bootstrap.sql", bootstrap);
 
 #[pg_guard]
 extern "C-unwind" fn _PG_init() {
+    data_directory::init();
     #[cfg(feature = "bgworker")]
     bgworker::init();
     table::init();

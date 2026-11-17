@@ -10,7 +10,9 @@ pub(crate) fn init() {
         .set_library("pg_mooncake")
         .set_function("moonlink_main")
         .enable_shmem_access(None)
-        .set_start_time(BgWorkerStartTime::ConsistentState)
+        // Not on a standby: moonlink can't replicate from a read-only server, and its attempts would error the
+        // mirrors. Postgres starts the worker once recovery ends, at startup or on promotion.
+        .set_start_time(BgWorkerStartTime::RecoveryFinished)
         .set_restart_time(Some(Duration::from_secs(15)))
         .load();
 }
@@ -124,6 +126,6 @@ fn set_signal_mask(mask: &libc::sigset_t) {
 
 fn service_config() -> ServiceConfig {
     ServiceConfig {
-        base_path: "pg_mooncake".to_owned(),
+        base_path: crate::data_directory::data_directory(),
     }
 }

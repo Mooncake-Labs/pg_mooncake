@@ -62,7 +62,7 @@ pub(crate) fn connect(slot: &mut Option<UnixStream>) -> Result<&mut UnixStream, 
         *slot = None;
     }
     if slot.is_none() {
-        let stream = block_on(UnixStream::connect("pg_mooncake/moonlink.sock"))
+        let stream = block_on(UnixStream::connect(crate::data_directory::socket_path()))
             .map_err(RpcError::Connect)?;
         *slot = Some(stream);
     }

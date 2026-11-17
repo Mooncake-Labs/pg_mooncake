@@ -3,7 +3,7 @@
 #
 # Usage: scripts/e2e-smoke.sh <pg_major> [scenario ...]
 #   scenarios: build main schema restart_after_drop persist moonlink_down ddl ddl_drop truncate
-#              source_drop_restart config_reload mirror_writes roles big_txn_restart crash
+#              source_drop_restart config_reload mirror_writes roles big_txn_restart crash basebackup
 #              (default: all; each on a fresh cluster)
 # Requires Linux, bash >= 4, GNU coreutils (timeout, date), procps (pgrep, ps), diff and GNU find; checked
 # before anything else runs.
@@ -67,7 +67,7 @@ unset LANGUAGE
 [[ $# -ge 1 && $1 =~ ^[0-9]+$ ]] || { echo "usage: $0 <pg_major> [scenario ...]" >&2; exit 2; }
 MAJOR=$1; shift
 ALL_SCENARIOS=(build main schema restart_after_drop persist moonlink_down ddl ddl_drop truncate source_drop_restart
-  config_reload mirror_writes roles big_txn_restart crash)
+  config_reload mirror_writes roles big_txn_restart crash basebackup)
 SCENARIOS=("$@"); [[ ${#SCENARIOS[@]} -eq 0 ]] && SCENARIOS=("${ALL_SCENARIOS[@]}")
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 if [[ -z ${PG_PREFIX:-} ]] && command -v pg_config > /dev/null; then PG_PREFIX=$(dirname "$(pg_config --bindir)"); fi
@@ -512,6 +512,7 @@ duckdb.extension_directory = '$EXTDIR'
 lc_messages = 'C'
 # worker_errors finds bgworker lines by "[<pid>] ".
 log_line_prefix = '%m [%p] '
+${CLUSTER_EXTRA_CONF:-}
 EOF
   start || { result start 1 "$(tail -3 "$OUT/postgres.log")"; return 1; }
   run create_extension -c "CREATE EXTENSION pg_mooncake CASCADE"
@@ -1479,6 +1480,91 @@ SQL
   restart_gate crash c c_mc immediate
   cdc_after_resnapshot c c_mc "DELETE FROM c WHERE id BETWEEN 1 AND 500"
   end_cluster
+}
+
+# ================================================================================================
+# pg_basebackup with moonlink's directory (mooncake.data_directory) outside the data directory, and the copies of
+# the backup: one that shares the primary's moonlink directory refuses to start; one with its own directory serves,
+# and its mirrors, whose moonlink data isn't in the backup, error until they are re-created; a standby runs no
+# moonlink until it is promoted.
+
+# use_cluster <scenario> <data dir> <port>: run the next checks on another cluster, as <scenario>.
+use_cluster() {
+  SCEN=$1; DATA=$2; PGPORT=$3; OUT=$E2E_DIR/out-$MAJOR-$1
+  FENCE_SRC=e2e_fence; FENCE_MC=e2e_fence_mc; FENCE_N=0; ALLOWED_EXIT_LINES=""; CLUSTER_STOPPED=0; SESSION_CRASHES=0
+  rm -rf -- "$OUT"; mkdir -p "$OUT"
+}
+# start_copy <check> <moonlink dir>: start the cluster in DATA (a backup) on PGPORT with its own moonlink directory.
+start_copy() {
+  printf "port = %s\nmooncake.data_directory = '%s'\n" "$PGPORT" "$2" >> "$DATA/postgresql.conf"
+  if start; then result "$1" 0; else result "$1" 1 "$(grep -a -E 'FATAL|PANIC' "$OUT/postgres.log" | head -2 | one_line 240)"; return 1; fi
+}
+scenario_basebackup() {
+  local mdir=$E2E_DIR/mooncake-$MAJOR-basebackup bb=$E2E_DIR/basebackup-$MAJOR port=$PGPORT out rc f
+  rm -rf -- "$mdir" "$mdir-copy" "$mdir-standby" "$bb"; mkdir -p "$bb"
+  local CLUSTER_EXTRA_CONF="mooncake.data_directory = '$mdir'"
+  new_cluster basebackup || return
+  check_eq data_directory_setting "$(psqlq -c "SELECT setting || ' ' || context FROM pg_settings WHERE name = 'mooncake.data_directory'" 2>&1)" "$mdir postmaster"
+  run setup <<'SQL'
+CREATE TABLE b (id int PRIMARY KEY, v text);
+INSERT INTO b SELECT g, md5(g::text) FROM generate_series(1, 1000) g;
+CALL mooncake.create_table('b_mc', 'b');
+INSERT INTO b VALUES (1001, 'after create_table');
+SQL
+  compare before_backup b b_mc
+  if [[ -S $mdir/moonlink.sock && ! -e $DATA/pg_mooncake ]]; then result moonlink_files_outside_data_dir 0
+  else result moonlink_files_outside_data_dir 1 "socket in $mdir: $([[ -S $mdir/moonlink.sock ]] && echo yes || echo no), $DATA/pg_mooncake exists: $([[ -e $DATA/pg_mooncake ]] && echo yes || echo no)"; fi
+  for f in plain:p:"" tar:t:"" standby:p:-R; do
+    IFS=: read -r name format extra <<< "$f"
+    if out=$("$BIN/pg_basebackup" -D "$bb/$name" -F"$format" -X stream -c fast $extra 2>&1); then result "basebackup_$name" 0
+    else result "basebackup_$name" 1 "$(echo "$out" | one_line 240)"; fi
+  done
+  # The copy's postgresql.conf names the primary's moonlink directory.
+  if [[ ${STATUS_OF[$SCEN.basebackup_plain]} != PASS ]]; then result copy_sharing_moonlink_dir_refused skip "no plain backup"
+  else
+    echo "port = $((port + 100))" >> "$bb/plain/postgresql.conf"
+    "$BIN/pg_ctl" -D "$bb/plain" -l "$OUT/copy_sharing_moonlink_dir.log" -w -t 30 start > /dev/null 2>&1; rc=$?
+    if (( rc != 0 )) && grep -aq "mooncake.data_directory \".*\" is in use by another server" "$OUT/copy_sharing_moonlink_dir.log"; then
+      result copy_sharing_moonlink_dir_refused 0
+    else
+      result copy_sharing_moonlink_dir_refused 1 "pg_ctl start rc=$rc: $(grep -a -E 'FATAL|ERROR' "$OUT/copy_sharing_moonlink_dir.log" | head -2 | one_line 200)"
+      "$BIN/pg_ctl" -D "$bb/plain" -m immediate -w stop > /dev/null 2>&1
+    fi
+  fi
+  end_cluster
+
+  [[ ${STATUS_OF[basebackup.basebackup_plain]} == PASS ]] && use_cluster basebackup_copy "$bb/plain" $((port + 100)) &&
+    start_copy copy_started "$mdir-copy" && {
+    if wait_ready; then result service_up 0; else result service_up 1 "mooncake.list_tables() not answering within 60s: $(echo "$WAIT_ERR" | one_line 160)"; fi
+    no_crash_loop no_crash_loop
+    out=$(psqlq -c "SELECT count(*) FROM b_mc" 2>&1); rc=$?
+    if (( rc != 0 && rc < 124 )) && [[ $out =~ ERROR:.*Table\ postgres\.public\.b_mc\ not\ found ]] && pg_alive; then
+      result mirror_without_moonlink_data_errors 0 "$(echo "$out" | one_line 160)"
+    else result mirror_without_moonlink_data_errors 1 "rc=$rc: $(echo "$out" | one_line 200)"; fi
+    fresh_fence fresh_fence_setup
+    resnapshot_check resnapshot b b_mc
+    cdc_after_resnapshot b b_mc "INSERT INTO b VALUES (1002, 'on the copy')"
+    end_cluster
+  }
+
+  [[ ${STATUS_OF[basebackup.basebackup_standby]} == PASS ]] && use_cluster basebackup_standby "$bb/standby" $((port + 200)) &&
+    start_copy standby_started "$mdir-standby" && {
+    if poll_until 30 sql_is "SELECT pg_is_in_recovery()" t; then result standby_in_recovery 0
+    else result standby_in_recovery 1 "pg_is_in_recovery(): $(psqlq -c "SELECT pg_is_in_recovery()" 2>&1 | one_line 120)"; fi
+    sleep 5
+    if moonlink_gone; then result no_moonlink_on_standby 0; else result no_moonlink_on_standby 1 "moonlink bgworker pid $(moonlink_pid) on a standby"; fi
+    out=$(psqlq -c "SELECT count(*) FROM mooncake.list_tables()" 2>&1); rc=$?
+    if (( rc != 0 && rc < 124 )) && [[ $out =~ ERROR:.*failed\ to\ connect\ to\ moonlink ]] && pg_alive; then result list_tables_errors_on_standby 0
+    else result list_tables_errors_on_standby 1 "rc=$rc: $(echo "$out" | one_line 200)"; fi
+    if out=$("$BIN/pg_ctl" -D "$DATA" -w -t 60 promote 2>&1) && poll_until 30 sql_is "SELECT pg_is_in_recovery()" f; then result promote 0
+    else result promote 1 "$(echo "$out" | one_line 200)"; fi
+    if wait_ready; then result service_up_after_promote 0; else result service_up_after_promote 1 "mooncake.list_tables() not answering within 60s: $(echo "$WAIT_ERR" | one_line 160)"; fi
+    no_crash_loop no_crash_loop_after_promote
+    fresh_fence fresh_fence_setup
+    resnapshot_check resnapshot b b_mc
+    end_cluster
+  }
+  return 0
 }
 
 # ================================================================================================

@@ -1,0 +1,9 @@
+-- moonlink's directory is set at server start; the default is relative to the data directory.
+SELECT name, setting, context FROM pg_settings WHERE name = 'mooncake.data_directory';
+          name           |   setting   |  context   
+-------------------------+-------------+------------
+ mooncake.data_directory | pg_mooncake | postmaster
+(1 row)
+
+SET mooncake.data_directory = '/tmp';
+ERROR:  parameter "mooncake.data_directory" cannot be changed without restarting the server

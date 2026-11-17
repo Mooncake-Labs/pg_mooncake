@@ -1,5 +1,5 @@
 # Known failures of scripts/e2e-smoke.sh on this branch with its submodules (moonlink v0.3-dev
-# 977dc549; pg_duckdb v1.0.0-mooncake 12b6de7).
+# 0e38b435; pg_duckdb v1.0.0-mooncake 12b6de7).
 #
 #   bug <name> class=blocking|class=limitation <description>
 #   check <scenario.check> <bug> <regex>

@@ -5,11 +5,6 @@ CREATE TABLE p1 PARTITION OF p FOR VALUES FROM (0) TO (50);
 CREATE TABLE p2 PARTITION OF p FOR VALUES FROM (50) TO (100);
 INSERT INTO p SELECT g, 'old_' || g FROM generate_series(0, 79) g;
 CALL mooncake.create_table('p_mc', 'p');
--- Persist the copy before reading it. A forced snapshot waits only for this session's last commit, which here comes
--- before the copy, so write first; the row is removed again right after.
-INSERT INTO p VALUES (99, 'snapshot');
-CALL mooncake.create_snapshot('p_mc');
-DELETE FROM p WHERE a = 99;
 SELECT count(*), sum(a) FROM p_mc;
 UPDATE p SET b = 'changed' WHERE a % 5 = 0;
 UPDATE p SET a = a + 50 WHERE a BETWEEN 40 AND 44;

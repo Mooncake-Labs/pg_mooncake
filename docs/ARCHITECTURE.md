@@ -1,6 +1,6 @@
 # pg_mooncake architecture
 
-**[pins]** Describes pg_mooncake 0.3.0 (unreleased) with moonlink `977dc549` (its v0.3-dev branch), pg_duckdb `12b6de7` (`7daa8e5` plus the upstream TimeZone hook fix), duckdb_mooncake `bd9e5f3`, and
+**[pins]** Describes pg_mooncake 0.3.0 (unreleased) with moonlink `0e38b435` (its v0.3-dev branch), pg_duckdb `12b6de7` (`7daa8e5` plus the upstream TimeZone hook fix), duckdb_mooncake `bd9e5f3`, and
 DuckDB v1.4.1. Statements tagged **[pins]** must be re-verified when a submodule pin moves.
 
 ## Processes and data flow
@@ -40,7 +40,8 @@ DuckDB v1.4.1. Statements tagged **[pins]** must be re-verified when a submodule
    **separate, autocommitted connection** (outside the caller's transaction), then sends RPC `CreateTable`. moonlink rejects
    unsupported column types (and partitioned sources without a primary key), sets `REPLICA IDENTITY FULL` on `src` and
    each of its partitions, adds `src` to the publication, copies an initial snapshot (staged under `initial_copy/`), and
-   streams changes from the slot. **[pins]**
+   streams changes from the slot. It answers `CreateTable` only once the copy is persisted to Iceberg and the mirror is
+   then recorded in its sqlite metadata store. **[pins]**
 5. **A query on `dst`**: pg_duckdb sends it to DuckDB. On load, duckdb_mooncake runs `pgmooncake_get_init_query`
    (`ATTACH … TYPE mooncake …`). Table lookup does RPC `GetTableSchema`. The scan does RPC
    `ScanTableBegin(lsn = this backend's XactLastCommitEnd)`, then DuckDB's parquet reader reads the returned data files,

@@ -76,8 +76,7 @@ pg_mooncake 0.3.0 runs on a slimmed-down moonlink.
 - Dropping a mirror created by 0.2 whose name needs quoting (mixed case, `$`) also removes it from moonlink.
 
 ### Fixed in moonlink
-- A restart or a reconnect no longer loses or duplicates rows once a mirror's initial copy has been persisted (see Known
-  limitations for a restart right after `mooncake.create_table`), and `pg_wal` no longer grows behind idle or empty
+- A restart or a reconnect no longer loses or duplicates rows, and `pg_wal` no longer grows behind idle or empty
   mirrors. ([moonlink PR 2364][ml-2364])
 - A mirror that cannot follow its source no longer crashes the background worker, stops replication for the other
   mirrors, or silently diverges: it enters the errored state, and dropping it no longer hangs. A mirror that cannot be
@@ -97,8 +96,17 @@ pg_mooncake 0.3.0 runs on a slimmed-down moonlink.
 - `mooncake.create_snapshot` could return before the data was durable in Iceberg. ([moonlink PR 2369][ml-2369])
 - The initial copy of a new mirror converts dates, timestamps and copied rows without allocating per value, which fixes
   its slowdown against 0.2. ([moonlink PR 2370][ml-2370])
-<!-- RC: add the two remaining moonlink follow-ups (stream-abort liveness; a text value of backslash-N read as NULL by the
-     initial copy) and move the moonlink submodule to the release commit. -->
+- The initial copy stores a text value of backslash-N (`\N`) as that text instead of NULL, and rejects a copied row with
+  fewer columns than the table instead of storing its values in the wrong columns. ([moonlink PR 2371][ml-2371])
+- `mooncake.create_snapshot` no longer waits forever on an idle mirror after a streamed transaction aborts. ([moonlink
+  PR 2372][ml-2372])
+- A restart of moonlink right after `mooncake.create_table` returns no longer loses the rows of the new mirror's initial
+  copy: `mooncake.create_table` now returns only once the copy is durable in Iceberg. That makes it slower, by roughly
+  0.4 s per million narrow rows in a local test. If the moonlink worker restarts before it returns, the call fails,
+  leaves no mirror behind and can be retried. After a server restart or crash during the call, drop the empty mirror
+  table before retrying. If the disk fills up while the copy is being persisted, `mooncake.create_table` fails with an
+  error; dropping the mirror from another session during the call makes the call fail and leaves nothing behind.
+  ([moonlink PR 2373][ml-2373], [moonlink PR 2374][ml-2374])
 
 ### Removed
 - `mooncake.load_files`.
@@ -125,11 +133,8 @@ pg_mooncake 0.3.0 runs on a slimmed-down moonlink.
 - `interval` and `inet` columns cannot be mirrored: `mooncake.create_table` rejects a source table that has one.
 - Dropping a mirror leaves its empty directory under `pg_mooncake/initial_copy` in the data directory.
 - Moonlink calls other than the one made by `DROP TABLE` have no timeout.
-- If moonlink restarts within about half a second after `mooncake.create_table` returns (a fast server stop or restart,
-  or the moonlink worker being stopped), the new mirror loses the rows of its initial copy, without an error. To avoid
-  it, write to the source table and run `CALL mooncake.create_snapshot('<mirror>')` in the same session after
-  `mooncake.create_table`; if it happened, drop and re-create the mirror.
-  <!-- RC: remove this entry if the moonlink fix for losing the initial copy on an early restart lands before the tag. -->
+- If the server stops or crashes while `mooncake.create_table` runs, the new, empty mirror table stays in Postgres, and
+  creating the mirror again fails until it is removed with `DROP TABLE`.
 - Composite and domain-over-composite columns read back from a mirror as DuckDB STRUCT values, e.g.
   `{'f1': 1, 'f2': 'foo'}` instead of `(1,foo)`. The values are preserved; compare or extract fields (`(c).f1`) rather
   than the row text. Comparing the whole value with a row (`c = ROW(1, 'foo')::t`) fails in DuckDB.
@@ -146,6 +151,10 @@ pg_mooncake 0.3.0 runs on a slimmed-down moonlink.
 [ml-2368]: https://github.com/Mooncake-Labs/moonlink/pull/2368
 [ml-2369]: https://github.com/Mooncake-Labs/moonlink/pull/2369
 [ml-2370]: https://github.com/Mooncake-Labs/moonlink/pull/2370
+[ml-2371]: https://github.com/Mooncake-Labs/moonlink/pull/2371
+[ml-2372]: https://github.com/Mooncake-Labs/moonlink/pull/2372
+[ml-2373]: https://github.com/Mooncake-Labs/moonlink/pull/2373
+[ml-2374]: https://github.com/Mooncake-Labs/moonlink/pull/2374
 
 ## 0.1.2 (2025-02-11)
 ### Added

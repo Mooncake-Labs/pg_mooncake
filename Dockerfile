@@ -16,8 +16,10 @@ RUN apt-get update \
     git \
     libclang-dev \
     libcurl4-openssl-dev \
+    libicu-dev \
     liblz4-dev \
     libssl-dev \
+    libxml2-dev \
     ninja-build \
     pkg-config \
     postgresql-server-dev-18 \

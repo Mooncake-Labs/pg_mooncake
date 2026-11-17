@@ -1,7 +1,8 @@
 # pg_mooncake architecture
 
-**[pins]** Describes pg_mooncake 0.3.0 (unreleased) with moonlink `0e38b435` (its v0.3-dev branch), pg_duckdb `12b6de7` (`7daa8e5` plus the upstream TimeZone hook fix), duckdb_mooncake `bd9e5f3`, and
-DuckDB v1.4.1. Statements tagged **[pins]** must be re-verified when a submodule pin moves.
+**Submodule pins.** moonlink `0e38b435`, pg_duckdb `v1.0.0-mooncake.1` (Mooncake-Labs/pg_duckdb), duckdb_mooncake
+`bd9e5f3`, on DuckDB v1.4.1. This is the only place the docs list them. Statements tagged **[pins]**, here and in
+[AGENTS.md](../AGENTS.md), hold at these pins and must be re-verified when a pin moves.
 
 ## Processes and data flow
 
@@ -14,7 +15,7 @@ DuckDB v1.4.1. Statements tagged **[pins]** must be re-verified when a submodule
             │        reads parquet + puffin files directly ◄───┐          │  socket)  │
             │                                                   │          ▼           │
             │ bgworker "moonlink" (pg_mooncake.so → moonlink_service)                 │
-            │   Unix RPC server  $PGDATA/pg_mooncake/moonlink.sock                      │
+            │   Unix RPC server  <mooncake.data_directory>/moonlink.sock                │
             │   per src_uri:  logical replication client (slot moonlink_slot_<db>,     │
             │                 publication moonlink_pub) ◄── pgoutput from the source    │
             │   per mirror:   table handler → mem buffers → parquet + index files       │
@@ -26,15 +27,16 @@ DuckDB v1.4.1. Statements tagged **[pins]** must be re-verified when a submodule
 1. **`CREATE EXTENSION pg_mooncake CASCADE`** creates schema `mooncake`, the procedures/functions, the `mooncake`
    table access method, the `sql_drop` event trigger, and installs the DuckDB `mooncake` extension
    (`duckdb.install_extension('mooncake','community')`, a prebuilt download by default).
-2. **`_PG_init`** (needs `shared_preload_libraries`, after `pg_duckdb`) registers the `moonlink` background worker
-   (cargo feature `bgworker`; start at consistent state; restart after 15 s on non-zero exit) and registers the `mooncake`
-   AM with pg_duckdb (`RegisterDuckdbTableAm`).
-3. **The worker** runs `moonlink_service::start_with_config` with `base_path = "pg_mooncake"` (relative to `$PGDATA`):
+2. **`_PG_init`** (needs `shared_preload_libraries`, after `pg_duckdb`) reads `mooncake.data_directory` and, in the
+   postmaster, checks it (`src/data_directory.rs`). It registers the `moonlink` background worker (cargo feature
+   `bgworker`; start when recovery finishes, so not on standbys but on promotion; restart after 15 s on non-zero exit)
+   and registers the `mooncake` AM with pg_duckdb (`RegisterDuckdbTableAm`).
+3. **The worker** runs `moonlink_service::start_with_config` with `base_path` = `mooncake.data_directory` (default
+   `pg_mooncake`, relative to `$PGDATA`):
    sqlite metadata store, then recovery of every registered table from its latest Iceberg snapshot. A mirror with an
-   errored marker stays errored; one that fails recovery is errored (or retried, for a transient failure); moonlink warns
-   about mirrors that still have files in a 0.2 `_wal/` directory. Replication then starts from each slot's confirmed
-   position, so changes after the last snapshot are replayed from the slot. Then the Unix-socket RPC server. Logs go to
-   stdout/stderr, which ends up in the Postgres log.
+   errored marker stays errored; one that fails recovery is errored (or retried, for a transient failure). Replication
+   then starts from each slot's confirmed position, so changes after the last snapshot are replayed from the slot. Then
+   the Unix-socket RPC server. Logs go to stdout/stderr, which ends up in the Postgres log.
 4. **`mooncake.create_table(dst, src, src_uri, table_config)`** connects with libpq to `src_uri` (default: loopback via
    the first `unix_socket_directories`) and reads `src`'s columns. It then runs `CREATE TABLE dst (…) USING mooncake` on a
    **separate, autocommitted connection** (outside the caller's transaction), then sends RPC `CreateTable`. moonlink rejects
@@ -49,14 +51,19 @@ DuckDB v1.4.1. Statements tagged **[pins]** must be re-verified when a submodule
    materialized as temp parquet files for the duration of the scan.
 6. **Dropping a mirror**: an `object_access_hook` notes that the dropped relation is a mirror, then the `sql_drop`
    event trigger queues it, and a pre-commit transaction callback sends RPC `DropTable` if the drop is still in effect
-   (one 30 s deadline for all drops of the transaction). A failure becomes a WARNING and the DROP still commits.
-   moonlink removes the table's files, its sqlite row, and the source's publication membership. Replication connections are keyed by `src_uri`: once
-   the last mirror of a `src_uri` is gone, moonlink drops that slot and publication.
+   (one 30 s deadline for all drops of the transaction). A failure becomes a WARNING and the DROP still commits
+   (invariants: [AGENTS.md](../AGENTS.md#2-other-invariants), section 2, item 5).
+   moonlink removes the table's files, its sqlite row, and the source's publication membership. Replication
+   connections are keyed by `src_uri`: once the last mirror of a `src_uri` is gone, moonlink drops that slot and
+   publication.
 
 The mirror's own PG table (`USING mooncake`) holds no data. Its AM callbacks are `unimplemented!()` except the ones
 needed for DDL and planning, so direct DML on a mirror errors out.
 
 ## Wire format (moonlink_rpc), shared with the prebuilt duckdb_mooncake
+
+The invariants that keep it compatible are in [AGENTS.md](../AGENTS.md#1-contract-with-duckdb_mooncake-never-change-these),
+section 1.
 
 Framing: u32 native-endian length + bincode `config::standard()` payload. Request = enum `Request` (variant **index**
 on the wire). Response = `Result<T, moonlink_error::ErrorStruct>`.
@@ -69,7 +76,7 @@ on the wire). Response = `Result<T, moonlink_error::ErrorStruct>`.
 | 3 | GetParquetMetadatas | data_files | Vec<Vec<u8>> | nobody |
 | 4 | GetTableSchema | database, table | Arrow IPC stream (schema only) | duckdb_mooncake |
 | 5 | ListTables | – | Vec<Table{database, table, cardinality, commit_lsn, flush_lsn: Option, iceberg_warehouse_location}> | pg_mooncake |
-| 6 | LoadFiles | database, table, files | always an "unsupported" error **[pins]** | nobody (the SQL procedure was removed); kept for the variant order |
+| 6 | LoadFiles | database, table, files | always an "unsupported" error **[pins]** | nobody: no SQL procedure exists in 0.3.0; the variant is kept for the wire order |
 | 7 | OptimizeTable | database, table, mode (`data`/`index`/`full`) | () | pg_mooncake |
 | 8 | ScanTableBegin | database, table, lsn: u64 | Vec<u8> (layout below) | duckdb_mooncake |
 | 9 | ScanTableEnd | database, table | () | duckdb_mooncake |
@@ -86,7 +93,7 @@ n_pos, {data_file_number, data_file_row_number}[n_pos]              sorted
 data file paths (concatenated bytes), puffin file paths (concatenated bytes)
 ```
 
-## On-disk state (`$PGDATA/pg_mooncake`) **[pins]**
+## On-disk state (`mooncake.data_directory`, default `$PGDATA/pg_mooncake`) **[pins]**
 
 | Path | Contents |
 |---|---|
@@ -99,8 +106,8 @@ data file paths (concatenated bytes), puffin file paths (concatenated bytes)
 | `source_fingerprints/` | Per mirror, the source table's oid, columns and partitions when the mirror was created; compared at recovery and polled while replicating, and any difference errors the mirror |
 | `.moonlink_atomic_tmp/` | Temporary files of atomic writes |
 | `moonlink.sock` | The RPC socket |
+| `moonlink.lock` | Held (`flock`) by the postmaster that uses the directory; records its PID and data directory. Stays after shutdown |
 | `temp/`, `read_through_cache/` | Scratch space; recreated at worker start |
-| `_wal/` | Only after an upgrade from 0.2: that version's WAL. 0.3 ignores it except for a startup warning |
 
 ## Consistency model
 

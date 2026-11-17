@@ -181,6 +181,13 @@ If you stop using pg_mooncake, drop all mirrors so that the slot is dropped and 
 `wal_level = logical`, and the user needs permission to replicate and to alter the source table.
 <!-- RC: src_uri is not covered by the release tests; test it or drop this paragraph. -->
 
+**Column types.** Mirrors store booleans, character and text types, integers, floating-point numbers, `numeric` (up to
+38 digits), `bytea`, dates, times and timestamps (not `timetz`), `uuid`, `json`/`jsonb`, `oid` and enums, and arrays,
+composites and domains of these; `mooncake.create_table` refuses a source with any other column type. Some values read
+back differently from a mirror (unconstrained `numeric` with 10 fractional digits, `char(n)` without trailing blanks,
+composites as DuckDB STRUCT text), and enums sort as text. The CHANGELOG's
+[Known limitations](CHANGELOG.md#known-limitations) has the full list.
+
 **Renames and schema changes.** moonlink keeps each mirror under the database, schema and table name it was created
 with. pg_mooncake rejects renaming a mirror, moving it to another schema, and renaming a schema that contains mirrors.
 `ALTER DATABASE ... RENAME TO` fails while the database has mirrors, because moonlink's replication connections use

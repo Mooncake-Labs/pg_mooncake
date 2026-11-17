@@ -128,11 +128,23 @@ Measured with the project's benchmark on an 8-vCPU, 62 GiB-RAM NVMe machine (Pos
   METHOD`), or made a partition or an inheritance child of another table, and a schema that contains mirrors cannot be
   renamed. moonlink keeps a mirror under the name it was created with; drop the mirror and create it again under the
   new name instead. `ALTER DATABASE ... RENAME TO` fails while the database has mirrors.
-- `interval` and `inet` columns cannot be mirrored: `mooncake.create_table` rejects a source table that has one.
+- Mirrors store only these column types: `boolean`, `"char"`, `char(n)`, `varchar`, `text`, `name`, `smallint`,
+  `integer`, `bigint`, `real`, `double precision`, `numeric` (precision up to 38, scale from 0 to the precision),
+  `bytea`, `date`, `time`, `timestamp`, `timestamptz`, `uuid`, `json`, `jsonb`, `oid` and enums, and arrays, composites
+  and domains built on them. `mooncake.create_table` refuses a source with any other column type, for example
+  `interval`, `timetz`, `inet`, `cidr`, `macaddr`, `macaddr8`, `money`, `bit`, `varbit`, `pg_lsn`, `xml`, `tsvector`,
+  `tsquery`, range and geometric types, and types from other extensions.
 - `infinity` and `-infinity` dates and timestamps cannot be stored. `mooncake.create_table` fails on a source that has
   one, and one written later puts the mirror into the errored state.
-- Unconstrained `numeric` columns are stored as `decimal(38, 10)`. A value with more than 10 fractional digits puts the
-  mirror into the errored state; give such a column an explicit precision and scale instead.
+- Unconstrained `numeric` columns, and the elements of `numeric` arrays, are stored as `decimal(38, 10)` and read back
+  with 10 fractional digits (`1` as `1.0000000000`); the values compare equal. A `numeric` value that doesn't fit its
+  stored type (more fractional digits than its scale, more digits than its precision, or `NaN`, `Infinity` and
+  `-Infinity`) makes `mooncake.create_table` fail if the source has it, and puts the mirror into the errored state if
+  it is written later. Give an unconstrained column an explicit precision and scale to choose the stored type.
+- Enum columns compare and sort as text on a mirror, not in the enum's declared order: `ORDER BY`, comparisons and
+  `min()`/`max()` follow the labels' text order (`min()` of `'red'` and `'blue'` is `'blue'`). Comparing an enum
+  column with a literal (`WHERE c = 'red'`) fails in DuckDB with `Type with name <enum> does not exist`; compare its
+  text instead (`WHERE c::text = 'red'`).
 - `char(n)` values come back from a mirror without their trailing blanks. Postgres ignores those blanks when it compares
   `char(n)` values and in `length()`, so only the displayed value differs.
 - Composite and domain-over-composite columns read back from a mirror as DuckDB STRUCT values, e.g.

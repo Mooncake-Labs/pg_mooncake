@@ -150,9 +150,10 @@ reads the source (`SELECT`). Reading mirrors needs, in practice, a superuser as 
 Run queries on mirrors as a superuser or as one trusted role that has all three, not as application roles that should
 see only some of the data. See [Security](#security).
 
-**Where data lives.** Mirrors are stored on the local filesystem under `$PGDATA/pg_mooncake/`. This includes the
-Iceberg tables (filesystem catalog; `mooncake.list_tables()` shows each table's location), moonlink's metadata, caches,
-and the Unix socket `moonlink.sock`. Plan disk space for it alongside your Postgres data.
+**Where data lives.** Mirrors are stored on the local filesystem, by default under `$PGDATA/pg_mooncake/` (the
+`mooncake.data_directory` setting, see [Backups and standbys](#backups-and-standbys)). This includes the Iceberg tables
+(filesystem catalog; `mooncake.list_tables()` shows each table's location), moonlink's metadata, caches, and the Unix
+socket `moonlink.sock`. Plan disk space for it alongside your Postgres data.
 
 **The moonlink worker.** Moonlink runs inside Postgres as a background worker named `moonlink` and logs to the
 Postgres server log. Postgres restarts it 15 seconds after a crash.
@@ -196,15 +197,25 @@ Unknown keys are ignored. Other moonlink settings, such as `"iceberg"` storage, 
 
 **Monitoring.** `SELECT * FROM mooncake.list_tables();` lists the mirrors with their commit and flush LSNs.
 
-**Backups and standbys.** `pg_basebackup` fails on a server that has mirrors (`file name too long for tar format`):
-moonlink's file names under `$PGDATA/pg_mooncake` are longer than the 99 characters Postgres' tar stream allows. This
-also stops `pg_basebackup` from creating a standby. Drop the mirrors before running it, or use a file-system-level
-backup. Mirrors can be rebuilt from their source tables, so after restoring Postgres from any backup, drop and
-re-create the mirrors.
 
 **Removing pg_mooncake.** Drop all mirrors first (`DROP TABLE <mirror>;`): `DROP EXTENSION pg_mooncake CASCADE` would
 drop the mirror tables without telling moonlink, which keeps replicating them. Then `DROP EXTENSION pg_mooncake;`, remove it
 from `shared_preload_libraries`, restart Postgres, and delete `$PGDATA/pg_mooncake/`.
+
+## Backups and standbys
+
+<!-- RC: confirm mooncake.data_directory semantics from the code PR -->
+moonlink stores mirrors in the directory named by `mooncake.data_directory`, a setting that takes effect at server
+start (in `postgresql.conf`). The default, `pg_mooncake`, is relative to the data directory, so mirrors live in
+`$PGDATA/pg_mooncake/`. With that default, `pg_basebackup` fails while any mirror exists
+(`file name too long for tar format`): moonlink's file names there are longer than the 99 characters Postgres' tar
+stream allows, and this also stops `pg_basebackup` from creating a standby. To use `pg_basebackup` or streaming
+standbys, set `mooncake.data_directory` to an absolute path outside `$PGDATA`, for example
+`mooncake.data_directory = '/var/lib/pg_mooncake'`, and restart Postgres before creating mirrors.
+
+Mirror data is then not part of a base backup, and a standby has none. Mirrors can be rebuilt from their source tables:
+after restoring Postgres from a backup, drop and re-create the mirrors so that they take a new snapshot of their
+sources.
 
 ## Security
 

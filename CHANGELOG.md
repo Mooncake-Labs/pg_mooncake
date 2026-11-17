@@ -104,6 +104,10 @@ tables of its own, and nothing is migrated from it; see [Coming from 0.1.x](READ
   affect later calls in the session, and the next call reconnects, also after the moonlink worker restarted.
 - The moonlink background worker is restarted 15 s after it exits outside a server shutdown, including when it is
   stopped with SIGTERM (for example a `kill` of the worker). A fast shutdown stops it cleanly.
+- `mooncake.data_directory` (set at server start) is where moonlink stores mirrors: `pg_mooncake` under the data
+  directory by default, or an absolute path outside it. See the README's
+  [Backups and standbys](README.md#backups-and-standbys).
+  <!-- RC: confirm mooncake.data_directory semantics from the code PR -->
 
 ### Performance
 Measured with the project's benchmark on an 8-vCPU, 62 GiB-RAM NVMe machine (PostgreSQL 17.10, release build, a
@@ -139,9 +143,10 @@ Measured with the project's benchmark on an 8-vCPU, 62 GiB-RAM NVMe machine (Pos
 - Identifiers containing `.` are rejected.
 - Only the writing session reads its own changes immediately. Other sessions see a change once moonlink applies it,
   about half a second later (longer after large transactions).
-- `pg_basebackup` fails on a server that has mirrors (`file name too long for tar format`): moonlink's file names
-  under `$PGDATA/pg_mooncake` are longer than Postgres' tar format allows. This also prevents creating a standby with
-  it. Drop the mirrors first, or use a file-system-level backup; after any restore, drop and re-create the mirrors.
+- With the default `mooncake.data_directory`, `pg_basebackup` fails while any mirror exists (`file name too long for
+  tar format`), which also prevents creating a standby with it: moonlink's file names under `$PGDATA/pg_mooncake` are
+  longer than Postgres' tar format allows. Set `mooncake.data_directory` outside the data directory to use
+  `pg_basebackup`. Mirror data is not part of a base backup; after a restore, drop and re-create the mirrors.
 - If moonlink restarts while `mooncake.create_table` runs, the call fails. After a restart of only the moonlink worker,
   nothing is left behind and the call can be retried. After a server stop or crash, the new, empty mirror table stays in
   Postgres, and creating the mirror again fails until it is removed with `DROP TABLE`.

@@ -105,6 +105,9 @@ tables of its own, and nothing is migrated from it; see [Coming from 0.1.x](READ
   describing how to clean up moonlink's copy. All mirror drops of one transaction wait at most 30 s in total. A drop
   undone by `ROLLBACK TO SAVEPOINT` or an exception block keeps the mirror in moonlink.
 - `PREPARE TRANSACTION` in a transaction that drops a mirror is an error.
+- Dropping a mirror and creating it again at once, the documented way to resnapshot, keeps the new mirror: moonlink
+  removes a dropped mirror's source from its publication by the table's identity, not its name, and a new connection
+  to the same database waits for the previous one to finish shutting down. ([moonlink PR 2376][ml-2376])
 - Dropping regular tables, including with `DROP SCHEMA ... CASCADE`, never contacts moonlink, so it works while
   moonlink is down.
 
@@ -208,6 +211,7 @@ Measured with the project's benchmark on an 8-vCPU, 62 GiB-RAM NVMe machine (Pos
 [ml-2372]: https://github.com/Mooncake-Labs/moonlink/pull/2372
 [ml-2373]: https://github.com/Mooncake-Labs/moonlink/pull/2373
 [ml-2374]: https://github.com/Mooncake-Labs/moonlink/pull/2374
+[ml-2376]: https://github.com/Mooncake-Labs/moonlink/pull/2376
 
 ## 0.1.2 (2025-02-11)
 ### Added

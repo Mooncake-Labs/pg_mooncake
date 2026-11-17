@@ -1,7 +1,9 @@
 [package]
 name = "pg_mooncake"
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
+# Keep in sync with rust-toolchain.toml; .cargo/config.toml makes Cargo resolve dependencies that build with it.
+rust-version = "1.88"
 
 [lib]
 crate-type = ["cdylib", "lib"]
@@ -12,6 +14,8 @@ path = "./src/bin/pgrx_embed.rs"
 
 [features]
 default = ["bgworker", "pg18"]
+# Runs moonlink in a background worker; without it, moonlink must run standalone and serve moonlink.sock in
+# mooncake.data_directory.
 bgworker = ["moonlink_service"]
 pg14 = ["pgrx/pg14"]
 pg15 = ["pgrx/pg15"]
@@ -20,14 +24,15 @@ pg17 = ["pgrx/pg17"]
 pg18 = ["pgrx/pg18"]
 
 [dependencies]
-bincode = "2"
+libc = "0.2"
 moonlink_rpc.path = "moonlink/src/moonlink_rpc"
 moonlink_service = { path = "moonlink/src/moonlink_service", optional = true }
 native-tls = "0.2"
-pgrx = "0.16.1"
-postgres.git = "https://github.com/Mooncake-Labs/rust-postgres.git"
-postgres-native-tls.git = "https://github.com/Mooncake-Labs/rust-postgres.git"
-regex = "1"
+# Exact: cargo-pgrx (installed at this version by CI and the README) must match the pgrx crate.
+pgrx = "=0.16.1"
+# The rust-postgres revision moonlink pins (moonlink/Cargo.toml), so Cargo resolves one copy of it, not two.
+postgres = { git = "https://github.com/Mooncake-Labs/rust-postgres.git", rev = "14c8e599f5551a8caa96ff5023685a6f537a1455" }
+postgres-native-tls = { git = "https://github.com/Mooncake-Labs/rust-postgres.git", rev = "14c8e599f5551a8caa96ff5023685a6f537a1455" }
 tokio = "1.48"
 
 [profile.release]

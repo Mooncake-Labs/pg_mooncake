@@ -1,0 +1,89 @@
+\set VERBOSITY terse
+CREATE TABLE f (a int PRIMARY KEY, b text);
+CREATE TABLE f_other (a int);
+INSERT INTO f VALUES (1, 'x');
+CALL mooncake.create_table('f_mc', 'f');
+-- A read waits for the session's last commit. When that commit only touched a table without a mirror, moonlink must
+-- still get past it, and so must a forced snapshot.
+INSERT INTO f VALUES (2, 'y');
+INSERT INTO f_other VALUES (1);
+CALL mooncake.create_snapshot('f_mc');
+SELECT * FROM f_mc ORDER BY a;
+ a | b 
+---+---
+ 1 | x
+ 2 | y
+(2 rows)
+
+INSERT INTO f_other VALUES (2);
+SELECT count(*) FROM f_mc;
+ count 
+-------
+     2
+(1 row)
+
+CALL mooncake.create_snapshot('f_mc');
+SELECT count(*) FROM f_mc;
+ count 
+-------
+     2
+(1 row)
+
+-- A prepared query on a mirror sees every later commit, with custom and with generic plans.
+PREPARE f_all AS SELECT a, b FROM f_mc ORDER BY a;
+EXECUTE f_all;
+ a | b 
+---+---
+ 1 | x
+ 2 | y
+(2 rows)
+
+INSERT INTO f VALUES (3, 'z');
+EXECUTE f_all;
+ a | b 
+---+---
+ 1 | x
+ 2 | y
+ 3 | z
+(3 rows)
+
+UPDATE f SET b = 'u' WHERE a = 1;
+DELETE FROM f WHERE a = 2;
+EXECUTE f_all;
+ a | b 
+---+---
+ 1 | u
+ 3 | z
+(2 rows)
+
+SET plan_cache_mode = force_generic_plan;
+PREPARE f_upto(int) AS SELECT count(*), max(a) FROM f_mc WHERE a <= $1;
+EXECUTE f_upto(100);
+ count | max 
+-------+-----
+     2 |   3
+(1 row)
+
+INSERT INTO f SELECT g, 'g' FROM generate_series(10, 14) g;
+EXECUTE f_upto(100);
+ count | max 
+-------+-----
+     7 |  14
+(1 row)
+
+EXECUTE f_upto(11);
+ count | max 
+-------+-----
+     4 |  11
+(1 row)
+
+DELETE FROM f WHERE a >= 13;
+EXECUTE f_upto(100);
+ count | max 
+-------+-----
+     5 |  12
+(1 row)
+
+RESET plan_cache_mode;
+DEALLOCATE ALL;
+DROP TABLE f_mc, f, f_other;

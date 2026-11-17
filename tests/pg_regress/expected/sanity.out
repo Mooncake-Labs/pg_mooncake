@@ -3,11 +3,21 @@ CALL mooncake.create_table('c', 'r');
 INSERT INTO r VALUES (1, 'a'), (2, 'b'), (3, 'c');
 UPDATE r SET b = a + 1 WHERE a > 2;
 DELETE FROM r WHERE a < 2;
-SELECT * FROM c;
+SELECT * FROM c ORDER BY a;
  a | b 
 ---+---
  2 | b
  3 | 4
 (2 rows)
 
+-- create_table reports why creating the mirror table failed.
+CALL mooncake.create_table('c2', 'no_such_table');
+ERROR:  mooncake.create_table failed: could not read the columns of public.no_such_table: relation "public.no_such_table" does not exist
+CREATE TABLE taken (a int);
+CALL mooncake.create_table('taken', 'r');
+ERROR:  mooncake.create_table failed: could not create public.taken: relation "taken" already exists
+DROP TABLE taken;
+-- It names the source server by host, port, database and user, never by the connection string (it may hold a password).
+CALL mooncake.create_table('c3', 'r', 'postgresql://someone@127.0.0.1:1/db?application_name=not_shown');
+ERROR:  mooncake.create_table failed: could not connect to the source server (host=127.0.0.1 port=1 dbname=db user=someone): error connecting to server: Connection refused (os error 111)
 DROP TABLE r, c;

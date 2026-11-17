@@ -1,0 +1,105 @@
+name: Set up pg_mooncake build
+description: >-
+  Installs PostgreSQL from the PostgreSQL apt repository, the Rust toolchain from rust-toolchain.toml and cargo-pgrx,
+  builds and installs pg_duckdb, and configures the pgrx-managed cluster with the duckdb_mooncake built by this workflow.
+
+inputs:
+  pg:
+    description: PostgreSQL major version
+    required: true
+
+runs:
+  using: composite
+  steps:
+    - name: Free disk space
+      shell: bash
+      run: |
+        # Two DuckDB builds and a debug build of moonlink do not fit in the runner's default free space.
+        sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
+        df -h / | tail -1
+
+    - name: Install PostgreSQL ${{ inputs.pg }} and build dependencies
+      shell: bash
+      env:
+        PG: ${{ inputs.pg }}
+      run: |
+        sudo apt-get update -q
+        sudo apt-get install -y -q postgresql-common
+        echo 'create_main_cluster = false' | sudo tee -a /etc/postgresql-common/createcluster.conf > /dev/null
+        sudo /usr/share/postgresql-common/pgdg/apt.postgresql.org.sh -y
+        sudo apt-get install -y -q build-essential cmake ninja-build pkg-config clang libclang-dev \
+          libssl-dev libcurl4-openssl-dev liblz4-dev "postgresql-$PG" "postgresql-server-dev-$PG"
+        pg_bin=/usr/lib/postgresql/$PG/bin
+        # This PostgreSQL's tools come first on PATH, for the steps that call them directly. make install and make
+        # package pass --pg-config themselves; a bare cargo pgrx install would use the first pg_config on PATH
+        # (AGENTS.md, pitfall 1).
+        echo "$pg_bin" >> "$GITHUB_PATH"
+        echo "PG_BIN=$pg_bin" >> "$GITHUB_ENV"
+        # Let the runner user install pg_duckdb and pg_mooncake without sudo.
+        sudo chown -R "$(id -un)" "$("$pg_bin/pg_config" --pkglibdir)" "$("$pg_bin/pg_config" --sharedir)/extension"
+
+    - name: Install the Rust toolchain from rust-toolchain.toml
+      shell: bash
+      run: rustup toolchain install
+
+    - uses: Swatinem/rust-cache@d1527c8f67ef9af357290475d4af4b0fab8f12e0 # v2.9.3
+      with:
+        key: pg${{ inputs.pg }}
+
+    - uses: hendrikmuhs/ccache-action@dbeefd73e8e2ffc1bbc412570072735eb4db3607 # v1.2.25
+      with:
+        # pg_duckdb's DuckDB objects don't depend on the PostgreSQL version, so any major's cache helps.
+        key: pg_duckdb-pg${{ inputs.pg }}
+        restore-keys: pg_duckdb-
+        max-size: 2G
+        create-symlink: true
+
+    - name: Install cargo-pgrx and initialize its PostgreSQL ${{ inputs.pg }} cluster
+      shell: bash
+      env:
+        PG: ${{ inputs.pg }}
+      run: |
+        pgrx_version=$(sed -n 's/^pgrx = "=\{0,1\}\(.*\)"/\1/p' Cargo.toml)
+        # Outside the checkout, so the runner's default toolchain builds the CLI.
+        (cd "$RUNNER_TEMP" && cargo install --locked "cargo-pgrx@$pgrx_version")
+        cargo pgrx init "--pg$PG" "$PG_BIN/pg_config"
+
+    - name: Build and install pg_duckdb
+      shell: bash
+      run: make pg_duckdb "PG_VERSION=pg${{ inputs.pg }}"
+
+    # duckdb_mooncake must be built for the DuckDB version pg_duckdb embeds, or DuckDB refuses to load it.
+    - name: Read the DuckDB version
+      shell: bash
+      run: |
+        version=$(sed -n 's/^DUCKDB_VERSION := //p' Makefile)
+        pg_duckdb_version=$(sed -n 's/^DUCKDB_VERSION = //p' pg_duckdb/Makefile)
+        if [[ -z $version || $version != "$pg_duckdb_version" ]]; then
+          echo "Makefile DUCKDB_VERSION ($version) differs from pg_duckdb's ($pg_duckdb_version)" >&2
+          exit 1
+        fi
+        echo "DUCKDB_VERSION=$version" >> "$GITHUB_ENV"
+
+    - name: Download duckdb_mooncake
+      uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+      with:
+        name: duckdb_mooncake
+        path: ${{ runner.temp }}/duckdb_extensions/${{ env.DUCKDB_VERSION }}/linux_amd64
+
+    - name: Configure the pgrx cluster
+      shell: bash
+      env:
+        PG: ${{ inputs.pg }}
+      run: |
+        ext_dir=$RUNNER_TEMP/duckdb_extensions
+        echo "DUCKDB_EXTENSION_DIR=$ext_dir" >> "$GITHUB_ENV"
+        # No .info file next to the extension, so the bootstrap INSTALL mooncake FROM community is a no-op and
+        # DuckDB loads the duckdb_mooncake built from the submodule (AGENTS.md, "Using a locally built duckdb_mooncake").
+        cat >> "$HOME/.pgrx/data-$PG/postgresql.conf" <<EOF
+        shared_preload_libraries = 'pg_duckdb,pg_mooncake'
+        wal_level = logical
+        duckdb.allow_community_extensions = true
+        duckdb.allow_unsigned_extensions = true
+        duckdb.autoinstall_known_extensions = false
+        duckdb.extension_directory = '$ext_dir'
+        EOF

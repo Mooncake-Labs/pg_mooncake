@@ -1,0 +1,61 @@
+# Known differences of tests/mirror_diff on this branch with its submodules (moonlink 37b040f9,
+# pg_duckdb v1.0.0-mooncake 12b6de7, duckdb_mooncake bd9e5f3), measured on PostgreSQL 17 with
+# the regression suite of PostgreSQL 17.10. mirror_diff is advisory (see README.md): other
+# majors have regression files these rules don't cover. The bug classes are those of
+# TESTING.md ("Known limitations and the gate"); the rule syntax is in README.md:
+#
+#   bug <name> class=blocking|class=limitation <description>
+#   check <check-glob> <bug>[,<bug>...] [<regex>]
+#   engine <bug>
+#
+# Rules are pinned to what identifies each bug: the reason moonlink gives for refusing a table or
+# erroring a mirror, the column type and verdict of data checks, the event kind and column type
+# of cdc events, or the statement text. A cdc check is XFAIL only if every one of its events
+# matches a rule.
+
+engine duckdb-semantics
+
+# ---- documented limitations --------------------------------------------------------------------
+bug duckdb-semantics class=limitation Queries on mirrors run in DuckDB and follow its semantics: integer division, overflow errors, char(n) padding, regex ~ full match, errors raised by only one engine
+bug unsupported-types class=limitation mooncake.create_table refuses a table with a column of a type mirrors cannot store: geometric types, interval, inet/cidr, macaddr/macaddr8, money, bit/varbit, timetz, pg_lsn, xml, tsvector/tsquery, ranges, numeric with precision above 38 or a scale outside 0..precision, domains, composites and arrays built on them, and arrays of domains over composites or arrays
+bug unsupported-table-shapes class=limitation mooncake.create_table refuses unlogged tables, tables with inheritance children, tables with generated columns, and partitioned tables without a primary key or with an unlogged or foreign partition
+bug multidim-arrays class=limitation Multi-dimensional arrays and arrays with explicit bounds cannot be stored: create_table refuses a source that has one (or a column declared with more than one dimension), and one written later puts the mirror into the errored state
+bug numeric-not-storable class=limitation numeric values a mirror cannot store: more than 10 fractional digits in an unconstrained column (stored as decimal(38, 10)), a value beyond its decimal type, NaN and Infinity. create_table refuses a source that has one, and one written later puts the mirror into the errored state
+bug infinite-dates class=limitation infinity and -infinity dates and timestamps cannot be stored: create_table refuses a source that has one, and one written later puts the mirror into the errored state
+bug source-change-errors class=limitation TRUNCATE of a source, a partition attached with rows, and a source gaining inheritance children put its mirror into the errored state
+bug numeric-scale-padded class=limitation Unconstrained numeric is stored as decimal(38, 10), so its values read back with 10 fractional digits (1 as 1.0000000000); the values compare equal
+bug char-padding-lost class=limitation char(n) values come back without their trailing blanks; Postgres ignores those blanks in comparisons and length(), so only the displayed value differs
+bug composite-as-struct class=limitation Composite and domain-over-composite values read back as DuckDB STRUCT text ({'f1': 1, 'f2': foo}) instead of the Postgres row text; the values are preserved
+bug enum-order-as-text class=limitation Enum columns on mirrors compare and order as text (ORDER BY, comparisons, min/max), not in the enum's declared order
+bug window-row-order class=limitation Window queries whose result depends on physical row order (ROWS/GROUPS frames or order-sensitive functions over ties) can differ, because a mirror stores rows in a different order than its heap
+
+
+# ---- refused types and table shapes ------------------------------------------------------------
+# The refused column's type must be one mirrors cannot store. rposint is a range over a domain;
+# arrays of domains over composites or arrays (dcomptype[], dposinta[], insert_test_domain[])
+# can't be stored either. A refusal of any other type is a FAIL.
+check * unsupported-types ^(rejected: types=\[.*\] (column \S+ type=.+? typtype=\w: )?|rejected: type=.+? typtype=\w \d+ values \([^)]*\); copy=rejected \((column v type=.+? typtype=\w: )?|create: create_table rejected: (column \S+ type=.+? typtype=\w: )?)source table \S+ cannot be mirrored: column \S+ \((point|lseg|path|box|polygon|line|circle|interval|inet|cidr|macaddr8?|money|bit\(\d+\)|bit varying(\(\d+\))?|time(\(\d\))? with time zone|pg_lsn|xml|tsvector|tsquery|pg_snapshot|txid_snapshot|\w*range|\w*multirange|\w*range\[\]|rposint|numeric\((39|[4-9]\d|\d{3,}),\d+\)|numeric\(\d+,-\d+\)|numeric\(3,6\)|(dcomptype|dposinta|insert_test_domain)\[\])\) has a type mirrors cannot store
+check * unsupported-table-shapes ^(rejected: types=\[.*\] (column \S+ type=.+? typtype=\w: )?|rejected: type=.+? typtype=\w \d+ values \([^)]*\); copy=rejected \((column v type=.+? typtype=\w: )?|create: create_table rejected: (column \S+ type=.+? typtype=\w: )?)(source table \S+ cannot be mirrored: (it has inheritance children, whose changes are not replicated with it|generated columns \(.+\) are not replicated|it is partitioned and has no primary key \(|.*; only regular \(logged\) partitions are supported)|not supported for unlogged tables\.)
+# arrtest.b is declared integer[][][]; create_table refuses the column by its declared dimensions.
+check *.arrays.arrtest multidim-arrays ^(rejected: types=\[.*\] (column \S+ type=.+? typtype=\w: )?|rejected: type=.+? typtype=\w \d+ values \([^)]*\); copy=rejected \((column v type=.+? typtype=\w: )?|create: create_table rejected: (column \S+ type=.+? typtype=\w: )?)source table public\.arrtest cannot be mirrored: column b \(integer\[\]\) has a type mirrors cannot store
+
+# ---- values that cannot be stored, and the errored state -----------------------------------------
+check * multidim-arrays ^(\w[\w-]*: type=.+? typtype=\w \d+ values \([^)]*\); value rejected at create_table: invalid array: multi-dimensional arrays and arrays with explicit bounds are not supported \[|rejected: types=\[.*\] column \S+ type=.+? typtype=\w: conversion error: column \S+ \(.+?\): cannot convert '[^']*': invalid array: multi-dimensional arrays and arrays with explicit bounds are not supported|create: create_table rejected: column \S+ type=.+? typtype=\w: conversion error: column \S+ \(.+?\): cannot convert '[^']*': invalid array: multi-dimensional arrays and arrays with explicit bounds are not supported|(copy|dml|commit|final): mirror read failed: .*? is out of sync: a change from the source table could not be applied: column \S+ \(.+?\): cannot convert '[^']*': invalid array: multi-dimensional arrays and arrays with explicit bounds are not supported)
+check * numeric-not-storable ^(\w[\w-]*: type=numeric(\(\d+,\d+\))? typtype=\w \d+ values \([^)]*\); value rejected at create_table: ((NaN|-?Infinity) cannot be stored in a decimal column|it has more than 10 fractional digits \(stored as decimal\(38, 10\)\)|it does not fit decimal\(\d+, \d+\)) \[|rejected: types=\[.*\] column \S+ type=numeric(\(\d+,\d+\))? typtype=\w: conversion error: column \S+ \(numeric\): cannot convert '[^']*': ((NaN|-?Infinity) cannot be stored in a decimal column|it has more than 10 fractional digits \(stored as decimal\(38, 10\)\)|it does not fit decimal\(\d+, \d+\))|create: create_table rejected: column \S+ type=numeric(\(\d+,\d+\))? typtype=\w: conversion error: column \S+ \(numeric\): cannot convert '[^']*': ((NaN|-?Infinity) cannot be stored in a decimal column|it has more than 10 fractional digits \(stored as decimal\(38, 10\)\)|it does not fit decimal\(\d+, \d+\))|(copy|dml|commit|final): mirror read failed: .*? is out of sync: a change from the source table could not be applied: column \S+ \(numeric\): cannot convert '[^']*': ((NaN|-?Infinity) cannot be stored in a decimal column|it has more than 10 fractional digits \(stored as decimal\(38, 10\)\)|it does not fit decimal\(\d+, \d+\)))
+check * infinite-dates ^(\w[\w-]*: type=(date|timestamp(\(\d\))? with(out)? time zone|timestamp(\(\d\))?) typtype=\w \d+ values \([^)]*\); value rejected at create_table: '-?infinity' \(infinite date or timestamp\) cannot be stored \[|rejected: types=\[.*\] column \S+ type=(date|timestamp(\(\d\))? with(out)? time zone|timestamp(\(\d\))?) typtype=\w: conversion error: column \S+ \((date|timestamp|timestamptz)\): cannot convert '[^']*': '-?infinity' \(infinite date or timestamp\) cannot be stored|create: create_table rejected: column \S+ type=(date|timestamp(\(\d\))? with(out)? time zone|timestamp(\(\d\))?) typtype=\w: conversion error: column \S+ \((date|timestamp|timestamptz)\): cannot convert '[^']*': '-?infinity' \(infinite date or timestamp\) cannot be stored|(copy|dml|commit|final): mirror read failed: .*? is out of sync: a change from the source table could not be applied: column \S+ \((date|timestamp|timestamptz)\): cannot convert '[^']*': '-?infinity' \(infinite date or timestamp\) cannot be stored)
+check cdc.* source-change-errors ^(copy|dml|commit|final): mirror read failed: .*? is out of sync: (source table \S+ was truncated|the source table changed: (it gained inheritance children|partition \S+ already held rows when it was added))
+
+# ---- numeric, char(n), composites ----------------------------------------------------------------
+# numeric-scale and char-padding: the comparator found every differing mirror value equal to the
+# heap's as a number printed with 10 fractional digits, or without the trailing blanks.
+check * numeric-scale-padded ^(lossy: types=\[.*\] |lossy: type=.+? typtype=\w \d+ values \([^)]*\); (.*?; )?\w+=lossy \(|(copy|dml|commit|final): )numeric-scale col=\S+ type=numeric(\[\])?: \d+ value\(s\) equal the heap's as numbers
+check * char-padding-lost ^(lossy: types=\[.*\] |lossy: type=.+? typtype=\w \d+ values \([^)]*\); (.*?; )?\w+=lossy \(|(copy|dml|commit|final): )char-padding col=\S+ type=character\(\d+\)(\[\])?: \d+ value\(s\) equal the heap's without trailing blanks
+check * composite-as-struct ^(lossy: types=\[.*\] |lossy: type=.+? typtype=\w \d+ values \([^)]*\); (.*?; )?\w+=lossy \(|(copy|dml|commit|final): )struct-text col=\S+ type=\S+: \d+ value\(s\) equal the heap's after STRUCT-to-row conversion
+
+# ---- queries: enum order, row order and DuckDB semantics the classifier can't attribute ----------
+check query.enum.* enum-order-as-text ^mirror differs and DuckDB did not run the query on the heap tables: 1 vs 1 rows; .* :: SELECT (min|max)\(col\) FROM enumtest;$
+check query.window.* window-row-order ^mirror differs; DuckDB on the heap tables agrees with the heap: (\d+) vs \1 rows; .* :: SELECT sum\(unique1\) over \(rows between [^)]*\), unique1, four FROM tenk1 WHERE unique1 < 10;$
+check query.window.* window-row-order ^heap, mirror and DuckDB-on-heap all differ: (\d+) vs \1 rows; .* :: SELECT first_value\(unique1\) over w, nth_value\(unique1, 2\) over w AS nth_2, last_value\(unique1\) over w, unique1, four FROM tenk1 WHERE unique1 < 10 WINDOW w AS
+check query.window.* window-row-order ^mirror differs; DuckDB on the heap tables agrees with the heap: (\d+) vs \1 rows; .* :: SELECT last_value\(unique1\) over \(ORDER BY four rows between current row and 9223372036854775807 following exclude current row\), unique1, four FROM tenk1
+check query.aggregates.* duckdb-semantics ^heap, mirror and DuckDB-on-heap all differ: (\d+) vs \1 rows; .* :: select sum\(1/ten\) filter \(where ten > 0\) from tenk1;$
+check query.name.* duckdb-semantics ^mirror differs and DuckDB did not run the query on the heap tables: .* :: SELECT c\.f1 FROM NAME_TBL c WHERE c\.f1 ~ '\[0-9\]';$

@@ -1,0 +1,157 @@
+\set VERBOSITY terse
+SET client_min_messages = notice;
+CREATE TABLE r (a int PRIMARY KEY);
+CALL mooncake.create_table('c', 'r');
+INSERT INTO r VALUES (1), (2);
+-- A failed moonlink call leaves the session usable.
+DO $$
+BEGIN
+  CALL mooncake.create_snapshot('no_such_mirror');
+EXCEPTION WHEN OTHERS THEN
+  RAISE NOTICE 'create_snapshot failed';
+END
+$$;
+NOTICE:  create_snapshot failed
+SELECT "table" FROM mooncake.list_tables() WHERE "table" = 'public.c';
+  table   
+----------
+ public.c
+(1 row)
+
+CALL mooncake.create_snapshot('c');
+SELECT * FROM c ORDER BY a;
+ a 
+---
+ 1
+ 2
+(2 rows)
+
+-- A drop undone by ROLLBACK TO SAVEPOINT keeps the mirror in moonlink.
+BEGIN;
+SAVEPOINT s;
+DROP TABLE c;
+ROLLBACK TO SAVEPOINT s;
+COMMIT;
+SELECT "table" FROM mooncake.list_tables() WHERE "table" = 'public.c';
+  table   
+----------
+ public.c
+(1 row)
+
+SELECT * FROM c ORDER BY a;
+ a 
+---
+ 1
+ 2
+(2 rows)
+
+-- So does a drop undone by an exception block.
+DO $$
+BEGIN
+  DROP TABLE c;
+  RAISE EXCEPTION 'undo';
+EXCEPTION WHEN raise_exception THEN
+  NULL;
+END
+$$;
+INSERT INTO r VALUES (3);
+SELECT * FROM c ORDER BY a;
+ a 
+---
+ 1
+ 2
+ 3
+(3 rows)
+
+-- Two-phase commit is rejected.
+BEGIN;
+DROP TABLE c;
+PREPARE TRANSACTION 'drop_c';
+ERROR:  PREPARE TRANSACTION is not supported in a transaction that drops a mooncake mirror
+SELECT * FROM c ORDER BY a;
+ a 
+---
+ 1
+ 2
+ 3
+(3 rows)
+
+-- Drops through DROP SCHEMA ... CASCADE reach moonlink.
+CREATE SCHEMA s;
+CREATE TABLE s.r1 (a int PRIMARY KEY);
+CREATE TABLE s.r2 (a int PRIMARY KEY);
+CALL mooncake.create_table('s.m1', 's.r1');
+CALL mooncake.create_table('s.m2', 's.r2');
+SELECT "table" FROM mooncake.list_tables() WHERE "table" LIKE 's.%' ORDER BY 1;
+ table 
+-------
+ s.m1
+ s.m2
+(2 rows)
+
+DROP SCHEMA s CASCADE;
+NOTICE:  drop cascades to 4 other objects
+SELECT "table" FROM mooncake.list_tables() WHERE "table" LIKE 's.%';
+ table 
+-------
+(0 rows)
+
+-- A DROP that moonlink never saw (here: event triggers are off in replica mode) leaves moonlink's table behind.
+-- Re-creating the mirror under the same name replaces it instead of reading the old table.
+CREATE TABLE r_old (a int PRIMARY KEY);
+INSERT INTO r_old VALUES (1), (2);
+CALL mooncake.create_table('o', 'r_old');
+SET session_replication_role = replica;
+DROP TABLE o;
+RESET session_replication_role;
+SELECT "table" FROM mooncake.list_tables() WHERE "table" = 'public.o';
+  table   
+----------
+ public.o
+(1 row)
+
+CREATE TABLE r_new (a int PRIMARY KEY);
+INSERT INTO r_new VALUES (10);
+CALL mooncake.create_table('o', 'r_new');
+SELECT * FROM o ORDER BY a;
+ a  
+----
+ 10
+(1 row)
+
+SELECT count(*) FROM mooncake.list_tables() WHERE "table" = 'public.o';
+ count 
+-------
+     1
+(1 row)
+
+-- A create_table that moonlink rejects leaves no mirror table behind.
+CREATE TABLE r_bad (a int PRIMARY KEY, i interval);
+DO $$
+BEGIN
+  CALL mooncake.create_table('f', 'r_bad');
+EXCEPTION WHEN OTHERS THEN
+  RAISE NOTICE 'create_table failed';
+END
+$$;
+NOTICE:  create_table failed
+SELECT to_regclass('f') IS NULL AS no_table;
+ no_table 
+----------
+ t
+(1 row)
+
+SELECT count(*) FROM mooncake.list_tables() WHERE "table" = 'public.f';
+ count 
+-------
+     0
+(1 row)
+
+DROP TABLE o, r_old, r_new, r_bad;
+DROP TABLE c, r;
+SELECT count(*) FROM mooncake.list_tables();
+ count 
+-------
+     0
+(1 row)
+

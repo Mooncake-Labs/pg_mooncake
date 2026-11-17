@@ -128,11 +128,45 @@ class Comparator(unittest.TestCase):
         nan = compare.divergence_events([("n", "numeric")], [["NaN"]], [["0.0000000000"]])
         self.assertEqual([e["kind"] for e in nan], ["value"])
 
+    def test_numeric_scale_is_exact(self):
+        # 30 significant digits: Decimal's 28-digit context would round both to the same value.
+        heap, mirror = "12345678901234567890123456789.1234567891", "12345678901234567890123456789.1234567892"
+        ev = compare.divergence_events([("n", "numeric")], [[heap]], [[mirror]])
+        self.assertEqual([e["kind"] for e in ev], ["value"])
+        ev = compare.divergence_events([("n", "numeric")], [[heap[:-1]]], [[heap[:-1] + "0"]])
+        self.assertEqual([e["kind"] for e in ev], ["numeric-scale"])
+
+    def test_numeric_scale_only_for_unconstrained_numeric_printed_as_decimal_38_10(self):
+        def kinds(typ, heap, mirror):
+            return [e["kind"] for e in compare.divergence_events([("n", typ)], [[heap]], [[mirror]])]
+        self.assertEqual(kinds("numeric(10,2)", "1.00", "1.0000000000"), ["value"])
+        self.assertEqual(kinds("numeric", "1", "1.000"), ["value"])
+        self.assertEqual(kinds("numeric", "0", "-0.0000000000"), ["value"])
+        self.assertEqual(kinds("numeric", "-0.5", "-0.5000000000"), ["numeric-scale"])
+        self.assertEqual(kinds("numeric[]", "{1,NULL}", "{1.0000000000,NULL}"), ["numeric-scale"])
+        self.assertEqual(kinds("numeric[]", "{1,2}", "{1.0000000000,2.00}"), ["value"])
+        self.assertEqual(kinds("numeric[]", "{{1},{2}}", "{{1.0000000000},{2.0000000000}}"), ["value"])
+
+    def test_char_padding_only_when_the_blanks_are_all_that_is_missing(self):
+        def kinds(typ, heap, mirror):
+            return [e["kind"] for e in compare.divergence_events([("c", typ)], heap, mirror)]
+        self.assertEqual(kinds("character(4)", [["a   "], ["ab  "]], [["a"], ["ab"]]), ["char-padding"])
+        self.assertEqual(kinds("character(4)", [["ab  "]], [["xy"]]), ["value"])
+        self.assertEqual(kinds("character(4)", [["ab  "]], [["ab "]]), ["value"])
+        self.assertEqual(kinds("character(4)", [["ab"]], [["ab  "]]), ["value"])
+        self.assertEqual(kinds("character varying(4)", [["ab  "]], [["ab"]]), ["value"])
+        self.assertEqual(kinds("character(5)[]", [['{"abc  ",abcde}']], [["{abc,abcde}"]]), ["char-padding"])
+        self.assertEqual(kinds("character(5)[]", [['{"abc  ",abcde}']], [["{abd,abcde}"]]), ["value"])
+
     def test_divergence_events(self):
         ev = compare.divergence_events([("id", "integer"), ("c", "character(3)")],
                                        [["1", "ab "], ["2", "x  "]], [["1", "ab"], ["2", "x  "]])
+        self.assertEqual([e["kind"] for e in ev], ["char-padding"])
+        self.assertIn("char-padding col=c type=character(3): 1 value(s) equal the heap's without trailing blanks",
+                      ev[0]["detail"])
+        ev = compare.divergence_events([("id", "integer"), ("c", "text")], [["1", "ab "]], [["1", "ab"]])
         self.assertEqual([e["kind"] for e in ev], ["value"])
-        self.assertIn("col=c type=character(3) heap-only: ab ", ev[0]["detail"])
+        self.assertIn("col=c type=text heap-only: ab ", ev[0]["detail"])
         ev = compare.divergence_events([("id", "integer")], [["1"], ["2"]], [["1"]])
         self.assertTrue(ev[0]["detail"].startswith("row-count heap=2 mirror=1"))
 
@@ -389,14 +423,16 @@ class FalsePassScenarios(unittest.TestCase):
         self.assertEqual(st, "FAIL")
 
     def test_composite_rejection_is_not_a_limitation(self):
+        # A composite of supported fields can be stored, so refusing it is a bug.
+        refused = "source table public.t cannot be mirrored: column c (mycomp) has a type mirrors cannot store"
         h = stub_harness()
-        quiet(h.rep.result, "data.copy.f.t", "FAIL",
-              "rejected: types=[mycomp] column c type=mycomp typtype=c: type with oid 17001 in relation public.t is not supported")
+        quiet(h.rep.result, "data.copy.f.t", "FAIL", f"rejected: types=[mycomp] column c type=mycomp typtype=c: {refused}")
         quiet(h.rep.result, "cdc.f.t", "FAIL", "x", events=[{"text": "create: create_table rejected: column c type=mycomp "
-              "typtype=c: type with oid 17001 in relation public.t is not supported :: CREATE TABLE t (c mycomp);"}])
+              f"typtype=c: {refused} :: CREATE TABLE t (c mycomp);"}])
         quiet(h.rep.result, "data.type.f.mycomp_array", "FAIL", "x", events=[{"text": "rejected: type=mycomp[] typtype=b "
-              "2 values (f); copy=rejected (column v type=mycomp[] typtype=b: type with oid 17002 in relation public.md_ps1 is not supported)"}])
-        quiet(h.rep.result, "data.copy.f.u", "FAIL", "rejected: types=[mycomp] type with oid 17001 in relation public.u is not supported")
+              "2 values (f); copy=rejected (column v type=mycomp[] typtype=b: source table public.md_ps1 cannot be "
+              "mirrored: column v (mycomp[]) has a type mirrors cannot store)"}])
+        quiet(h.rep.result, "data.copy.f.u", "FAIL", f"rejected: types=[mycomp] {refused}")
         self.assertEqual(set(statuses(h).values()), {"FAIL"})
 
     def test_new_panic_site_not_hidden_by_a_listed_one(self):
@@ -460,6 +496,124 @@ class FalsePassScenarios(unittest.TestCase):
               "3 values (arrays); copy=crashed (create_table panicked moonlink at moonlink/src/moonlink/src/new_site.rs:1:1)"}])
         self.assertEqual(set(statuses(h).values()), {"FAIL"})
 
+
+
+
+class RealExpectedRules(unittest.TestCase):
+    """The rules of the committed expected.txt: what they must and must not turn into an XFAIL.
+    Signatures are taken from a run on PostgreSQL 17."""
+
+    @classmethod
+    def setUpClass(cls):
+        cls.exp = mirror_diff.Expectations(os.path.join(HERE, "expected.txt"))
+
+    def bugs(self, check, text):
+        if check.startswith(("data.", "cdc.")):
+            return self.exp.match_events(check, [{"text": text}])
+        return self.exp.match(check, text)
+
+    def assertBugs(self, check, text, bugs):
+        self.assertEqual(self.bugs(check, text), bugs, text)
+
+    def assertStaysFail(self, check, text):
+        self.assertIsNone(self.bugs(check, text), text)
+
+    REFUSED = "source table public.t cannot be mirrored: column c ({}) has a type mirrors cannot store"
+
+    def test_refused_types(self):
+        for typ in ("point", "interval", "bit varying(5)", "time(2) with time zone", "int4range", "int8range[]",
+                    "numeric(210,10)", "numeric(3,-3)", "numeric(3,6)", "dcomptype[]", "rposint"):
+            refused = self.REFUSED.format(typ)
+            self.assertBugs("data.copy.f.t", f"rejected: types=[{typ}] column c type={typ} typtype=b: {refused}",
+                            ["unsupported-types"])
+            self.assertBugs("data.type.f.t", f"rejected: type={typ} typtype=b 3 values (f); copy=rejected (column v "
+                            f"type={typ} typtype=b: {refused})", ["unsupported-types"])
+            self.assertBugs("cdc.f.t", f"create: create_table rejected: column c type={typ} typtype=b: {refused} "
+                            ":: CREATE TABLE t (c x);", ["unsupported-types"])
+
+    def test_other_refused_types_stay_fail(self):
+        for typ in ("hstore", "numeric(2,5)", "integer", "mycomp", "integer[]"):
+            refused = self.REFUSED.format(typ)
+            self.assertStaysFail("data.copy.f.t", f"rejected: types=[{typ}] column c type={typ} typtype=b: {refused}")
+            self.assertStaysFail("cdc.f.t", f"create: create_table rejected: column c type={typ} typtype=b: {refused} :: x")
+
+    def test_refused_table_shapes(self):
+        for reason in ("it has inheritance children, whose changes are not replicated with it",
+                       'generated columns ("twice") are not replicated',
+                       "it is partitioned and has no primary key (postgres would reject updates and deletes on "
+                       "partitions created later until their replica identity is set); add a primary key",
+                       "its partition p is unlogged; only regular (logged) partitions are supported"):
+            self.assertBugs("cdc.f.t", f"create: create_table rejected: source table public.t cannot be mirrored: "
+                            f"{reason} :: CREATE TABLE t (a int);", ["unsupported-table-shapes"])
+            self.assertBugs("data.copy.f.t", f"rejected: types=[integer] source table public.t cannot be mirrored: "
+                            f"{reason}", ["unsupported-table-shapes"])
+        self.assertBugs("cdc.f.t", "create: create_table rejected: not supported for unlogged tables. :: CREATE UNLOGGED "
+                        "TABLE t (a int)", ["unsupported-table-shapes"])
+        self.assertStaysFail("cdc.f.t", "dml: mirror read failed: error XX000 not supported for unlogged tables. :: x")
+        self.assertStaysFail("query.f.L1", "mirror differs: not supported for unlogged tables. :: SELECT 1")
+        self.assertStaysFail("cdc.f.t", "create: create_table rejected: source table public.t cannot be mirrored: it "
+                             "has a column named xmin :: x")
+
+    def test_values_that_cannot_be_stored(self):
+        cases = [
+            ("numeric-not-storable", "numeric", "numeric", "NaN", "NaN cannot be stored in a decimal column"),
+            ("numeric-not-storable", "numeric(4,4)", "numeric", "-Infinity", "Infinity cannot be stored in a decimal column"),
+            ("numeric-not-storable", "numeric", "numeric", "0.000000000001",
+             "it has more than 10 fractional digits (stored as decimal(38, 10))"),
+            ("numeric-not-storable", "numeric", "numeric", "9000000000000000000000000000000000000000",
+             "it does not fit decimal(38, 10)"),
+            ("infinite-dates", "timestamp(2) with time zone", "timestamptz", "-infinity",
+             "'-infinity' (infinite date or timestamp) cannot be stored"),
+            ("infinite-dates", "date", "date", "infinity", "'infinity' (infinite date or timestamp) cannot be stored"),
+            ("multidim-arrays", "integer[]", "integer[]", "{{1,2},{3,4}}",
+             "invalid array: multi-dimensional arrays and arrays with explicit bounds are not supported"),
+        ]
+        for bug, typ, ml_typ, value, reason in cases:
+            self.assertBugs("data.type.f.t", f"rejected-values: type={typ} typtype=b 3 values (f); value rejected at "
+                            f"create_table: {reason} [{value}]", [bug])
+            self.assertBugs("data.copy.f.t", f"rejected: types=[{typ}] column c type={typ} typtype=b: conversion "
+                            f"error: column c ({ml_typ}): cannot convert '{value}': {reason}", [bug])
+            self.assertBugs("cdc.f.t", f"create: create_table rejected: column c type={typ} typtype=b: conversion "
+                            f"error: column c ({ml_typ}): cannot convert '{value}': {reason} :: INSERT INTO t ...", [bug])
+            self.assertBugs("cdc.f.t", "dml: mirror read failed: error XX000 (PGDuckDB/Duckdb_ExecCustomScan_Cpp) "
+                            "Error: mirror md_f.mc.t is out of sync: a change from the source table could not be applied: "
+                            f"column c ({ml_typ}): cannot convert '{value}': {reason}; drop and re-create it :: INSERT", [bug])
+        # NaN and Infinity are numeric-only reasons.
+        self.assertStaysFail("data.type.f.t", "rejected-values: type=double precision typtype=b 3 values (f); value "
+                             "rejected at create_table: NaN cannot be stored in a decimal column [NaN]")
+
+    def test_source_changes_that_error_a_mirror(self):
+        prefix = "dml: mirror read failed: error XX000 (PGDuckDB/Duckdb_ExecCustomScan_Cpp) Error: mirror md_f.mc.t is out of sync: "
+        for reason in ("source table public.t was truncated",
+                       "the source table changed: it gained inheritance children, whose changes are not replicated with it",
+                       "the source table changed: partition p1 already held rows when it was added; only empty "
+                       "partitions can be added"):
+            self.assertBugs("cdc.f.t", f"{prefix}{reason}; drop and re-create it :: TRUNCATE t", ["source-change-errors"])
+            self.assertStaysFail("query.f.L1", f"mirror read failed: error XX000 Error: mirror md_f.mc.t is out of sync: "
+                                 f"{reason} :: SELECT * FROM t")
+        self.assertStaysFail("cdc.f.t", f"{prefix}the source table changed: column a was dropped and re-added; drop "
+                             "and re-create it :: ALTER TABLE t")
+
+    def test_numeric_scale_and_char_padding_events(self):
+        scale = "numeric-scale col=v type=numeric: 3 value(s) equal the heap's as numbers, e.g. heap 1 mirror 1.0000000000"
+        pad = "char-padding col=v type=character(4): 2 value(s) equal the heap's without trailing blanks, e.g. heap 'a   ' mirror 'a'"
+        for event, bug in ((scale, "numeric-scale-padded"), (pad, "char-padding-lost")):
+            self.assertBugs("data.type.f.t", f"lossy: type=x typtype=b 3 values (f); copy=lossy ({event})", [bug])
+            self.assertBugs("data.copy.f.t", f"lossy: types=[x] {event}", [bug])
+            self.assertBugs("cdc.f.t", f"dml: {event} :: INSERT INTO t VALUES (1)", [bug])
+        self.assertStaysFail("cdc.f.t", "dml: numeric-scale col=v type=numeric(10,2): 1 value(s) equal the heap's as "
+                             "numbers, e.g. heap 1.00 mirror 1.0000000000 :: INSERT")
+        self.assertStaysFail("cdc.f.t", "dml: value col=v type=character(4) heap-only: ab   || mirror-only: xy :: INSERT")
+        self.assertStaysFail("cdc.f.t", "dml: value col=v type=numeric heap-only: "
+                             "12345678901234567890123456789.1234567891 || mirror-only: "
+                             "12345678901234567890123456789.1234567892 :: INSERT")
+
+    def test_enum_order(self):
+        self.assertBugs("query.enum.L155", "mirror differs and DuckDB did not run the query on the heap tables: 1 vs 1 "
+                        "rows; heap-only: red || mirror-only: blue :: SELECT min(col) FROM enumtest;",
+                        ["enum-order-as-text"])
+        self.assertStaysFail("query.enum.L155", "mirror differs and DuckDB did not run the query on the heap tables: 2 "
+                             "vs 1 rows; heap-only: red || mirror-only: blue :: SELECT min(col) FROM enumtest;")
 
 if __name__ == "__main__":
     unittest.main()

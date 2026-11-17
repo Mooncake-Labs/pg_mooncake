@@ -106,10 +106,12 @@ marker, so pointing `--workdir` at the wrong place cannot remove an unrelated cl
   converted values equal the heap's, the difference is a `struct-text` event (the
   `composite-as-struct` limitation); any other difference in such a column is an ordinary value
   difference.
-- A `numeric` column (or array of numerics) whose mirror values equal the heap's as numbers but
-  are printed with another scale (`1` vs `1.0000000000`) is a `numeric-scale` event (the
-  `numeric-scale-padded` limitation); any other difference in such a column is an ordinary value
-  difference.
+- An unconstrained `numeric` (or `numeric[]`) column whose differing mirror values all equal the
+  heap's exactly as numbers, printed the way `decimal(38, 10)` prints them (`1` vs
+  `1.0000000000`), is a `numeric-scale` event (the `numeric-scale-padded` limitation).
+- A `char(n)` (or `char(n)[]`) column whose differing mirror values are all the heap's values
+  without their trailing blanks is a `char-padding` event (the `char-padding-lost` limitation).
+- Any other difference in such columns is an ordinary value difference.
 - `json` and `jsonb` cells are compared after JSON normalisation in the cdc layer: whitespace is
   removed and object keys are sorted, while numbers keep their text and duplicate keys are kept.
   The mirror's reformatting of JSON text is reported by the data layer (verdict `equivalent`).

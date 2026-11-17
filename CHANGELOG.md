@@ -43,8 +43,9 @@ tables of its own, and nothing is migrated from it; see [Coming from 0.1.x](READ
 
 #### Creating a mirror
 - `mooncake.create_table` refuses, with the reason, a source it cannot mirror exactly: a column of a type mirrors cannot
-  store (see Known limitations), an array column declared with more than one dimension, generated columns, a table
-  with inheritance children, a partitioned table without a primary key or with an unlogged or foreign partition, a
+  store (see Known limitations), an array column declared with more than one dimension, generated columns, an
+  unlogged table (Postgres can't add it to the publication), a table with inheritance children, a partitioned table
+  without a primary key or with an unlogged or foreign partition, a
   partitioned table and one of its own partitions both mirrored, and a source the connection's role cannot `SELECT`.
   If moonlink rejects the mirror, the call drops the mirror table it created, but not one another session created
   under the same name in the meantime. ([moonlink PR 2360][ml-2360], [moonlink PR 2368][ml-2368])
@@ -91,8 +92,8 @@ tables of its own, and nothing is migrated from it; see [Coming from 0.1.x](READ
   startup is errored too. ([moonlink PR 2357][ml-2357], [moonlink PR 2360][ml-2360])
 - `TRUNCATE` of a source table, and schema changes to a source table (for example `ALTER TABLE ... ADD COLUMN`), put its
   mirrors into the errored state. So do changes the replication stream does not show: a column dropped and re-added,
-  partitions attached with rows or detached, and changes made while moonlink was stopped. ([moonlink PR 2360][ml-2360],
-  [moonlink PR 2368][ml-2368])
+  partitions attached with rows or detached, a source gaining inheritance children, and changes made while moonlink
+  was stopped. ([moonlink PR 2360][ml-2360], [moonlink PR 2368][ml-2368])
 
 #### Mirror tables
 - `INSERT`, `UPDATE`, `DELETE`, `MERGE`, `TRUNCATE` and `COPY ... FROM` on a mirror fail with
@@ -138,9 +139,10 @@ Measured with the project's benchmark on an 8-vCPU, 62 GiB-RAM NVMe machine (Pos
 - Mirrors store only these column types: `boolean`, `"char"`, `char(n)`, `varchar`, `text`, `name`, `smallint`,
   `integer`, `bigint`, `real`, `double precision`, `numeric` (precision up to 38, scale from 0 to the precision),
   `bytea`, `date`, `time`, `timestamp`, `timestamptz`, `uuid`, `json`, `jsonb`, `oid` and enums, and arrays, composites
-  and domains built on them. `mooncake.create_table` refuses a source with any other column type, for example
-  `interval`, `timetz`, `inet`, `cidr`, `macaddr`, `macaddr8`, `money`, `bit`, `varbit`, `pg_lsn`, `xml`, `tsvector`,
-  `tsquery`, range and geometric types, and types from other extensions.
+  and domains built on them, except an array of a domain over a composite or an array type (`CREATE DOMAIN d AS t;`
+  with a `d[]` column). `mooncake.create_table` refuses a source with any other column type, for example `interval`,
+  `timetz`, `inet`, `cidr`, `macaddr`, `macaddr8`, `money`, `bit`, `varbit`, `pg_lsn`, `xml`, `tsvector`, `tsquery`,
+  geometric types, range types (also over a supported type or a domain), and types from other extensions.
 - `infinity` and `-infinity` dates and timestamps cannot be stored. `mooncake.create_table` fails on a source that has
   one, and one written later puts the mirror into the errored state.
 - Unconstrained `numeric` columns, and the elements of `numeric` arrays, are stored as `decimal(38, 10)` and read back
@@ -157,8 +159,13 @@ Measured with the project's benchmark on an 8-vCPU, 62 GiB-RAM NVMe machine (Pos
 - Composite and domain-over-composite columns read back from a mirror as DuckDB STRUCT values, e.g.
   `{'f1': 1, 'f2': 'foo'}` instead of `(1,foo)`. The values are preserved; compare or extract fields (`(c).f1`) rather
   than the row text. Comparing the whole value with a row (`c = ROW(1, 'foo')::t`) fails in DuckDB.
-- Multi-dimensional arrays: `mooncake.create_table` refuses a column declared with more than one dimension, and a
-  multi-dimensional value in a one-dimensional array column puts the mirror into the errored state.
+- Arrays with more than one dimension or explicit bounds (`'[0:2]={1,2,3}'`) cannot be stored.
+  `mooncake.create_table` refuses a column declared with more than one dimension and fails on a source that holds such
+  a value; one written later puts the mirror into the errored state.
+- Queries on mirrors run in DuckDB, so some results follow DuckDB's semantics instead of Postgres': `/` on integers
+  doesn't truncate (`sum(1 / n)` is `0.75` instead of `0` for `n` = 2 and 4), the regex operator `~` matches the whole
+  string (`'abc1def' ~ '[0-9]'` is false), and results that depend on row order without `ORDER BY` can differ, such as
+  window functions over `ROWS` frames or ties, because a mirror stores rows in a different order than its source.
 - Identifiers containing `.` are rejected.
 - Only the writing session reads its own changes immediately. Other sessions see a change once moonlink applies it,
   about half a second later (longer after large transactions).

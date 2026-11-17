@@ -135,5 +135,6 @@ the multiple-assignment `UPDATE` and `INSERT ... ON CONFLICT DO UPDATE`, must fa
 ## Differential tests (`tests/mirror_diff`), advisory
 
 `tests/mirror_diff/mirror_diff.py` uses the PostgreSQL regression suite as a corpus: it mirrors the suite's tables and
-checks the mirrors and queries on them against the heap tables. A full run takes one to three hours. It is advisory,
-not a release gate; [tests/mirror_diff/README.md](tests/mirror_diff/README.md) describes how to run it and its checks.
+checks the mirrors and queries on them against the heap tables. A full run takes about 45 minutes on 8 cores. It is
+advisory, not a release gate; [tests/mirror_diff/README.md](tests/mirror_diff/README.md) describes how to run it and its
+checks.

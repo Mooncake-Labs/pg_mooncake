@@ -1,140 +1,65 @@
 # Known differences of tests/mirror_diff on this branch with its submodules (moonlink 0e38b435,
-# pg_duckdb v1.0.0-mooncake 12b6de7), measured on PostgreSQL 17. The bug classes and the gate are those of
-# scripts/e2e-known-bugs.txt (TESTING.md, "Release policy"); the rule syntax is in README.md:
+# pg_duckdb v1.0.0-mooncake 12b6de7, duckdb_mooncake bd9e5f3), measured on PostgreSQL 17 with
+# the regression suite of PostgreSQL 17.10. mirror_diff is advisory (see README.md): other
+# majors have regression files these rules don't cover. The bug classes are those of
+# TESTING.md ("Known limitations and the gate"); the rule syntax is in README.md:
 #
 #   bug <name> class=blocking|class=limitation <description>
 #   check <check-glob> <bug>[,<bug>...] [<regex>]
 #   engine <bug>
 #
-# Rules are pinned to what identifies each bug: the column type and verdict of data checks, the
-# event kind and column type of cdc events, the moonlink panic site (file:line:col, per moonlink
-# revision), the assertion of a backend crash, or the statement text. A cdc check is XFAIL only if
-# every one of its events matches a rule.
-#
-# Not yet updated for moonlink 0.3: its create_table refusals (inheritance parents, partitioned
-# tables without a primary key, unsupported types named in the error, infinite timestamps) and the
-# errored state have no rules here, so a run on these pins FAILs about 200 checks for behavior the
-# CHANGELOG documents. Every bug still listed was OPEN or not seen in that run.
+# Rules are pinned to what identifies each bug: the reason moonlink gives for refusing a table or
+# erroring a mirror, the column type and verdict of data checks, the event kind and column type
+# of cdc events, or the statement text. A cdc check is XFAIL only if every one of its events
+# matches a rule.
 
 engine duckdb-semantics
 
 # ---- documented limitations --------------------------------------------------------------------
 bug duckdb-semantics class=limitation Queries on mirrors run in DuckDB and follow its semantics: integer division, overflow errors, char(n) padding, regex ~ full match, errors raised by only one engine
-bug json-text-normalised class=limitation json and jsonb values read back from a mirror in DuckDB's compact text form with keys reordered
-bug unsupported-types class=limitation mooncake.create_table rejects tables with columns of types mirrors don't support: geometric types, interval, inet/cidr, macaddr/macaddr8, money, bit/varbit, timetz, pg_lsn, xml, tsvector/tsquery, ranges, domains, enums, numeric with precision above 38
-bug unsupported-table-shapes class=limitation create_table rejects unlogged tables
+bug unsupported-types class=limitation mooncake.create_table refuses a table with a column of a type mirrors cannot store: geometric types, interval, inet/cidr, macaddr/macaddr8, money, bit/varbit, timetz, pg_lsn, xml, tsvector/tsquery, ranges, numeric with precision above 38 or a scale outside 0..precision, and domains, composites and arrays built on them
+bug unsupported-table-shapes class=limitation mooncake.create_table refuses unlogged tables, tables with inheritance children, tables with generated columns, and partitioned tables without a primary key or with an unlogged or foreign partition
+bug multidim-arrays class=limitation Multi-dimensional arrays and arrays with explicit bounds cannot be stored: create_table refuses a source that has one (or a column declared with more than one dimension), and one written later puts the mirror into the errored state
+bug numeric-not-storable class=limitation numeric values a mirror cannot store: more than 10 fractional digits in an unconstrained column (stored as decimal(38, 10)), a value beyond its decimal type, NaN and Infinity. create_table refuses a source that has one, and one written later puts the mirror into the errored state
+bug infinite-dates class=limitation infinity and -infinity dates and timestamps cannot be stored: create_table refuses a source that has one, and one written later puts the mirror into the errored state
+bug source-change-errors class=limitation TRUNCATE of a source, a partition attached with rows, and a source gaining inheritance children put its mirror into the errored state
+bug numeric-scale-padded class=limitation Unconstrained numeric is stored as decimal(38, 10), so its values read back with 10 fractional digits (1 as 1.0000000000); the values compare equal
+bug char-padding-lost class=limitation char(n) values come back without their trailing blanks; Postgres ignores those blanks in comparisons and length(), so only the displayed value differs
 bug composite-as-struct class=limitation Composite and domain-over-composite values read back as DuckDB STRUCT text ({'f1': 1, 'f2': foo}) instead of the Postgres row text; the values are preserved
+bug enum-order-as-text class=limitation Enum columns on mirrors compare and order as text (ORDER BY, comparisons, min/max), not in the enum's declared order
 bug window-row-order class=limitation Window queries whose result depends on physical row order (ROWS/GROUPS frames or order-sensitive functions over ties) can differ, because a mirror stores rows in a different order than its heap
 
-# ---- types ---------------------------------------------------------------------------------------
-bug char-padding-lost class=blocking char(n) values lose their trailing blank padding
-bug numeric-digits-shifted class=blocking Unconstrained numeric values come back with their digits shifted
-bug numeric-nan-inf-null class=blocking numeric NaN, Infinity and -Infinity read back as NULL
-bug numeric-typmod-panic class=blocking numeric with scale greater than precision or a negative scale panics moonlink in create_table
-bug numeric-beyond-i128-panic class=blocking A numeric value whose unscaled integer exceeds 128 bits panics the replication task
-bug decimal-stats-overflow-panic class=blocking Persisting a numeric column with values beyond 96 bits panics in the Iceberg statistics code
-bug arrays-come-back-empty class=blocking Array columns read back as empty arrays ({NULL} becomes {})
-bug multidim-arrays class=blocking Multi-dimensional or non-default-bound arrays panic the initial copy, are mangled, or drop the transaction in CDC
-bug keyless-nested-copy-panic class=blocking Initial copy of a table without a primary key that has an array or composite column panics the table handler
-bug range-array-panic class=blocking A range-array column (int8range[]) panics moonlink in create_table
 
-# ---- CDC and table shapes ----------------------------------------------------------------------
-bug truncate-ignored class=blocking TRUNCATE of a mirrored source is not applied to the mirror
-bug generated-column-breaks-mirror class=blocking Stored generated columns are part of the mirror definition but not replicated, so SELECT * on the mirror fails
-bug partition-ddl-ignored class=blocking DROP, DETACH or ATTACH PARTITION on a mirrored partitioned table is not reflected in the mirror
-bug rejected-create-leaves-state class=blocking After create_table is rejected, mirroring a re-created source under the same mirror name fails with "error creating table"
-bug drop-after-dead-task-panic class=blocking DROP of a mirror whose table task already died panics moonlink (table_event_manager.rs) and half-drops it
-bug sigterm-panic-in-tokio-thread class=blocking SIGTERM delivered to a tokio thread of the moonlink background worker panics in pgrx at shutdown (postgres FFI called from another thread)
+# ---- refused types and table shapes ------------------------------------------------------------
+# The refused column's type must be one mirrors cannot store. rposint is a range over a domain;
+# arrays of domains over composites or arrays (dcomptype[], dposinta[], insert_test_domain[])
+# can't be stored either. A refusal of any other type is a FAIL.
+check data.* unsupported-types cannot be mirrored: column \S+ \((point|lseg|path|box|polygon|line|circle|interval|inet|cidr|macaddr8?|money|bit\(\d+\)|bit varying(\(\d+\))?|time(\(\d\))? with time zone|pg_lsn|xml|tsvector|tsquery|pg_snapshot|txid_snapshot|\w*range|\w*multirange|\w*range\[\]|rposint|numeric\((39|[4-9]\d|\d{3,}),\d+\)|numeric\(\d+,-\d+\)|numeric\(3,6\)|(dcomptype|dposinta|insert_test_domain)\[\])\) has a type mirrors cannot store
+check cdc.* unsupported-types cannot be mirrored: column \S+ \((point|lseg|path|box|polygon|line|circle|interval|inet|cidr|macaddr8?|money|bit\(\d+\)|bit varying(\(\d+\))?|time(\(\d\))? with time zone|pg_lsn|xml|tsvector|tsquery|pg_snapshot|txid_snapshot|\w*range|\w*multirange|\w*range\[\]|rposint|numeric\((39|[4-9]\d|\d{3,}),\d+\)|numeric\(\d+,-\d+\)|numeric\(3,6\)|(dcomptype|dposinta|insert_test_domain)\[\])\) has a type mirrors cannot store
+check * unsupported-table-shapes cannot be mirrored: (it has inheritance children, whose changes are not replicated with it|generated columns \(.+\) are not replicated|it is partitioned and has no primary key\b|.*only regular \(logged\) partitions are supported)|not supported for unlogged tables
+# arrtest.b is declared integer[][][]; create_table refuses the column by its declared dimensions.
+check *.arrays.arrtest multidim-arrays cannot be mirrored: column b \(integer\[\]\) has a type mirrors cannot store
 
-# ---- unsupported types: clean rejections ---------------------------------------------------------
-# The rejected column's type (or the oid the error names) must be one mirrors don't support: the
-# builtin types listed, a type a file defines (oid >= 10000), or an array of one. A rejection of
-# any other type is a FAIL.
-check data.copy.* unsupported-types ^rejected: types=\[.*\] column \S+ type=(point|lseg|path|box|polygon|line|circle|interval|inet|cidr|macaddr8?|money|bit\(\d+\)|bit varying(\(\d+\))?|time(\(\d\))? with time zone|pg_lsn|xml|tsvector|tsquery|pg_snapshot|txid_snapshot) typtype=b: type with oid (600|601|602|603|604|628|718|1186|869|650|829|774|790|1560|1562|1266|3220|142|3614|3615|5038|2970) in relation \S+ is not supported$
-check data.copy.* unsupported-types ^rejected: types=\[.*\] column \S+ type=\S+ typtype=[de]: type with oid \d{5,} in relation \S+ is not supported$
-check data.copy.* unsupported-types ^rejected: types=\[.*\] column \S+ type=\S+ typtype=r: type with oid (3904|3906|3908|3910|3912|3926|\d{5,}) in relation \S+ is not supported$
-check data.copy.* unsupported-types ^rejected: types=\[.*\] column \S+ type=(posint|vc4|dposinta|dcomptype|ddtest1)\[\] typtype=b: type with oid \d{5,} in relation \S+ is not supported$
-check data.copy.* unsupported-types ^rejected: types=\[.*\] column \S+ type=numeric\((39|[4-9]\d|\d{3,}),\d+\) typtype=b: (Invalid => Failed to create decimal type, source: DataInvalid => )?Decimals with precision larger than 38 are not supported\b
-check data.type.* unsupported-types ^rejected: type=.+? typtype=[a-z] \d+ values \([^)]*\); copy=rejected \(column v type=(point|lseg|path|box|polygon|line|circle|interval|inet|cidr|macaddr8?|money|bit\(\d+\)|bit varying(\(\d+\))?|time(\(\d\))? with time zone|pg_lsn|xml|tsvector|tsquery|pg_snapshot|txid_snapshot) typtype=b: type with oid (600|601|602|603|604|628|718|1186|869|650|829|774|790|1560|1562|1266|3220|142|3614|3615|5038|2970) in relation \S+ is not supported\)$
-check data.type.* unsupported-types ^rejected: type=.+? typtype=[a-z] \d+ values \([^)]*\); copy=rejected \(column v type=\S+ typtype=[de]: type with oid \d{5,} in relation \S+ is not supported\)$
-check data.type.* unsupported-types ^rejected: type=.+? typtype=[a-z] \d+ values \([^)]*\); copy=rejected \(column v type=\S+ typtype=r: type with oid (3904|3906|3908|3910|3912|3926|\d{5,}) in relation \S+ is not supported\)$
-check data.type.* unsupported-types ^rejected: type=.+? typtype=[a-z] \d+ values \([^)]*\); copy=rejected \(column v type=(posint|vc4|dposinta|dcomptype|ddtest1)\[\] typtype=b: type with oid \d{5,} in relation \S+ is not supported\)$
-check data.type.* unsupported-types ^rejected: type=.+? typtype=[a-z] \d+ values \([^)]*\); copy=rejected \(column v type=numeric\((39|[4-9]\d|\d{3,}),\d+\) typtype=b: (Invalid => Failed to create decimal type, source: DataInvalid => )?Decimals with precision larger than 38 are not supported\b
-check cdc.* unsupported-types ^create: create_table rejected: column \S+ type=(point|lseg|path|box|polygon|line|circle|interval|inet|cidr|macaddr8?|money|bit\(\d+\)|bit varying(\(\d+\))?|time(\(\d\))? with time zone|pg_lsn|xml|tsvector|tsquery|pg_snapshot|txid_snapshot) typtype=b: type with oid (600|601|602|603|604|628|718|1186|869|650|829|774|790|1560|1562|1266|3220|142|3614|3615|5038|2970) in relation \S+ is not supported ::
-check cdc.* unsupported-types ^create: create_table rejected: column \S+ type=\S+ typtype=[de]: type with oid \d{5,} in relation \S+ is not supported ::
-check cdc.* unsupported-types ^create: create_table rejected: column \S+ type=\S+ typtype=r: type with oid (3904|3906|3908|3910|3912|3926|\d{5,}) in relation \S+ is not supported ::
-check cdc.* unsupported-types ^create: create_table rejected: column \S+ type=(posint|vc4|dposinta|dcomptype|ddtest1)\[\] typtype=b: type with oid \d{5,} in relation \S+ is not supported ::
-check cdc.* unsupported-types ^create: create_table rejected: column \S+ type=numeric\((39|[4-9]\d|\d{3,}),\d+\) typtype=b: (Invalid => Failed to create decimal type, source: DataInvalid => )?Decimals with precision larger than 38 are not supported\b
-check data.type.* unsupported-types ^rejected: type=(point|lseg|path|box|polygon|line|circle|interval|inet|cidr|macaddr8?|money|bit\(\d+\)|bit varying(\(\d+\))?|time(\(\d\))? with time zone|pg_lsn|xml|tsvector|tsquery|pg_snapshot|txid_snapshot) typtype=b \d+ values \([^)]*\); copy=rejected \(type with oid (600|601|602|603|604|628|718|1186|869|650|829|774|790|1560|1562|1266|3220|142|3614|3615|5038|2970) in relation \S+ is not supported\)$
-check data.type.domain.* unsupported-types ^rejected: type=(posint|vc4|dposinta|dcomptype|ddtest1)\[\] typtype=b \d+ values \(domain\); copy=rejected \(type with oid \d{5,} in relation \S+ is not supported\)$
-# ddtest1 is a composite whose field is a domain (posint), which this moonlink can't store.
-check data.copy.domain.ddtest2* unsupported-types ^rejected: types=\[.*\] column \S+ type=ddtest1 typtype=c: type with oid \d{5,} in relation \S+ is not supported$
-check data.type.domain.ddtest1* unsupported-types ^rejected: type=ddtest1 typtype=c \d+ values \(domain\); copy=rejected \(column v type=ddtest1 typtype=c: type with oid \d{5,} in relation \S+ is not supported\)$
-check cdc.domain.ddtest2 unsupported-types ^create: create_table rejected: column \S+ type=ddtest1 typtype=c: type with oid \d{5,} in relation \S+ is not supported ::
-check data.copy.arrays.arrtest unsupported-types ^rejected: types=\[.*\] column b type=integer\[\] typtype=b: type with oid 1007 in relation public\.arrtest is not supported$
-check cdc.arrays.arrtest unsupported-types ^create: create_table rejected: column b type=integer\[\] typtype=b: type with oid 1007 in relation public\.arrtest is not supported ::
-check data.copy.* unsupported-types ^rejected: types=\[.*\] type with oid (600|601|602|603|604|628|718|1186|869|650|829|774|790|1560|1562|1266|3220|142|3614|3615|5038|2970) in relation \S+ is not supported$
-check cdc.* unsupported-table-shapes ^create: create_table rejected: not supported for unlogged tables\.
-check cdc.* rejected-create-leaves-state ^create: create_table rejected: (column \S+ type=.+? typtype=[a-z]: )?error creating table: mc\.\S+ ::
+# ---- values that cannot be stored, and the errored state -----------------------------------------
+check * multidim-arrays invalid array: multi-dimensional arrays and arrays with explicit bounds are not supported
+check * numeric-not-storable \((numeric|numeric\(\d+,\d+\))\): cannot convert '[^']*': (NaN|Infinity) cannot be stored in a decimal column|: (NaN|Infinity) cannot be stored in a decimal column \[|it has more than 10 fractional digits \(stored as decimal\(38, 10\)\)|it does not fit decimal\(\d+, \d+\)
+check * infinite-dates '-?infinity' \(infinite date or timestamp\) cannot be stored
+check cdc.* source-change-errors is out of sync: (source table \S+ was truncated|the source table changed: it gained inheritance children|the source table changed: partition \S+ already held rows when it was added)
 
-# ---- char(n), json -----------------------------------------------------------------------------
-check data.type.character_[0-9]* char-padding-lost ^lossy: type=character\(\d+\)(\[\])? typtype=b \d+ values \([^)]*\); \w+=lossy \(value col=v type=character\(\d+\)(\[\])? heap-only: 
+# ---- numeric, char(n), composites ----------------------------------------------------------------
+# numeric-scale: the comparator found the mirror's values equal to the heap's as numbers.
+check * numeric-scale-padded numeric-scale col=\S+ type=numeric(\[\])?: \d+ value\(s\) equal the heap's as numbers
+check data.type.character_[0-9]* char-padding-lost ^lossy: type=character\(\d+\)(\[\])? typtype=b \d+ values \([^)]*\); \w+=lossy \(value col=v type=character\(\d+\)(\[\])? heap-only:
 check data.copy.* char-padding-lost ^lossy: types=\[.*\] value col=\S+ type=character\(\d+\)(\[\])? heap-only
 check cdc.* char-padding-lost ^(copy|dml|commit|final): value col=\S+ type=character\(\d+\)(\[\])? heap-only
-check data.type.json json-text-normalised ^equivalent: type=json typtype=b \d+ values \([^)]*\); \w+=equivalent \(value col=v type=json heap-only: 
-check data.type.jsonb json-text-normalised ^equivalent: type=jsonb typtype=b \d+ values \([^)]*\); \w+=equivalent \(value col=v type=jsonb heap-only: 
-check data.copy.* json-text-normalised ^equivalent: types=\[.*\] value col=\S+ type=jsonb? heap-only
-
-# ---- numeric -----------------------------------------------------------------------------------
-check panic.numeric.* numeric-beyond-i128-panic,decimal-stats-overflow-panic at moonlink/src/moonlink_connectors/src/pg_replicate/util\.rs:355:61, rust_decimal-1\.43\.0/src/decimal\.rs:2047:1 during
-check panic.numeric.* numeric-typmod-panic at moonlink/src/moonlink/src/row/column_array_builder\.rs:193:22 during: CALL mooncake\.create_table
-check data.copy.numeric.* numeric-typmod-panic ^crashed: types=\[.*numeric\(\d+,-\d+\).*\] create_table (died|panicked moonlink at moonlink/src/moonlink/src/row/column_array_builder\.rs:193:22)$
-check data.type.numeric_* numeric-typmod-panic ^crashed: type=numeric\(\d+,-?\d+\) typtype=b .*copy=crashed \(create_table panicked moonlink at moonlink/src/moonlink(/src/row/column_array_builder\.rs:193:22|_connectors/src/pg_replicate\.rs:283:22)\)
-check cdc.* numeric-typmod-panic ^create: create_table (crashed|not attempted: column \S+ type=numeric\(\d+,-?\d+\) crashed) moonlink at moonlink/src/moonlink/src/row/column_array_builder\.rs:193:22
-check data.copy.numeric.* decimal-stats-overflow-panic ^crashed: types=\[numeric\] mirror scan ok; moonlink panicked at rust_decimal-1\.43\.0/src/decimal\.rs:2047:1
-check data.copy.numeric.* numeric-beyond-i128-panic ^crashed: types=\[numeric\] create_table panicked moonlink at moonlink/src/moonlink_connectors/src/pg_replicate\.rs:283:22$
-check data.type.numeric numeric-beyond-i128-panic ^crashed: type=numeric typtype=b \d+ values \([^)]*\); (copy|cdc_\w+|probe)=crashed \(.*(moonlink/src/moonlink_connectors/src/pg_replicate/util\.rs:355:61|moonlink/src/moonlink_connectors/src/pg_replicate\.rs:283:22)
-check data.type.numeric decimal-stats-overflow-panic ^crashed: type=numeric typtype=b \d+ values \([^)]*\); (copy|cdc_\w+|probe)=crashed \(.*rust_decimal-1\.43\.0/src/decimal\.rs:2047:1
-check data.type.numeric numeric-nan-inf-null ^(crashed|lossy): type=numeric typtype=b \d+ values \([^)]*\); \w+=lossy \(value col=v type=numeric heap-only: [^|]*\b(NaN|-?Infinity)\b[^|]*\|\| mirror-only: [^|]*§N§
-check data.type.numeric numeric-digits-shifted ^(crashed|lossy): type=numeric typtype=b \d+ values \([^)]*\); \w+=lossy \(value col=v type=numeric heap-only: 
-check data.type.numeric_* numeric-nan-inf-null ^lossy: type=numeric\(\d+,\d+\) typtype=b .*heap-only: [^|]*\b(NaN|-?Infinity)\b[^|]*\|\| mirror-only: [^|]*§N§
-check data.copy.* numeric-nan-inf-null ^lossy: types=\[.*\] value col=\S+ type=numeric(\(\d+,\d+\))? heap-only: [^|]*\b(NaN|-?Infinity)\b[^|]*\|\| mirror-only: [^|]*§N§
-check cdc.* numeric-nan-inf-null ^(copy|dml|commit|final): value col=\S+ type=numeric(\(\d+,\d+\))? heap-only: [^|]*\b(NaN|-?Infinity)\b[^|]*\|\| mirror-only: [^|]*§N§
-check data.copy.* numeric-digits-shifted ^(lossy|equivalent): types=\[.*\] value col=\S+ type=numeric(\[\])? heap-only
-check cdc.* numeric-digits-shifted ^(copy|dml|commit|final): value col=\S+ type=numeric(\[\])? heap-only
-check cdc.numeric.* numeric-digits-shifted ^final: row-count heap=\d+ mirror=\d+ heap-only: .* \|\| mirror-only: [-\d.]+ :: <end of file>$
-check cdc.numeric.num_variance numeric-beyond-i128-panic ^(drop: drop mirror failed: timeout|create: create_table rejected: error creating table: mc\.num_variance)
-
-# ---- arrays and composites -----------------------------------------------------------------------
-check panic.arrays.* keyless-nested-copy-panic at (moonlink/src/moonlink/src/row/arrow_converter\.rs:108:13|parquet-55\.2\.0/src/arrow/mod\.rs:304:22) during: CALL mooncake\.create_table
-check panic.aggregates.* keyless-nested-copy-panic at moonlink/src/moonlink/src/row/arrow_converter\.rs:108:13 during: CALL mooncake\.create_table
-check panic.insert.* keyless-nested-copy-panic at parquet-55\.2\.0/src/arrow/mod\.rs:304:22 during: CALL mooncake\.create_table\('mc\.inserttest'
-check data.copy.* keyless-nested-copy-panic ^crashed: types=\[.*\] create_table panicked moonlink at (moonlink/src/moonlink/src/row/arrow_converter\.rs:108:13|parquet-55\.2\.0/src/arrow/mod\.rs:304:22)$
-check data.copy.* keyless-nested-copy-panic,drop-after-dead-task-panic ^crashed: types=\[.*\] create_table panicked moonlink at (moonlink/src/moonlink/src/row/arrow_converter\.rs:108:13, moonlink/src/moonlink/src/storage/mooncake_table/table_event_manager\.rs:127:14|moonlink/src/moonlink/src/storage/mooncake_table/table_event_manager\.rs:127:14, parquet-55\.2\.0/src/arrow/mod\.rs:304:22)$
-check cdc.* keyless-nested-copy-panic ^create: create_table (crashed|not attempted: column \S+ type=\S+ crashed) moonlink at (moonlink/src/moonlink/src/row/arrow_converter\.rs:108:13|parquet-55\.2\.0/src/arrow/mod\.rs:304:22)
-check data.type.*_array multidim-arrays ^crashed: type=\S+( \S+)*\[\] typtype=b \d+ values \([^)]*\); copy=crashed \(create_table panicked moonlink at moonlink/src/moonlink_connectors/src/pg_replicate\.rs:283:22\)$
-check data.type.*_array multidim-arrays ^lossy: type=\S+( \S+)*\[\] typtype=b \d+ values \([^)]*\); \w+=lossy \(value col=v type=\S+( \S+)*\[\] heap-only: [^|]*\{\{
-check data.type.*_array arrays-come-back-empty ^lossy: type=\S+( \S+)*\[\] typtype=b \d+ values \([^)]*\); \w+=lossy \(value col=v type=\S+( \S+)*\[\] heap-only: .* \|\| mirror-only: [^|]*\{\}
-check cdc.* arrays-come-back-empty ^(copy|dml|commit|final): value col=\S+ type=\S+\[\] heap-only: .* \|\| mirror-only: [^|]*\{\}
 check data.copy.* composite-as-struct ^lossy: types=\[.*\] struct-text col=\S+ type=\S+: \d+ value\(s\) equal the heap's after STRUCT-to-row conversion
 check data.type.* composite-as-struct ^lossy: type=\S+ typtype=[bcd] \d+ values \([^)]*\); \w+=lossy \(struct-text col=v type=\S+: \d+ value\(s\) equal the heap's after STRUCT-to-row conversion
 check cdc.* composite-as-struct ^(copy|dml|commit|final): struct-text col=\S+ type=\S+: \d+ value\(s\) equal the heap's after STRUCT-to-row conversion
-check panic.rangetypes.* range-array-panic at moonlink/src/moonlink_connectors/src/pg_replicate/util\.rs:151:13 during: CALL mooncake\.create_table
-check data.copy.rangetypes.* range-array-panic ^crashed: types=\[.*range\[\].*\] create_table panicked moonlink at moonlink/src/moonlink_connectors/src/pg_replicate/util\.rs:151:13$
-check data.type.*range_array range-array-panic ^crashed: type=\S+range\[\] typtype=b .*util\.rs:151:13
-check cdc.* range-array-panic ^create: create_table (crashed|not attempted: column \S+ type=\S+range\[\] crashed) moonlink at moonlink/src/moonlink_connectors/src/pg_replicate/util\.rs:151:13
 
-# ---- partitions and inheritance (regression files) -----------------------------------------------
-check cdc.insert.list_parted partition-ddl-ignored ^dml: row-count heap=\d+ mirror=\d+ heap-only:  \|\| mirror-only: .* :: insert into list_parted values
-
-# ---- CDC and table shapes (extra files) --------------------------------------------------------
-check cdc.extra_cdc.cdc_trunc truncate-ignored ^dml: row-count heap=\d+ mirror=\d+ .*:: INSERT INTO cdc_trunc VALUES \(1, 'after truncate'\)
-
-# ---- queries: row order and DuckDB semantics the classifier can't attribute ----------------------
+# ---- queries: enum order, row order and DuckDB semantics the classifier can't attribute ----------
+check query.enum.* enum-order-as-text ^mirror differs and DuckDB did not run the query on the heap tables: 1 vs 1 rows; .* :: SELECT (min|max)\(col\) FROM enumtest;$
 check query.window.* window-row-order ^mirror differs; DuckDB on the heap tables agrees with the heap: (\d+) vs \1 rows; .* :: SELECT sum\(unique1\) over \(rows between [^)]*\), unique1, four FROM tenk1 WHERE unique1 < 10;$
 check query.window.* window-row-order ^heap, mirror and DuckDB-on-heap all differ: (\d+) vs \1 rows; .* :: SELECT first_value\(unique1\) over w, nth_value\(unique1, 2\) over w AS nth_2, last_value\(unique1\) over w, unique1, four FROM tenk1 WHERE unique1 < 10 WINDOW w AS
+check query.window.* window-row-order ^mirror differs; DuckDB on the heap tables agrees with the heap: (\d+) vs \1 rows; .* :: SELECT last_value\(unique1\) over \(ORDER BY four rows between current row and 9223372036854775807 following exclude current row\), unique1, four FROM tenk1
 check query.aggregates.* duckdb-semantics ^heap, mirror and DuckDB-on-heap all differ: (\d+) vs \1 rows; .* :: select sum\(1/ten\) filter \(where ten > 0\) from tenk1;$
 check query.name.* duckdb-semantics ^mirror differs and DuckDB did not run the query on the heap tables: .* :: SELECT c\.f1 FROM NAME_TBL c WHERE c\.f1 ~ '\[0-9\]';$
-check cdc.extra_tables.shp_generated generated-column-breaks-mirror ^copy: mirror read failed: error XX000 \(PGDuckDB/CreatePlan\) Prepared query returned an error: Binder Error
-check panic.data.arrays drop-after-dead-task-panic ^1 moonlink panic\(s\) at moonlink/src/moonlink/src/storage/mooncake_table/table_event_manager\.rs:127:14 not attributed to a check$
-check panic.* sigterm-panic-in-tokio-thread ^\d+ moonlink panic\(s\) at pgrx-0\.16\.1/src/bgworkers\.rs:324:5 not attributed to a check$

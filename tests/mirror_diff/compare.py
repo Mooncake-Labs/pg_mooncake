@@ -8,6 +8,7 @@ compared as far as the statement's top-level ORDER BY determines it.
 
 import json
 import re
+from decimal import Decimal, InvalidOperation
 
 from psqlsession import NULL_TOKEN
 
@@ -474,6 +475,32 @@ def struct_to_row(cell):
     return None
 
 
+_NUMERIC_SPECIALS = ("NaN", "Infinity", "-Infinity")
+
+
+def _numeric(text):
+    if text in _NUMERIC_SPECIALS:
+        return text
+    return Decimal(text).normalize()
+
+
+def numeric_key(v):
+    """A numeric cell, or a one-dimensional array of them, as numbers, so that 1 and 1.0000000000
+    compare equal. None if it isn't one."""
+    if v is None or v == NULL_TOKEN:
+        return v
+    s = str(v)
+    try:
+        if s.startswith("{") and s.endswith("}"):
+            inner = s[1:-1]
+            if "{" in inner or '"' in inner:
+                return None
+            return tuple(None if p == "NULL" else _numeric(p) for p in (inner.split(",") if inner else []))
+        return _numeric(s)
+    except InvalidOperation:
+        return None
+
+
 def divergence_events(cols, heap_rows, mirror_rows, sample=3):
     """Events describing how a mirror's rows differ from the heap's. cols: [(name, type), ...].
     Each event: {"kind": row-count|value|rows, "detail": text, ["col", "type"]}."""
@@ -503,6 +530,19 @@ def divergence_events(cols, heap_rows, mirror_rows, sample=3):
                                   f"value(s) equal the heap's after STRUCT-to-row conversion, e.g. heap "
                                   f"{str(h_only[0])[:60]} mirror {str(m_only[0])[:60]}"})
             continue
+        if typ.startswith("numeric"):
+            hn, mn = {}, {}
+            for src, dst in ((hv, hn), (mv, mn)):
+                for v, k in src.items():
+                    key = numeric_key(v)
+                    dst[key] = dst.get(key, 0) + k
+            if None not in hn and None not in mn and hn == mn:
+                # Only the text form differs: the mirror prints the values with another scale.
+                out.append({"kind": "numeric-scale", "col": name, "type": typ,
+                            "detail": f"numeric-scale col={name} type={typ}: {sum(k for v, k in mv.items() if v not in hv)} "
+                                      f"value(s) equal the heap's as numbers, e.g. heap {str(h_only[0])[:60]} "
+                                      f"mirror {str(m_only[0])[:60]}"})
+                continue
         out.append({"kind": "value", "col": name, "type": typ,
                     "detail": f"value col={name} type={typ} heap-only: {'; '.join(str(v)[:80] for v in h_only[:sample])} "
                               f"|| mirror-only: {'; '.join(str(v)[:80] for v in m_only[:sample])}"})

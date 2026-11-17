@@ -116,6 +116,18 @@ class Comparator(unittest.TestCase):
         wrong = compare.divergence_events([("c", "comptype")], [["(1,foo)"]], [["{'f1': 2, 'f2': foo}"]])
         self.assertEqual([e["kind"] for e in wrong], ["value"])
 
+    def test_numeric_scale_is_compared_as_numbers(self):
+        same = compare.divergence_events([("n", "numeric"), ("a", "numeric[]")],
+                                         [["1", "{0,1}"], ["-0.000001", "{NULL,2.5}"]],
+                                         [["1.0000000000", "{0.0000000000,1.0000000000}"],
+                                          ["-0.0000010000", "{NULL,2.5000000000}"]])
+        self.assertEqual([e["kind"] for e in same], ["numeric-scale", "numeric-scale"])
+        self.assertIn("numeric-scale col=n type=numeric: 2 value(s) equal the heap's as numbers", same[0]["detail"])
+        wrong = compare.divergence_events([("n", "numeric")], [["1"], ["2"]], [["1.0000000000"], ["3.0000000000"]])
+        self.assertEqual([e["kind"] for e in wrong], ["value"])
+        nan = compare.divergence_events([("n", "numeric")], [["NaN"]], [["0.0000000000"]])
+        self.assertEqual([e["kind"] for e in nan], ["value"])
+
     def test_divergence_events(self):
         ev = compare.divergence_events([("id", "integer"), ("c", "character(3)")],
                                        [["1", "ab "], ["2", "x  "]], [["1", "ab"], ["2", "x  "]])

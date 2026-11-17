@@ -7,6 +7,10 @@ table and that queries on the mirror (executed by DuckDB) return what Postgres r
 
 The PostgreSQL files are read from `--pg-src` at run time. None are copied into this repository.
 
+mirror_diff is advisory, not a release gate: its known differences (`expected.txt`) are measured
+on PostgreSQL 17, and other majors have regression files and outputs that its rules don't cover.
+Its `GATE` line says whether a run matches that list.
+
 ## Requirements
 
 - An installed Postgres with pg_duckdb and pg_mooncake, plus the DuckDB `mooncake` extension.
@@ -36,18 +40,18 @@ Useful options:
 | `--server-log FILE` | with `--host`: the server's log, so moonlink panics and backend crashes are seen |
 | `--keep` | keep the databases and leave the server running, for debugging |
 | `--expected FILE` | known-differences list (default `expected.txt` next to the script) |
-| `--bug-ids FILE` | optional bug-id map: `<bug> <ids>` lines, shown as `ids=` on `KNOWN` lines |
 | `--converge-secs N` | how long to keep reading a mirror that differs (default 10) |
 | `--max-rejected-values N` | values a type probe may drop after `create_table` refuses them by name (default 40) |
 | `--trace` | log every statement to `<workdir>/trace.sql` |
 | `--resume` | continue an interrupted run in the same `--workdir` (finished units are listed in `done.txt`) |
 | `--exit-regression` | exit with the regression rule instead of the gate (see Output) |
 
-A full run (all layers, about 60 regress files, each in its own throwaway cluster) takes 1–3
-hours, most of it spent waiting out moonlink hangs after panics. Artifacts in `<workdir>`:
+A full run (all layers, about 60 regress files and the two extra files, each in its own
+throwaway cluster) takes about 45 minutes on 8 cores with a cassert build of PostgreSQL 17.
+Artifacts in `<workdir>`:
 
 - `results.jsonl`: one JSON record per check with the full evidence (statement, events, sample
-  rows that differ, errors). `python3 summarize.py <workdir>/results.jsonl` renders it as markdown.
+  rows that differ, errors).
 - `logs/<layer>-<file>.log`: the server log of each file's cluster (moonlink panics, backtraces).
 - `trace.sql`: with `--trace`, every statement each session sent, with outcome and duration.
 
@@ -101,6 +105,10 @@ marker, so pointing `--workdir` at the wrong place cannot remove an unrelated cl
   (`{'f1': 1, 'f2': foo}`) is converted back to Postgres row text before it is compared. If the
   converted values equal the heap's, the difference is a `struct-text` event (the
   `composite-as-struct` limitation); any other difference in such a column is an ordinary value
+  difference.
+- A `numeric` column (or array of numerics) whose mirror values equal the heap's as numbers but
+  are printed with another scale (`1` vs `1.0000000000`) is a `numeric-scale` event (the
+  `numeric-scale-padded` limitation); any other difference in such a column is an ordinary value
   difference.
 - `json` and `jsonb` cells are compared after JSON normalisation in the cdc layer: whitespace is
   removed and object keys are sorted, while numbers keep their text and duplicate keys are kept.
@@ -159,14 +167,14 @@ RESULT <check> PASS|FAIL|XFAIL(<bugs>)|XFAIL(limitation:<bugs>)|XPASS(<bugs>)|SK
 BUILD <k>=<v>     what was tested (commits, library hashes, server version, cassert)
 TYPE <type> <verdict> probes=<n> worst=<check>
 STAT <counter> <n>
-KNOWN <bug> OPEN|FIXED|NOT-SEEN <check>=<status>,... class=blocking|limitation [ids=<ids>]
+KNOWN <bug> OPEN|FIXED|NOT-SEEN <check>=<status>,... class=blocking|limitation
 SUMMARY mirror_diff pg<major> layers=<..> pass=N xpass=N fail=N xfail=N xfail_limitation=N skip=N unverified=N
 BLOCKING mirror_diff <n> [<bug>,...]
 GATE mirror_diff PASS|FAIL|BLOCKED|INCOMPLETE
 ```
 
 - `GATE` and the exit status follow the
-  [release policy](../../TESTING.md#release-policy-blocking-and-limitation): FAIL (exit 1) >
+  [release policy](../../TESTING.md#known-limitations-and-the-gate): FAIL (exit 1) >
   BLOCKED (exit 4) > INCOMPLETE (exit 3, the run was limited by `--files` or `--layers`) >
   PASS (exit 0). `XFAIL(limitation:...)` does not count against the gate.
 - Unlike the end-to-end gate, plain SKIPs don't count against this gate. They are queries that

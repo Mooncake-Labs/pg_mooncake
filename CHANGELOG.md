@@ -101,11 +101,12 @@ pg_mooncake 0.3.0 runs on a slimmed-down moonlink.
 - `mooncake.create_snapshot` no longer waits forever on an idle mirror after a streamed transaction aborts. ([moonlink
   PR 2372][ml-2372])
 - A restart of moonlink right after `mooncake.create_table` returns no longer loses the rows of the new mirror's initial
-  copy. `mooncake.create_table` now returns only once the copy is durable in Iceberg, which makes it slower: about
-  1.36 s instead of 0.93 s for a 1M-row table. A restart before it returns leaves no mirror behind, so the call fails
-  and can be retried. ([moonlink PR 2373][ml-2373])
-- A full disk during the initial copy makes `mooncake.create_table` fail promptly with an error instead of waiting for
-  space, and dropping a mirror while `mooncake.create_table` is still creating it is safe. ([moonlink PR 2374][ml-2374])
+  copy: `mooncake.create_table` now returns only once the copy is durable in Iceberg. That makes it slower, by roughly
+  0.4 s per million narrow rows in a local test. If the moonlink worker restarts before it returns, the call fails,
+  leaves no mirror behind and can be retried. After a server restart or crash during the call, drop the empty mirror
+  table before retrying. If the disk fills up while the copy is being persisted, `mooncake.create_table` fails with an
+  error; dropping the mirror from another session during the call makes the call fail and leaves nothing behind.
+  ([moonlink PR 2373][ml-2373], [moonlink PR 2374][ml-2374])
 
 ### Removed
 - `mooncake.load_files`.
@@ -132,6 +133,8 @@ pg_mooncake 0.3.0 runs on a slimmed-down moonlink.
 - `interval` and `inet` columns cannot be mirrored: `mooncake.create_table` rejects a source table that has one.
 - Dropping a mirror leaves its empty directory under `pg_mooncake/initial_copy` in the data directory.
 - Moonlink calls other than the one made by `DROP TABLE` have no timeout.
+- If the server stops or crashes while `mooncake.create_table` runs, the new, empty mirror table stays in Postgres, and
+  creating the mirror again fails until it is removed with `DROP TABLE`.
 - Composite and domain-over-composite columns read back from a mirror as DuckDB STRUCT values, e.g.
   `{'f1': 1, 'f2': 'foo'}` instead of `(1,foo)`. The values are preserved; compare or extract fields (`(c).f1`) rather
   than the row text. Comparing the whole value with a row (`c = ROW(1, 'foo')::t`) fails in DuckDB.

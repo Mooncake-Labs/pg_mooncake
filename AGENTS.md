@@ -205,6 +205,8 @@ summary. Product behavior (fix with a test; don't paper over it):
 - Dropping a mirror leaves its empty directory under `$PGDATA/pg_mooncake/initial_copy`.
   `.moonlink_atomic_tmp/` and `source_fingerprints/` there are moonlink's own and stay, empty once every mirror is gone.
 - Calls other than `DropTable` have no timeout: a hung moonlink blocks them until it answers.
+- A server stop or crash during `create_table` leaves the empty `USING mooncake` table behind (the helper connection
+  dies before its cleanup `DROP` runs), and a retry fails until it is dropped.
 - Identifiers containing `.` are rejected (moonlink splits source names on `.`).
 
 End-to-end checks (`scripts/e2e-smoke.sh`, see TESTING.md): one

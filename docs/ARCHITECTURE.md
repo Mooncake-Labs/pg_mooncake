@@ -40,7 +40,8 @@ DuckDB v1.4.1. Statements tagged **[pins]** must be re-verified when a submodule
    **separate, autocommitted connection** (outside the caller's transaction), then sends RPC `CreateTable`. moonlink rejects
    unsupported column types (and partitioned sources without a primary key), sets `REPLICA IDENTITY FULL` on `src` and
    each of its partitions, adds `src` to the publication, copies an initial snapshot (staged under `initial_copy/`), and
-   streams changes from the slot. **[pins]**
+   streams changes from the slot. It answers `CreateTable` only once the copy is persisted to Iceberg and the mirror is
+   then recorded in its sqlite metadata store. **[pins]**
 5. **A query on `dst`**: pg_duckdb sends it to DuckDB. On load, duckdb_mooncake runs `pgmooncake_get_init_query`
    (`ATTACH … TYPE mooncake …`). Table lookup does RPC `GetTableSchema`. The scan does RPC
    `ScanTableBegin(lsn = this backend's XactLastCommitEnd)`, then DuckDB's parquet reader reads the returned data files,

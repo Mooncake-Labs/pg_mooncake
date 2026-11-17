@@ -1,0 +1,5 @@
+# The image builds from the files the Dockerfile copies; build outputs and the duckdb_mooncake submodule are large.
+**/.git
+target
+duckdb_mooncake
+pg_duckdb/third_party/duckdb/build

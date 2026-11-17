@@ -106,6 +106,7 @@ data file paths (concatenated bytes), puffin file paths (concatenated bytes)
 | `source_fingerprints/` | Per mirror, the source table's oid, columns and partitions when the mirror was created; compared at recovery and polled while replicating, and any difference errors the mirror |
 | `.moonlink_atomic_tmp/` | Temporary files of atomic writes |
 | `moonlink.sock` | The RPC socket |
+| `moonlink.lock` | Held (`flock`) by the postmaster that uses the directory; records its PID and data directory. Stays after shutdown |
 | `temp/`, `read_through_cache/` | Scratch space; recreated at worker start |
 
 ## Consistency model

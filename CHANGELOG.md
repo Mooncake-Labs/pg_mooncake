@@ -19,7 +19,9 @@ tables of its own, and nothing is migrated from it; see [Coming from 0.1.x](READ
   needs. It carries the upstream fix for pg_duckdb's TimeZone hook (duckdb/pg_duckdb#981), so configuration reloads
   (`pg_reload_conf()`, `pg_ctl reload`, `SIGHUP`, including reloads by logrotate, systemd or package scripts) and time
   zone changes undone at the end of a transaction don't crash sessions that have run a DuckDB query.
-- The Docker image is `postgres:18` with the bundled pg_duckdb and pg_mooncake built from source.
+- The Docker image is `postgres:18` with the bundled pg_duckdb and pg_mooncake built from source. It sets
+  `mooncake.data_directory` to `/var/lib/postgresql/18/mooncake`, in the image's volume but outside the data
+  directory, so `pg_basebackup` works in it.
 
 ### Usage
 - `mooncake.create_table(mirror, source [, src_uri [, table_config]])` creates a mirror; `src_uri` is a connection
@@ -56,7 +58,8 @@ tables of its own, and nothing is migrated from it; see [Coming from 0.1.x](READ
   behind. ([moonlink PR 2373][ml-2373], [moonlink PR 2374][ml-2374])
 - When `mooncake.create_table` fails before moonlink is involved, the error names the cause:
   `mooncake.create_table failed: could not read the columns of <source>: ...`, `could not create <mirror>: ...` or
-  `could not connect to <uri>: ...`.
+  `could not connect to the source server (host=... port=... dbname=... user=...): ...` (`this server` for the mirror's
+  side). Connection errors show only those four connection parameters, never a password.
 - The initial copy stores the text value backslash-N (`\N`) as that text, not as NULL, and rejects a copied row with
   fewer columns than the table. ([moonlink PR 2371][ml-2371])
 
@@ -111,9 +114,13 @@ tables of its own, and nothing is migrated from it; see [Coming from 0.1.x](READ
 - The moonlink background worker is restarted 15 s after it exits outside a server shutdown, including when it is
   stopped with SIGTERM (for example a `kill` of the worker). A fast shutdown stops it cleanly.
 - `mooncake.data_directory`, read at server start, is the directory for moonlink's files and its socket: `pg_mooncake`
-  under the data directory by default, or an absolute path. Postgres creates it (mode 0700) and refuses to start if it
-  can't use it or another server's moonlink already does. See the README's
+  under the data directory by default, or an absolute path. Postgres creates it (mode 0700) and checks it like a data
+  directory (owned by the server's user, mode 0700 or 0750, not a symbolic link, not the data directory or a parent of
+  it). One server uses a directory at a time: it holds a lock on `moonlink.lock` there, and a second server refuses to
+  start, naming the holder's data directory and PID. See the README's
   [Backups and standbys](README.md#backups-and-standbys).
+- pg_mooncake must be in `shared_preload_libraries`; loaded any other way (`CREATE EXTENSION`, `LOAD`, `pg_upgrade`'s
+  library check) it raises `ERROR: pg_mooncake must be loaded via shared_preload_libraries` (SQLSTATE 55000).
 - moonlink starts once recovery finishes: not on a standby, and on promotion. A promoted standby keeps the mirrors
   whose files are in its `mooncake.data_directory`; drop and re-create the others.
 
@@ -167,6 +174,9 @@ Measured with the project's benchmark on an 8-vCPU, 62 GiB-RAM NVMe machine (Pos
   string (`'abc1def' ~ '[0-9]'` is false), and results that depend on row order without `ORDER BY` can differ, such as
   window functions over `ROWS` frames or ties, because a mirror stores rows in a different order than its source.
 - Identifiers containing `.` are rejected.
+- moonlink stores a mirror's `src_uri` in its metadata store in `mooncake.data_directory`, and its
+  `Table <src_uri> not found` error repeats it. Use a `src_uri` without a password (`.pgpass`, `peer` or certificate
+  authentication).
 - Only the writing session reads its own changes immediately. Other sessions see a change once moonlink applies it,
   about half a second later (longer after large transactions).
 - With `mooncake.data_directory` inside the data directory, as it is by default, `pg_basebackup` fails while any

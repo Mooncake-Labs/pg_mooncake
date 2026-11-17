@@ -33,6 +33,12 @@ This will start Postgres with pg_mooncake preinstalled. You can then connect to 
 docker exec -it mooncake psql -U postgres
 ```
 
+The image keeps mirrors in `/var/lib/postgresql/18/mooncake` (`mooncake.data_directory`), inside its volume but
+outside the data directory, so `pg_basebackup` works in it (see [Backups and standbys](#backups-and-standbys)). If you
+bind-mount a host directory on `/var/lib/postgresql`, or run the container with `--user`, create `18/mooncake` in it
+first, owned by the user the server runs as (the image's `postgres` user by default) with mode 0700; otherwise the
+server doesn't start (`could not create mooncake.data_directory ...: Permission denied`).
+
 ### Option 2: From Source
 
 pg_mooncake supports Postgres 14 to 18 and is built with [Rust][rust-install] and [pgrx][pgrx-install]. It depends on
@@ -88,7 +94,9 @@ duckdb.allow_community_extensions = true
 shared_preload_libraries = 'pg_duckdb,pg_mooncake'
 wal_level = logical
 ```
-- `pg_duckdb` must come before `pg_mooncake`.
+- `pg_duckdb` must come before `pg_mooncake`. pg_mooncake works only when preloaded: otherwise `CREATE EXTENSION` and
+  `LOAD` fail with `pg_mooncake must be loaded via shared_preload_libraries`. `pg_upgrade` loads extension libraries
+  to check them, so the new cluster must preload `pg_duckdb,pg_mooncake` too.
 - `CREATE EXTENSION pg_mooncake` downloads DuckDB's `mooncake` extension from the DuckDB community extensions
   repository, which is why `duckdb.allow_community_extensions` is needed.
 
@@ -178,7 +186,10 @@ If you stop using pg_mooncake, drop all mirrors so that the slot is dropped and 
 
 **Mirroring from another server.** `mooncake.create_table` takes an optional connection string for the source:
 `CALL mooncake.create_table('trades_iceberg', 'trades', 'postgresql://user@host/db')`. The source server needs
-`wal_level = logical`, and the user needs permission to replicate and to alter the source table.
+`wal_level = logical`, and the user needs permission to replicate and to alter the source table. moonlink stores the
+connection string in its metadata store (`moonlink_metadata_store.sqlite` in `mooncake.data_directory`), and some of
+its errors repeat it, so use one without a password: let `.pgpass`, `peer` or certificate authentication supply the
+credentials. pg_mooncake's own connection errors show only the host, port, database and user.
 <!-- RC: src_uri is not covered by the release tests; test it or drop this paragraph. -->
 
 **Column types.** Mirrors store booleans, character and text types, integers, floating-point numbers, `numeric` (up to
@@ -216,9 +227,14 @@ from `shared_preload_libraries`, restart Postgres, and delete the `mooncake.data
 moonlink keeps all its files, including its RPC socket `moonlink.sock`, in the directory set by
 `mooncake.data_directory`. The setting is read at server start, so changing it needs a restart. The default,
 `pg_mooncake`, is relative to the data directory, so mirrors live in `$PGDATA/pg_mooncake/`; an absolute path puts them
-elsewhere. At startup Postgres creates the directory (mode 0700) if it is missing. It refuses to start if the directory
-is not owned by the server's user or not writable, if the socket path would be longer than 107 bytes, or if another
-server's moonlink already uses it (its `moonlink.sock` accepts connections).
+elsewhere; `./pg_mooncake` and the absolute path of `$PGDATA/pg_mooncake` count as the default. At startup Postgres
+creates the directory (mode 0700) if it is missing, and checks it like a data directory: it must be owned by the
+server's user, writable, have mode 0700 or 0750, not be a symbolic link, and not be the data directory or contain it,
+and the socket path must be at most 107 bytes. Otherwise the server refuses to start with a `FATAL` that says why.
+
+One server per directory: the server locks `moonlink.lock` in the directory while it runs, and refuses to start if
+another server holds that lock (the error names that server's data directory and postmaster PID) or if a moonlink socket
+there accepts connections. The lock file stays after a shutdown; that is harmless, and the next start locks it again.
 
 **pg_basebackup.** With the default directory, `pg_basebackup` fails while any mirror exists
 (`file name too long for tar format`): moonlink's file names are longer than the 99 characters Postgres' tar stream

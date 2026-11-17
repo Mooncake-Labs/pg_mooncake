@@ -23,7 +23,9 @@ from the PostgreSQL apt repository and the Rust toolchain from `rust-toolchain.t
   and 18, on pushes and manual runs only (about 25 minutes each). It passes only if the script exits 0 with
   `GATE e2e-smoke PASS` as its last line. The run summary lists the failures, skipped checks and fixed bugs; logs are
   attached as artifacts.
-- `docker` builds the Docker image from the checkout (`docker build`, not pushed), on pushes and manual runs only.
+- `docker` builds the Docker image from the checkout (not pushed) and runs it, on pushes and manual runs only: a mirror
+  must return the source's rows, `mooncake.data_directory` must be the image's default with `moonlink.sock` in it, and
+  `pg_basebackup` must succeed inside the container.
 - `release-markers` runs on `v*` tags only and fails while release markers remain (`scripts/check-release-markers.sh`).
 
 ## Release markers
@@ -42,16 +44,17 @@ resets after a mirror read, writes to mirrors (which must fail with `cannot modi
 (`duckdb.postgres_role`, the server-file roles, GRANT and REVOKE ALL), a clean restart after a large transaction, a
 crash (`pg_ctl stop -m immediate`), and `pg_basebackup` with `mooncake.data_directory` outside the data directory: plain
 and tar backups, a copy that must refuse to start on the primary's moonlink directory, a copy started with its own
-directory, and a standby that has no moonlink until it is promoted. A statement that crashes a backend (and so restarts
-every Postgres process) fails its check. After the crash, the moonlink background worker must come back without a crash
-loop, `mooncake.list_tables()` must answer, and dropping and re-creating the mirror must give the heap contents. It also
-checks that the duckdb_mooncake that DuckDB loads is built from the submodule commit that the DuckDB community extension
-for DuckDB v1.4.1 uses, with the same moonlink wire protocol.
+directory, a standby that has no moonlink until it is promoted (and whose directory another server must not take), and
+directories a server must refuse (a symbolic link, mode 0777, the data directory or its parent). A statement that
+crashes a backend (and so restarts every Postgres process) fails its check. After the crash, the moonlink background
+worker must come back without a crash loop, `mooncake.list_tables()` must answer, and dropping and re-creating the
+mirror must give the heap contents. It also checks that the duckdb_mooncake that DuckDB loads is built from the
+submodule commit that the DuckDB community extension for DuckDB v1.4.1 uses, with the same moonlink wire protocol.
 
-Requirements: Linux, bash 4 or later, GNU coreutils, GNU find, procps, and a PostgreSQL install (tested with 17 and 18)
-with pg_duckdb and pg_mooncake installed and the submodules checked out. The script checks its tool requirements before
-it starts. It runs about 25 minutes, creates clusters and their sockets under `$E2E_DIR` on `$PGPORT`, and stops them
-when done.
+Requirements: Linux, bash 4 or later, GNU coreutils, GNU find, procps, python3, and a PostgreSQL install (tested with 17
+and 18) with pg_duckdb and pg_mooncake installed and the submodules checked out. The script checks its tool requirements
+before it starts. It runs about 25 minutes, creates clusters and their sockets under `$E2E_DIR` on `$PGPORT`, and stops
+them when done.
 
 ```bash
 PG_PREFIX=/path/to/pg17 \

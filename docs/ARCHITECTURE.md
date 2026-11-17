@@ -51,8 +51,9 @@
    event trigger queues it, and a pre-commit transaction callback sends RPC `DropTable` if the drop is still in effect
    (one 30 s deadline for all drops of the transaction). A failure becomes a WARNING and the DROP still commits
    (invariants: [AGENTS.md](../AGENTS.md#2-other-invariants), section 2, item 5).
-   moonlink removes the table's files, its sqlite row, and the source's publication membership. Replication connections are keyed by `src_uri`: once
-   the last mirror of a `src_uri` is gone, moonlink drops that slot and publication.
+   moonlink removes the table's files, its sqlite row, and the source's publication membership. Replication
+   connections are keyed by `src_uri`: once the last mirror of a `src_uri` is gone, moonlink drops that slot and
+   publication.
 
 The mirror's own PG table (`USING mooncake`) holds no data. Its AM callbacks are `unimplemented!()` except the ones
 needed for DDL and planning, so direct DML on a mirror errors out.
@@ -73,7 +74,7 @@ on the wire). Response = `Result<T, moonlink_error::ErrorStruct>`.
 | 3 | GetParquetMetadatas | data_files | Vec<Vec<u8>> | nobody |
 | 4 | GetTableSchema | database, table | Arrow IPC stream (schema only) | duckdb_mooncake |
 | 5 | ListTables | – | Vec<Table{database, table, cardinality, commit_lsn, flush_lsn: Option, iceberg_warehouse_location}> | pg_mooncake |
-| 6 | LoadFiles | database, table, files | always an "unsupported" error **[pins]** | nobody (the SQL procedure was removed); kept for the variant order |
+| 6 | LoadFiles | database, table, files | always an "unsupported" error **[pins]** | nobody: no SQL procedure exists in 0.3.0; the variant is kept for the wire order |
 | 7 | OptimizeTable | database, table, mode (`data`/`index`/`full`) | () | pg_mooncake |
 | 8 | ScanTableBegin | database, table, lsn: u64 | Vec<u8> (layout below) | duckdb_mooncake |
 | 9 | ScanTableEnd | database, table | () | duckdb_mooncake |

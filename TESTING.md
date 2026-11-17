@@ -81,7 +81,7 @@ ran and passed), 2 for a usage or setup error. Cluster logs and query outputs st
 ### Known limitations and the gate
 
 `scripts/e2e-known-bugs.txt` lists the documented limitations the gate expects at the submodule pins, each with a regex
-for its failure signature; the same limitations are in the CHANGELOG's "Known limitations". A check that fails that
+for its failure signature; these limitations are among the CHANGELOG's "Known limitations". A check that fails that
 way reports `XFAIL(limitation:<bugs>)` and doesn't count against the gate; one that fails in any other way is `FAIL`.
 When a fix makes a listed check pass, it reports `XPASS(<bugs>)`, and `KNOWN <bug> FIXED` means every check listed for
 that bug passed: remove its lines in the same change. A missing, empty or malformed known-bugs file is a setup error

@@ -10,7 +10,7 @@
 
 ## Overview
 
-**pg_mooncake** is a Postgres extension that creates a columnstore mirror of your Postgres tables in [Iceberg][iceberg-link], enabling fast analytics queries with sub-second freshness:
+**pg_mooncake** is a Postgres extension that creates a columnstore mirror of your Postgres tables in [Iceberg][iceberg-link], enabling fast analytics queries on fresh data: changes are visible about half a second later from another session (immediately in the writing session):
 - **Real-time ingestion** powered by [moonlink][moonlink-link] for streaming and batched INSERT/UPDATE/DELETE.
 - **Fast analytics** accelerated by [DuckDB][pgduckdb-link].
 - **Postgres-native** allowing you to query a columnstore table just like a regular Postgres table.
@@ -54,6 +54,8 @@ On Debian or Ubuntu, for example:
 sudo apt install build-essential cmake ninja-build pkg-config clang libclang-dev \
   libssl-dev libcurl4-openssl-dev liblz4-dev postgresql-server-dev-18
 ```
+`postgresql-server-dev-18` (and the other majors' packages) comes from the PostgreSQL project's apt repository
+(PGDG, apt.postgresql.org); distribution repositories usually carry only one Postgres major.
 
 **Build and install.** Clone the repository with its submodules:
 ```bash
@@ -69,7 +71,7 @@ cargo pgrx init --pg18=$(which pg_config)   # Replace with your Postgres version
 
 Then build and install pg_duckdb and pg_mooncake for that version:
 ```bash
-make pg_duckdb PG_VERSION=pg18              # Skip if pg_duckdb is already installed
+make pg_duckdb PG_VERSION=pg18              # Skip only if this bundled pg_duckdb (v1.0.0-mooncake.1) is installed
 make install PG_VERSION=pg18
 ```
 
@@ -123,15 +125,20 @@ INSERT INTO trades VALUES
   (4, 'AMZN', '2024-06-05 10:15:00', 210);
 ```
 
-Finally, query `trades_iceberg` to see that it reflects the up-to-date state of `trades`:
+Finally, in the same session, query `trades_iceberg` to see that it reflects the up-to-date state of `trades`:
 ```sql
 SELECT avg(price) FROM trades_iceberg WHERE symbol = 'AMZN';
 ```
+A query on a mirror waits until moonlink has applied the session's own last commit, so the writing session always sees
+its changes. Other sessions see a change once moonlink applies it, about half a second later (longer after large
+transactions).
 
 ## Self-Hosting
 
-**Roles.** Creating the extension and calling `mooncake.create_table` require a superuser, and in practice so does
-reading mirrors:
+**Roles.** Creating the extension requires a superuser. `mooncake.create_table` needs, in practice, a superuser too: it
+creates the mirror table, creates a replication slot and adds the source to a publication (the `REPLICATION` attribute,
+and `CREATE` on the database for the first mirror), sets `REPLICA IDENTITY FULL` on the source (ownership of it), and
+reads the source (`SELECT`). Reading mirrors needs, in practice, a superuser as well:
 
 - Mirrors are read by DuckDB through pg_duckdb, so a role needs pg_duckdb's `duckdb.postgres_role` (set it in
   `postgresql.conf`, restart, then `GRANT <that role> TO <user>`). `GRANT SELECT` on the mirror alone is not enough:
@@ -152,7 +159,8 @@ Postgres server log. Postgres restarts it 15 seconds after a crash.
 
 **Local connections.** `mooncake.create_table` connects back to Postgres over its Unix socket as the current user,
 without a password, to create the mirror table and replicate from the source. `pg_hba.conf` must accept that local
-connection (for example with `trust` or `peer`).
+connection (for example with `trust` or `peer`). moonlink's logical replication connection is matched by the same
+per-database entries; `replication` lines in `pg_hba.conf` are only for physical replication and are not needed.
 
 **Replication slots and WAL.** Each database with mirrors uses one logical replication slot (usually named
 `moonlink_slot_<database>`) and the publication `moonlink_pub`. Both are created by the first `mooncake.create_table`
@@ -174,15 +182,25 @@ If you stop using pg_mooncake, drop all mirrors so that the slot is dropped and 
 
 **Renames and schema changes.** moonlink keeps each mirror under the database, schema and table name it was created
 with. pg_mooncake rejects renaming a mirror, moving it to another schema, and renaming a schema that contains mirrors.
-It cannot see a rename of the database, which runs from another database: drop that database's mirrors before
-`ALTER DATABASE ... RENAME TO` and re-create them afterwards. Column changes on a source table (for example
+`ALTER DATABASE ... RENAME TO` fails while the database has mirrors, because moonlink's replication connections use
+it: drop that database's mirrors first and re-create them afterwards. Column changes on a source table (for example
 `ALTER TABLE ... ADD COLUMN` or `DROP COLUMN`) put its mirrors into the errored state; drop and re-create them (see
 [Durability and Recovery](#durability-and-recovery)).
 
+**Table settings.** The optional fourth argument of `mooncake.create_table` is a JSON object of moonlink settings for
+the mirror (default `'{}'`). The supported keys are under `"mooncake"`: `skip_index_merge` and `skip_data_compaction`
+(booleans, default `false`) turn off the background index merges and data compaction, and `mem_slice_bytes` (default
+16 MiB) is how many bytes of changes are buffered in memory before they are written to a data file. For example
+`CALL mooncake.create_table('trades_iceberg', 'trades', NULL, '{"mooncake": {"skip_data_compaction": true}}')`.
+Unknown keys are ignored. Other moonlink settings, such as `"iceberg"` storage, are not supported in this release.
+
 **Monitoring.** `SELECT * FROM mooncake.list_tables();` lists the mirrors with their commit and flush LSNs.
 
-**Backups.** Mirrors can be rebuilt from their source tables. Replication slots are not part of a base backup, so after
-restoring Postgres from a backup, drop and re-create the mirrors.
+**Backups and standbys.** `pg_basebackup` fails on a server that has mirrors (`file name too long for tar format`):
+moonlink's file names under `$PGDATA/pg_mooncake` are longer than the 99 characters Postgres' tar stream allows. This
+also stops `pg_basebackup` from creating a standby. Drop the mirrors before running it, or use a file-system-level
+backup. Mirrors can be rebuilt from their source tables, so after restoring Postgres from any backup, drop and
+re-create the mirrors.
 
 **Removing pg_mooncake.** Drop all mirrors first (`DROP TABLE <mirror>;`): `DROP EXTENSION pg_mooncake CASCADE` would
 drop the mirror tables without telling moonlink, which keeps replicating them. Then `DROP EXTENSION pg_mooncake;`, remove it
@@ -220,13 +238,21 @@ created again under the same name, which removes it. After a crash, if a mirror 
 
 pg_mooncake 0.3.0 is a new architecture. 0.1.x stored data in its own columnstore tables; 0.3.0 keeps your data in
 regular Postgres tables and mirrors them into Iceberg through logical replication. Nothing is migrated from 0.1.x, and
-`ALTER EXTENSION pg_mooncake UPDATE` cannot upgrade it. Copy any data you want to keep into regular tables (for example
-`CREATE TABLE t_heap AS SELECT * FROM t;`), then drop the 0.1 extension and its columnstore tables:
-```sql
-DROP EXTENSION pg_mooncake CASCADE;
-```
-Then install 0.3.0 (see [Installation](#installation)) and follow the [Quick Start](#quick-start). See the
-[CHANGELOG](CHANGELOG.md) for what 0.3.0 does and its known limitations.
+`ALTER EXTENSION pg_mooncake UPDATE` cannot upgrade it.
+
+1. Copy any data you want to keep into regular tables, for example `CREATE TABLE t_heap AS SELECT * FROM t;`.
+   `CREATE TABLE AS` doesn't copy the primary key or other constraints, so add them back
+   (`ALTER TABLE t_heap ADD PRIMARY KEY (id);`); a partitioned source needs a primary key to be mirrored.
+2. Drop the 0.1 extension and its columnstore tables: `DROP EXTENSION pg_mooncake CASCADE;`.
+3. Delete 0.1's data files, which `DROP EXTENSION` leaves behind: `$PGDATA/mooncake_local_tables/` and
+   `$PGDATA/mooncake_local_cache/`, and, if you set `mooncake.default_bucket`, the `mooncake_<database>_<table>_<oid>/`
+   prefixes in that bucket.
+4. Install 0.3.0 (see [Installation](#installation)). Add `pg_duckdb,pg_mooncake` to `shared_preload_libraries`, set
+   `wal_level = logical` and `duckdb.allow_community_extensions = true`, and restart Postgres before
+   `CREATE EXTENSION pg_mooncake CASCADE`.
+
+Then follow the [Quick Start](#quick-start). See the [CHANGELOG](CHANGELOG.md) for what 0.3.0 does and its known
+limitations.
 
 ## Contributing
 

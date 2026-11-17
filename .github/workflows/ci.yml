@@ -225,7 +225,7 @@ jobs:
           if-no-files-found: ignore
           retention-days: 14
 
-  # Builds the Docker image (not pushed), with pg_duckdb and pg_mooncake from this commit.
+  # Builds the Docker image (not pushed), with pg_duckdb and pg_mooncake from this commit, and runs it.
   docker:
     name: docker build
     if: github.event_name != 'pull_request'
@@ -243,3 +243,30 @@ jobs:
           sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /usr/local/.ghcup /opt/hostedtoolcache/CodeQL
           df -h / | tail -1
       - run: docker build --tag pg_mooncake:ci .
+      - name: Run the image
+        run: |
+          docker run -d --name mooncake -e POSTGRES_PASSWORD=ci pg_mooncake:ci
+          # The entrypoint's initialization server listens only on the Unix socket, the final one on TCP too.
+          for _ in $(seq 90); do
+            docker exec mooncake pg_isready -q -h 127.0.0.1 -U postgres && break
+            sleep 2
+          done
+          docker exec mooncake pg_isready -h 127.0.0.1 -U postgres
+          docker exec -i mooncake psql -U postgres -v ON_ERROR_STOP=1 -qAt > "$RUNNER_TEMP/result.txt" <<'SQL'
+          CREATE EXTENSION pg_mooncake CASCADE;
+          CREATE TABLE t (id int PRIMARY KEY, v text);
+          INSERT INTO t SELECT g, md5(g::text) FROM generate_series(1, 1000) g;
+          CALL mooncake.create_table('t_mc', 't');
+          INSERT INTO t VALUES (1001, 'after create_table');
+          SELECT count(*) || '|' || sum(id) FROM t_mc;
+          SHOW mooncake.data_directory;
+          SQL
+          cat "$RUNNER_TEMP/result.txt"
+          [[ $(sed -n 1p "$RUNNER_TEMP/result.txt") == "1001|501501" ]]
+          [[ $(sed -n 2p "$RUNNER_TEMP/result.txt") == /var/lib/postgresql/18/mooncake ]]
+          docker exec mooncake test -S /var/lib/postgresql/18/mooncake/moonlink.sock
+          # moonlink's files are outside the data directory, so a base backup works.
+          docker exec mooncake pg_basebackup -U postgres -D /tmp/basebackup -Ft -X fetch
+      - name: Show the container log
+        if: failure()
+        run: docker logs mooncake || true

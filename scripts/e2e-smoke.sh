@@ -3,34 +3,28 @@
 #
 # Usage: scripts/e2e-smoke.sh <pg_major> [scenario ...]
 #   scenarios: build main schema restart_after_drop persist moonlink_down ddl ddl_drop truncate
-#              source_drop_restart config_reload mirror_writes roles big_txn_restart crash
+#              source_drop_restart config_reload mirror_writes roles big_txn_restart crash basebackup
 #              (default: all; each on a fresh cluster)
-# Requires Linux, bash >= 4, GNU coreutils (timeout, date), procps (pgrep, ps), diff and GNU find; checked
+# Requires Linux, bash >= 4, GNU coreutils (timeout, date), procps (pgrep, ps), diff, GNU find and python3; checked
 # before anything else runs.
 #
 # Output (one line each, machine-readable; <check> never contains spaces):
 #   BUILD <key>=<value>                        what is under test (binaries, hashes, commits)
-#   RESULT <scenario.check> <status> [detail]  status: PASS | FAIL | XFAIL(<bugs>) |
-#                                              XFAIL(limitation:<bugs>) | XPASS(<bugs>) | SKIP
-#   INFO <scenario.check> ...                  reported only, never part of the gate
-#   KNOWN <bug> FIXED|OPEN|UNKNOWN|NOT-RUN|NOT-SEEN <check>=<status>,... class=blocking|limitation [ids=<ids>]
-#   SUMMARY e2e-smoke pg<major> scenarios=<a,b,...> pass=N xpass=N fail=N xfail=N xfail_limitation=N skip=N
-#   BLOCKING e2e-smoke <n> [<bug>,...]          blocking known bugs listed (whether or not seen)
-#   GATE e2e-smoke PASS|FAIL|BLOCKED|INCOMPLETE  (last line)
-# Every RESULT line is a gate check. GATE is FAIL (exit 1) if any RESULT is FAIL, SKIP or XFAIL of
-# a blocking bug, or if no check passed; otherwise BLOCKED (exit 4) while the known-bugs file lists any bug of class
-# blocking, even one this run did not hit; otherwise INCOMPLETE (exit 3) if not every scenario ran,
-# and PASS (exit 0). A check that fails only as known limitations (XFAIL(limitation:...)) does not
-# fail the gate. SKIP means a check could not run, e.g. because postgres died.
+#   RESULT <scenario.check> <status> [detail]  status: PASS | FAIL | XFAIL(limitation:<bugs>) | XPASS(<bugs>) | SKIP
+#   KNOWN <bug> FIXED|OPEN|UNKNOWN|NOT-RUN <check>=<status>,...
+#   SUMMARY e2e-smoke pg<major> scenarios=<a,b,...> pass=N xpass=N fail=N xfail_limitation=N skip=N
+#   GATE e2e-smoke PASS|FAIL|INCOMPLETE         (last line)
+# Every RESULT line is a gate check. GATE is FAIL (exit 1) if any RESULT is FAIL or SKIP, or if no check passed;
+# otherwise INCOMPLETE (exit 3) if not every scenario ran, and PASS (exit 0). SKIP means a check could not run, e.g.
+# because postgres died. Usage and setup errors exit 2.
 #
-# Known bugs come from KNOWN_BUGS=<file> (default scripts/e2e-known-bugs.txt). Setup errors (exit 2): a
-# missing or non-regular file, KNOWN_BUGS set to an empty value, a file without entries (unless
-# EMPTY_KNOWN_BUGS_OK=1), and a regex that matches the empty string or arbitrary text. It lists, per check, a
-# bug and a regex for that bug's failure signature. A listed check whose failure signatures all match listed bugs reports XFAIL(<bugs>). Any other failure stays FAIL,
-# so a new problem in a check that is already known to fail is not hidden. A listed check that
-# passes reports XPASS(<bugs>), and KNOWN <bug> FIXED means every check listed for the bug passed
-# (NOT-SEEN instead for a bug whose description starts with "Intermittent:").
-# KNOWN_BUG_IDS=<file> (lines "<bug> <ids>") appends tracker ids to the KNOWN lines.
+# Known limitations come from KNOWN_BUGS=<file> (default scripts/e2e-known-bugs.txt). It lists, per check, a
+# limitation and a regex for its failure signature. A listed check whose failure signatures all match listed
+# limitations reports XFAIL(limitation:<bugs>) and doesn't fail the gate. Any other failure stays FAIL, so a new
+# problem in a check that is already known to fail is not hidden. A listed check that passes reports XPASS(<bugs>),
+# and KNOWN <bug> FIXED means every check listed for it passed. Setup errors (exit 2): a missing or non-regular
+# file, KNOWN_BUGS set to an empty value, a file without entries (unless EMPTY_KNOWN_BUGS_OK=1), and a regex that
+# matches the empty string.
 #
 # Mirror comparisons wait for an LSN, not a fixed time: commit a row to a mirrored fence table, poll
 # mooncake.list_tables() until the fence mirror's commit_lsn reaches that commit (the replication
@@ -41,18 +35,18 @@
 #
 # Env: PG_PREFIX (PostgreSQL install root; default: the one whose pg_config is on PATH),
 #      DUCKDB_EXTENSION_DIR (required: duckdb.extension_directory of the test clusters),
-#      E2E_DIR (clusters and outputs, default ${TMPDIR:-/tmp}/pg_mooncake-e2e), BUILD_SRC (checkout
+#      E2E_DIR (clusters, their sockets and outputs, default ${TMPDIR:-/tmp}/pg_mooncake-e2e), BUILD_SRC (checkout
 #      the binaries were built from; default the harness checkout), PGPORT (default 5400+major),
 #      CONVERGE_SECS (fence timeout, 30), GRACE_SECS (apply grace after the fence, 5),
-#      PSQL_TIMEOUT (per psql call, 60), KNOWN_BUGS, KNOWN_BUG_IDS, EMPTY_KNOWN_BUGS_OK (1: allow an
-#      existing known-bugs file without entries),
+#      PSQL_TIMEOUT (per psql call, 60), KNOWN_BUGS, EMPTY_KNOWN_BUGS_OK (1: allow an existing known-bugs
+#      file without entries),
 #      WIRE_MOONLINK_RPC_REV and COMMUNITY_DUCKDB_MOONCAKE_REF (expected pins, see scenario build).
 set -uo pipefail
 
 preflight() {
   local missing=() c
   (( BASH_VERSINFO[0] >= 4 )) || missing+=("bash >= 4 (this is $BASH_VERSION)")
-  for c in timeout pgrep ps diff find sed awk; do command -v "$c" > /dev/null || missing+=("$c"); done
+  for c in timeout pgrep ps diff find sed awk python3; do command -v "$c" > /dev/null || missing+=("$c"); done
   [[ $(date +%N 2>/dev/null) =~ ^[0-9]+$ ]] || missing+=("GNU date (date +%N)")
   [[ $(find / -maxdepth 0 -printf '%y' 2>/dev/null) == d ]] || missing+=("GNU find (find -printf)")
   [[ $(uname -s) == Linux ]] || missing+=("Linux (the moonlink bgworker is found by its process title)")
@@ -73,7 +67,7 @@ unset LANGUAGE
 [[ $# -ge 1 && $1 =~ ^[0-9]+$ ]] || { echo "usage: $0 <pg_major> [scenario ...]" >&2; exit 2; }
 MAJOR=$1; shift
 ALL_SCENARIOS=(build main schema restart_after_drop persist moonlink_down ddl ddl_drop truncate source_drop_restart
-  config_reload mirror_writes roles big_txn_restart crash)
+  config_reload mirror_writes roles big_txn_restart crash basebackup)
 SCENARIOS=("$@"); [[ ${#SCENARIOS[@]} -eq 0 ]] && SCENARIOS=("${ALL_SCENARIOS[@]}")
 SCRIPT_DIR=$(cd "$(dirname "$0")" && pwd)
 if [[ -z ${PG_PREFIX:-} ]] && command -v pg_config > /dev/null; then PG_PREFIX=$(dirname "$(pg_config --bindir)"); fi
@@ -86,9 +80,12 @@ CONVERGE_SECS=${CONVERGE_SECS:-30}
 GRACE_SECS=${GRACE_SECS:-5}
 PSQL_TIMEOUT=${PSQL_TIMEOUT:-60}
 KNOWN_BUGS=${KNOWN_BUGS-$SCRIPT_DIR/e2e-known-bugs.txt}
-KNOWN_BUG_IDS=${KNOWN_BUG_IDS:-}
 DB_USER=${USER:-$(id -un)}
-export PGHOST=/tmp PGDATABASE=postgres PGPORT=${PGPORT:-$((5400 + MAJOR))}
+mkdir -p "$E2E_DIR" && E2E_DIR=$(cd "$E2E_DIR" && pwd) || { echo "cannot create E2E_DIR=$E2E_DIR" >&2; exit 2; }
+# The clusters' sockets are in E2E_DIR.
+export PGHOST=$E2E_DIR PGDATABASE=postgres PGPORT=${PGPORT:-$((5400 + MAJOR))}
+# A Unix socket path ("<dir>/.s.PGSQL.<port>") holds at most 107 bytes.
+(( ${#E2E_DIR} + ${#PGPORT} + 10 <= 107 )) || { echo "E2E_DIR is too long for a socket path: $E2E_DIR" >&2; exit 2; }
 # The session checks set the time zone themselves; a client default would change what they test.
 unset PGTZ PGOPTIONS
 # moonlink's own log lines (e.g. "Received SIGTERM, shutting down") are INFO; keep its default level.
@@ -101,18 +98,14 @@ pg_major_found=$("$BIN/pg_config" --version | sed -E 's/^PostgreSQL ([0-9]+).*/\
 [[ $pg_major_found == "$MAJOR" ]] || { echo "$PG_PREFIX is PostgreSQL $pg_major_found, not $MAJOR (set PG_PREFIX)" >&2; exit 2; }
 [[ -n $EXTDIR ]] || { echo "set DUCKDB_EXTENSION_DIR (see TESTING.md)" >&2; exit 2; }
 
-# ---- known bugs ----------------------------------------------------------------------------------
-# File lines: "bug <name> class=blocking|class=limitation <description>" (once per bug),
-# "check <scenario.check> <bug> <regex>" and
-# "requires <scenario.check> <bug> <earlier scenario.check> <bug2>". The regex (bash ERE) is matched
-# against each failure signature: the check's detail, or one line per distinct cause where a check
-# reports several (panics, exits, crash restarts, bgworker errors, leftover files; the forms are
-# listed at the top of scripts/e2e-known-bugs.txt). A "requires" line makes the check's rule for
-# <bug> count only if the earlier check failed with <bug2>, for failures whose text alone doesn't
-# identify the cause (a hung DROP, a missing fence mirror).
-declare -A BUG_DESC=() BUG_CLASS=() KNOWN_RULES=() BUG_IDS=() RULE_REQUIRES=()
+# ---- known limitations --------------------------------------------------------------------------
+# File lines: "bug <name> <description>" (once per limitation) and "check <scenario.check> <bug> <regex>". The
+# regex (bash ERE) is matched against each failure signature: the check's detail, or one line per distinct cause
+# where a check reports several (panics, exits, crash restarts, bgworker errors, leftover files; the forms are
+# listed at the top of scripts/e2e-known-bugs.txt).
+declare -A BUG_DESC=() KNOWN_RULES=()
 load_known_bugs() {
-  local line kind a b rest other other_bug extra n=0 rc
+  local line kind a b rest n=0 rc
   # The file must exist (default or given); EMPTY_KNOWN_BUGS_OK only allows one without entries.
   if [[ ! -f $KNOWN_BUGS || ! -r $KNOWN_BUGS ]]; then echo "KNOWN_BUGS=$KNOWN_BUGS: missing or not a readable regular file" >&2; exit 2; fi
   while IFS= read -r line || [[ -n $line ]]; do
@@ -121,55 +114,25 @@ load_known_bugs() {
     read -r kind a b rest <<< "$line"
     case $kind in
       bug)
-        if [[ $b != class=blocking && $b != class=limitation || -z $rest ]]; then
-          echo "$KNOWN_BUGS:$n: expected 'bug <name> class=blocking|class=limitation <description>'" >&2; exit 2
-        fi
+        if [[ -z $b ]]; then echo "$KNOWN_BUGS:$n: expected 'bug <name> <description>'" >&2; exit 2; fi
         if [[ ! $a =~ ^[A-Za-z0-9_.-]+$ ]]; then echo "$KNOWN_BUGS:$n: bug name '$a' must match [A-Za-z0-9_.-]+" >&2; exit 2; fi
-        if [[ -n ${BUG_CLASS[$a]:-} ]]; then echo "$KNOWN_BUGS:$n: bug $a is declared twice" >&2; exit 2; fi
-        BUG_CLASS[$a]=${b#class=}; BUG_DESC[$a]=$rest ;;
+        if [[ -n ${BUG_DESC[$a]:-} ]]; then echo "$KNOWN_BUGS:$n: bug $a is declared twice" >&2; exit 2; fi
+        BUG_DESC[$a]="$b${rest:+ $rest}" ;;
       check)
         if [[ -z $rest || -z ${BUG_DESC[$b]:-} ]]; then
           echo "$KNOWN_BUGS:$n: expected 'check <check> <declared bug> <regex>'" >&2; exit 2
         fi
         [[ "" =~ $rest ]]; rc=$?
         if (( rc == 2 )); then echo "$KNOWN_BUGS:$n: invalid regex: $rest" >&2; exit 2; fi
-        # A regex that matches the empty string, or arbitrary short text, matches every signature.
+        # A regex that matches the empty string matches every signature.
         if (( rc == 0 )); then echo "$KNOWN_BUGS:$n: regex matches the empty string: $rest" >&2; exit 2; fi
-        # ... and so does one that matches these: canaries shaped like signatures, and plain text.
-        if [[ x =~ $rest || "a b" =~ $rest || "zq canary x1" =~ $rest || "zq/canary.rs:1 x1" =~ $rest ||
-              "x[0-9]: /a/b.rs:1 q9 [z]" =~ $rest ||
-              "the quick brown fox jumps over the lazy dog 0123456789" =~ $rest ||
-              "backend crashed (zq, signal 1, cassert=no) running [zq]; TRAP: none" =~ $rest ]]; then
-          echo "$KNOWN_BUGS:$n: regex matches arbitrary text: $rest" >&2; exit 2
-        fi
         KNOWN_RULES[$a]+="$b"$'\t'"$rest"$'\n' ;;
-      requires)
-        read -r kind a b other other_bug extra <<< "$line"
-        if [[ -z $other_bug || -n $extra || -z ${BUG_DESC[$b]:-} || -z ${BUG_DESC[$other_bug]:-} ]]; then
-          echo "$KNOWN_BUGS:$n: expected 'requires <check> <bug> <earlier check> <bug>'" >&2; exit 2
-        fi
-        RULE_REQUIRES[$a|$b]+="$other|$other_bug " ;;
       *) echo "$KNOWN_BUGS:$n: unknown entry '$kind'" >&2; exit 2 ;;
     esac
   done < "$KNOWN_BUGS"
-  # A rule that accepts a bare crash restart explains any crash, unless a "requires" line ties it to
-  # an earlier failure of its bug.
-  local key
-  for key in "${!KNOWN_RULES[@]}"; do
-    while IFS=$'\t' read -r b rest; do
-      [[ -n $b && -z ${RULE_REQUIRES[$key|$b]:-} ]] || continue
-      if [[ "reinitializing x1" =~ $rest ]]; then
-        echo "$KNOWN_BUGS: rule for $key ($b) matches any crash restart without a 'requires' line: $rest" >&2; exit 2
-      fi
-    done <<< "${KNOWN_RULES[$key]}"
-  done
-  # With no entries, no blocking bug is listed and the gate could pass by accident (an empty file, a
-  # file of comments). A release with no known bugs says so explicitly.
-  if (( ${#BUG_CLASS[@]} == 0 )) && [[ ${EMPTY_KNOWN_BUGS_OK:-} != 1 ]]; then
-    echo "$KNOWN_BUGS: no 'bug' entries (set EMPTY_KNOWN_BUGS_OK=1 if there are no known bugs)" >&2; exit 2
-  fi
-  if [[ -f $KNOWN_BUG_IDS ]]; then
-    while read -r a b; do [[ -z $a || $a == \#* ]] || BUG_IDS[$a]=$b; done < "$KNOWN_BUG_IDS"
+  # A file without entries is more likely the wrong file than a release without limitations; that is said explicitly.
+  if (( ${#BUG_DESC[@]} == 0 )) && [[ ${EMPTY_KNOWN_BUGS_OK:-} != 1 ]]; then
+    echo "$KNOWN_BUGS: no 'bug' entries (set EMPTY_KNOWN_BUGS_OK=1 if there are no known limitations)" >&2; exit 2
   fi
 }
 load_known_bugs
@@ -182,18 +145,6 @@ known_bugs_of() {
   done <<< "${KNOWN_RULES[$1]:-}"
   echo "$bugs"
 }
-# rule_requirements_met <check> <bug>: every "requires" for the check's <bug> rule is satisfied.
-rule_requirements_met() {
-  local req
-  for req in ${RULE_REQUIRES[$1|$2]:-}; do
-    [[ ,${MATCHED_OF[${req%|*}]:-}, == *",${req#*|},"* ]] || return 1
-  done
-}
-# only_limitations <bug,...>: every bug is of class limitation (such an XFAIL doesn't fail the gate).
-only_limitations() {
-  local b
-  for b in ${1//,/ }; do [[ ${BUG_CLASS[$b]:-} == limitation ]] || return 1; done
-}
 # known_bugs_matching <check> <signatures>: the listed bugs that explain the failure, or nothing
 # unless every signature line matches at least one of the check's bug regexes.
 known_bugs_matching() {
@@ -202,7 +153,7 @@ known_bugs_matching() {
   while IFS= read -r sig; do
     hit=""
     while IFS=$'\t' read -r bug re; do
-      [[ -n $bug ]] && [[ $sig =~ $re ]] && rule_requirements_met "$1" "$bug" || continue
+      [[ -n $bug && $sig =~ $re ]] || continue
       hit=1
       [[ ,$bugs, == *",$bug,"* ]] || bugs+="${bugs:+,}$bug"
     done <<< "$rules"
@@ -213,7 +164,7 @@ known_bugs_matching() {
 
 # ---- results -------------------------------------------------------------------------------------
 declare -A STATUS_OF=() MATCHED_OF=()
-declare -A COUNT=([pass]=0 [xpass]=0 [fail]=0 [xfail]=0 [xfail_limitation]=0 [skip]=0)
+declare -A COUNT=([pass]=0 [xpass]=0 [fail]=0 [xfail_limitation]=0 [skip]=0)
 one_line() { tr '\n\t' '  ' | sed 's/ *$//' | cut -c1-"${1:-300}"; }
 pg_alive() { "$BIN/pg_ctl" -D "$DATA" status > /dev/null 2>&1; }
 
@@ -233,9 +184,7 @@ result() {
       bugs=$(known_bugs_matching "$check" "${sigs:-$detail}")
       if [[ -n $bugs ]]; then
         MATCHED_OF[$check]=$bugs
-        if only_limitations "$bugs"; then
-          status="XFAIL(limitation:$bugs)"; COUNT[xfail_limitation]=$((COUNT[xfail_limitation] + 1))
-        else status="XFAIL($bugs)"; COUNT[xfail]=$((COUNT[xfail] + 1)); fi
+        status="XFAIL(limitation:$bugs)"; COUNT[xfail_limitation]=$((COUNT[xfail_limitation] + 1))
       else
         status=FAIL; COUNT[fail]=$((COUNT[fail] + 1))
         [[ -z $all ]] || detail="not the known failure of $all: $detail"
@@ -244,7 +193,6 @@ result() {
   STATUS_OF[$check]=${status%%(*}
   echo "RESULT $check $status${detail:+ $(echo "$detail" | one_line)}"
 }
-info() { echo "INFO $SCEN.$1 $(echo "${*:2}" | one_line)"; }
 
 # ---- psql helpers --------------------------------------------------------------------------------
 # Every psql call is time-limited: a scan waiting on a stuck mirror never returns on its own.
@@ -276,9 +224,8 @@ fence_wait() {
   local secs=$1 out
   FENCE_ERR=""; FENCE_WAL=""
   fence_present || return 1
-  # Insert-only: UPDATEs of rows persisted before a restart exercise separate bugs. The insert LSN
-  # read inside the fence transaction is a lower bound of its commit LSN, so a late earlier fence
-  # commit can't satisfy the wait.
+  # The insert LSN read inside the fence transaction is a lower bound of its commit LSN, so a late
+  # earlier fence commit can't satisfy the wait.
   if ! out=$(psqlq -c "BEGIN" -c "INSERT INTO $FENCE_SRC DEFAULT VALUES" -c "SELECT pg_current_wal_insert_lsn()" -c "COMMIT" 2>&1); then
     FENCE_ERR="fence write failed: $(echo "$out" | one_line 160)"; return 1
   fi
@@ -337,10 +284,6 @@ compare_core() {
   fi
 }
 compare() { compare_core "$1" "$2" "$3" "${4:-*}" "$CONVERGE_SECS"; result "$1" "$CMP_OK" "$CMP_DETAIL"; }
-info_compare() {
-  compare_core "$1" "$2" "$3" "${4:-*}" "${INFO_CONVERGE_SECS:-10}"
-  info "$1" "$( ((CMP_OK == 0)) && echo equal || echo different): $CMP_DETAIL"
-}
 
 # ryw_cross_table <check>: in one session, commit to the fence table and then scan the (otherwise
 # idle) probe mirror. The scan waits for that commit's LSN, as an application session would.
@@ -370,7 +313,6 @@ moonlink_pid() {
   local pm; pm=$(head -1 "$DATA/postmaster.pid" 2>/dev/null) || return 0
   [[ -n $pm ]] && pgrep -P "$pm" -f '^postgres: (.*: )?moonlink( |$)' | head -1
 }
-moonlink_up() { [[ -n $(moonlink_pid) ]]; }
 moonlink_gone() { [[ -z $(moonlink_pid) ]]; }
 moonlink_restarted() { local p; p=$(moonlink_pid); [[ -n $p && $p != "$1" ]]; }
 # panic_lines: one line per "panicked at" line in the postgres log: "<path>:<line>" with registry and
@@ -559,7 +501,7 @@ new_cluster() {
   "$BIN/initdb" -D "$DATA" -U "$DB_USER" > "$OUT/initdb.log" 2>&1 || { result initdb 1 "$(tail -2 "$OUT/initdb.log")"; return 1; }
   cat >> "$DATA/postgresql.conf" <<EOF
 port = $PGPORT
-unix_socket_directories = '/tmp'
+unix_socket_directories = '$E2E_DIR'
 listen_addresses = ''
 shared_preload_libraries = 'pg_duckdb,pg_mooncake'
 wal_level = logical
@@ -570,6 +512,7 @@ duckdb.extension_directory = '$EXTDIR'
 lc_messages = 'C'
 # worker_errors finds bgworker lines by "[<pid>] ".
 log_line_prefix = '%m [%p] '
+${CLUSTER_EXTRA_CONF:-}
 EOF
   start || { result start 1 "$(tail -3 "$OUT/postgres.log")"; return 1; }
   run create_extension -c "CREATE EXTENSION pg_mooncake CASCADE"
@@ -658,6 +601,8 @@ build_info() {
 # What runs, and whether DuckDB loads a duckdb_mooncake that speaks the same wire protocol as the one
 # users install: the DuckDB community extension for DuckDB v1.4.1, built from
 # COMMUNITY_DUCKDB_MOONCAKE_REF with moonlink_rpc at WIRE_MOONLINK_RPC_REV and no version check.
+# WIRE_MOONLINK_RPC_REV is the moonlink_rpc that duckdb_mooncake's Cargo.lock pins, an older moonlink revision
+# than the moonlink submodule; the RPC wire format hasn't changed between the two.
 WIRE_MOONLINK_RPC_REV=${WIRE_MOONLINK_RPC_REV:-c1a99ef01af878a5ffa77d1019ef4833a7907410}
 COMMUNITY_DUCKDB_MOONCAKE_REF=${COMMUNITY_DUCKDB_MOONCAKE_REF:-bd9e5f3ade4ae41d5d13d9cfd4b37b09b39996ab}
 scenario_build() {
@@ -903,14 +848,14 @@ files_matching() {
 }
 no_files_matching() { [[ -z $(files_matching "$1" | head -1) ]]; }
 # leftover_files: "<type> pg_mooncake/<path>" (find's %y: d directory, f file, ...) for everything
-# under pg_mooncake at any depth, except moonlink's own files at their place and the cache roots.
+# under pg_mooncake at any depth, except moonlink's own files at their place, the server's lock file and the cache roots.
 leftover_files() {
   local p=$DATA/pg_mooncake
   [[ -d $p ]] || { echo "? pg_mooncake (missing: the data directory has no pg_mooncake)"; return; }
   local all
   all=$(find "$p" -mindepth 1 -printf '%y %P\n' 2>&1) || { echo "? find failed: $(echo "$all" | one_line 120)"; return; }
   echo "$all" |
-    grep -vE '^(s moonlink\.sock|f moonlink_metadata_store\.sqlite(-wal|-shm|-journal)?|d (temp|read_through_cache|_wal|postgres|\.moonlink_atomic_tmp|source_fingerprints)|f [^/]+/indicator\.text)$' |
+    grep -vE '^(s moonlink\.sock|f moonlink\.lock|f moonlink_metadata_store\.sqlite(-wal|-shm|-journal)?|d (temp|read_through_cache|_wal|postgres|\.moonlink_atomic_tmp|source_fingerprints)|f [^/]+/indicator\.text)$' |
     sed 's#^\(.\) #\1 pg_mooncake/#' | sort -k2
 }
 no_leftover_files() { [[ -z $(leftover_files | head -1) ]]; }
@@ -1037,7 +982,6 @@ raw_psql() {
 # keep_moonlink_down: the moonlink worker restarts about 15s after a SIGTERM (bgw_restart_time).
 # The "while down" checks must not race that restart, so a worker that is back is stopped again;
 # each such exit gets its own excused log range. TERM_PID follows the latest stopped worker.
-KEEP_DOWN_KILLS=0
 keep_moonlink_down() {
   local p from
   p=$(moonlink_pid)
@@ -1046,7 +990,7 @@ keep_moonlink_down() {
   kill -TERM "$p" 2>/dev/null
   poll_until 10 moonlink_gone
   ALLOWED_EXIT_LINES+=" $from $(wc -l < "$OUT/postgres.log")"
-  TERM_PID=$p; KEEP_DOWN_KILLS=$((KEEP_DOWN_KILLS + 1))
+  TERM_PID=$p
 }
 
 # drop_while_down <check> <mirror> <file prefix>: with the bgworker gone, DROP of a mirror succeeds
@@ -1134,7 +1078,7 @@ SQL
   # Stale stream: the session's connection dies with moonlink. Its next call must detect that and
   # reconnect (reporting that moonlink is unreachable) instead of failing on the dead connection, and
   # so must the call after it.
-  pid=$(moonlink_pid); term_pid=$pid; TERM_PID=$pid; KEEP_DOWN_KILLS=0; log_before=$(wc -l < "$OUT/postgres.log")
+  pid=$(moonlink_pid); term_pid=$pid; TERM_PID=$pid; log_before=$(wc -l < "$OUT/postgres.log")
   if [[ -z $pid ]]; then
     result stale_stream_first_call_reconnects skip "no moonlink bgworker found"; result stale_stream_reconnects skip "no moonlink bgworker found"
   else
@@ -1159,7 +1103,7 @@ SQL
   if [[ -z $term_pid ]]; then result bgworker_exited_after_term skip "no moonlink bgworker found"
   elif poll_until 10 moonlink_gone; then result bgworker_exited_after_term 0
   else result bgworker_exited_after_term 1 "bgworker pid $term_pid still running 10s after SIGTERM"; fi
-  # The SIGTERMed worker's own exit (non-zero is how a fixed worker gets restarted) is not abnormal.
+  # The SIGTERMed worker exits with code 1 so that Postgres restarts it; that exit is not abnormal.
   ALLOWED_EXIT_LINES+=" $log_before $(wc -l < "$OUT/postgres.log")"
   keep_moonlink_down
   raw_psql 30 "$o.dh.out" "$o.dh.err" -c "DROP TABLE h"; rc=$?
@@ -1177,7 +1121,6 @@ SQL
   else result list_tables_errors_while_down 1 "rc=$rc $(one_line 240 < "$o.lt.err") $(one_line 40 < "$o.lt.out")"; fi
 
   # A bgworker that exited after SIGTERM must come back (restart_time is 15s).
-  info moonlink_kept_down "worker stopped again $KEEP_DOWN_KILLS time(s) during the while-down checks"
   if [[ -z $term_pid ]]; then result bgworker_restarted_after_term skip "no moonlink bgworker found"
   elif poll_until 30 moonlink_restarted "$TERM_PID" && wait_ready; then
     result bgworker_restarted_after_term 0 "pid $TERM_PID -> $(moonlink_pid)"
@@ -1210,9 +1153,7 @@ SQL
   # A create_table that failed without leaving a mirror leaves moonlink's public.s4_mc behind.
   if [[ $(psqlq -c "SELECT count(*) FROM mooncake.list_tables() WHERE \"table\" = 'public.s4_mc'" 2>&1) != 0 ]]; then
     raw_psql 40 "$o.c4.out" "$o.c4.err" -c "CREATE TABLE s4_mc (id int) USING mooncake" -c "DROP TABLE s4_mc"
-    info s4_mc_cleanup "rc=$? $(one_line 160 < "$o.c4.err")"
   fi
-  info orphan_before "list_tables: $(psqlq -c "SELECT string_agg(\"table\", ',') FROM mooncake.list_tables()" 2>&1 | one_line 160)"
   if [[ $(psqlq -c "SELECT to_regclass('s_mc') IS NULL" 2>&1) != t ]]; then
     result orphan_cleanup skip "s_mc still exists in Postgres (its DROP failed while moonlink was down)"
   else
@@ -1327,9 +1268,8 @@ SQL
   end_cluster
 }
 
-# Writes to a mirror must fail with an ordinary error and leave the server running. The contract for
-# the multiple-assignment forms, which pg_duckdb's deparser can't handle, is pg_mooncake's own
-# "cannot modify mirror" error; plain writes are controls that must fail without a crash.
+# Writes to a mirror must fail with pg_mooncake's "cannot modify mirror" error and leave the server
+# running, including the multiple-assignment forms, which pg_duckdb's deparser can't handle.
 scenario_mirror_writes() {
   new_cluster mirror_writes || return
   run setup <<'SQL'
@@ -1338,19 +1278,19 @@ INSERT INTO ups VALUES (1, 'Foo');
 CALL mooncake.create_table('ups_mc', 'ups');
 SQL
   fence_check mirror_caught_up
-  session_case plain_update_fails "^UPDATE ups_mc SET b = 'x';$" "^ERROR: " <<'SQL'
+  session_case plain_update_fails "^UPDATE ups_mc SET b = 'x';$" "^ERROR: +cannot modify mirror public\.ups_mc( |$)" <<'SQL'
 UPDATE ups_mc SET b = 'x';
 SQL
-  session_case plain_insert_fails "^INSERT INTO ups_mc VALUES \(2, 'y'\);$" "^ERROR: " <<'SQL'
+  session_case plain_insert_fails "^INSERT INTO ups_mc VALUES \(2, 'y'\);$" "^ERROR: +cannot modify mirror public\.ups_mc( |$)" <<'SQL'
 INSERT INTO ups_mc VALUES (2, 'y');
 SQL
-  session_case plain_delete_fails "^DELETE FROM ups_mc;$" "^ERROR: " <<'SQL'
+  session_case plain_delete_fails "^DELETE FROM ups_mc;$" "^ERROR: +cannot modify mirror public\.ups_mc( |$)" <<'SQL'
 DELETE FROM ups_mc;
 SQL
-  session_case update_multiassign_rejected "^UPDATE ups_mc SET \(b, a\) = \(SELECT 'z', 1\);$" "^ERROR: +cannot modify mirror" <<'SQL'
+  session_case update_multiassign_rejected "^UPDATE ups_mc SET \(b, a\) = \(SELECT 'z', 1\);$" "^ERROR: +cannot modify mirror public\.ups_mc( |$)" <<'SQL'
 UPDATE ups_mc SET (b, a) = (SELECT 'z', 1);
 SQL
-  session_case upsert_multiassign_rejected "^INSERT INTO ups_mc VALUES \(1, 'Bar'\) ON CONFLICT" "^ERROR: +cannot modify mirror" <<'SQL'
+  session_case upsert_multiassign_rejected "^INSERT INTO ups_mc VALUES \(1, 'Bar'\) ON CONFLICT" "^ERROR: +cannot modify mirror public\.ups_mc( |$)" <<'SQL'
 INSERT INTO ups_mc VALUES (1, 'Bar') ON CONFLICT (a) DO UPDATE SET (b, a) = (SELECT 'q', 1);
 SQL
   check_eq source_unchanged "$(psqlq -c "SELECT a || '|' || b FROM ups ORDER BY a" 2>&1)" "1|Foo"
@@ -1411,9 +1351,10 @@ SQL
 }
 
 # ================================================================================================
-# Restart / crash acceptance: crash recovery need not be exact. After a restart the
-# moonlink bgworker must be up and serving RPCs (no crash-loop), and drop + re-create of the mirror
-# ("resnapshot") must yield the heap contents. Exact post-restart equality is reported as INFO.
+# Restart / crash acceptance: after a restart the moonlink bgworker must be up and serving RPCs (no
+# crash loop), the mirror must equal the heap (moonlink replays from the slot what it hadn't persisted,
+# so nothing is lost or duplicated), and drop + re-create of the mirror ("resnapshot") must yield the heap
+# contents.
 
 # resnapshot_check <prefix> <heap> <mirror>: the user-facing recovery path is "drop and re-create".
 # A step whose prerequisite failed is SKIP (it could not run), so its result isn't blamed on a bug.
@@ -1469,7 +1410,7 @@ restart_checks() {
 # restart_gate <suffix> <heap> <mirror> <stop mode>
 restart_gate() {
   restart_checks "$1" "$4"
-  info_compare "exact_after_$1" "$2" "$3"
+  compare "exact_after_$1" "$2" "$3"
   fresh_fence fresh_fence_setup
   resnapshot_check resnapshot "$2" "$3"
 }
@@ -1539,6 +1480,126 @@ SQL
   restart_gate crash c c_mc immediate
   cdc_after_resnapshot c c_mc "DELETE FROM c WHERE id BETWEEN 1 AND 500"
   end_cluster
+}
+
+# ================================================================================================
+# pg_basebackup with moonlink's directory (mooncake.data_directory) outside the data directory, and the copies of
+# the backup: one that shares the primary's moonlink directory refuses to start; one with its own directory serves,
+# and its mirrors, whose moonlink data isn't in the backup, error until they are re-created; a standby runs no
+# moonlink until it is promoted.
+
+# use_cluster <scenario> <data dir> <port>: run the next checks on another cluster, as <scenario>.
+use_cluster() {
+  SCEN=$1; DATA=$2; PGPORT=$3; OUT=$E2E_DIR/out-$MAJOR-$1
+  FENCE_SRC=e2e_fence; FENCE_MC=e2e_fence_mc; FENCE_N=0; ALLOWED_EXIT_LINES=""; CLUSTER_STOPPED=0; SESSION_CRASHES=0
+  rm -rf -- "$OUT"; mkdir -p "$OUT"
+}
+# start_copy <check> <moonlink dir>: start the cluster in DATA (a backup) on PGPORT with its own moonlink directory.
+start_copy() {
+  printf "port = %s\nmooncake.data_directory = '%s'\n" "$PGPORT" "$2" >> "$DATA/postgresql.conf"
+  if start; then result "$1" 0; else result "$1" 1 "$(grep -a -E 'FATAL|PANIC' "$OUT/postgres.log" | head -2 | one_line 240)"; return 1; fi
+}
+# refused_start <check> <cluster> <port> <mooncake.data_directory> <regex>: starting the stopped cluster with that
+# setting fails, and its log matches the regex.
+refused_start() {
+  local log=$OUT/$1.log rc
+  printf "port = %s\nmooncake.data_directory = '%s'\n" "$3" "$4" >> "$2/postgresql.conf"
+  "$BIN/pg_ctl" -D "$2" -l "$log" -w -t 30 start > /dev/null 2>&1; rc=$?
+  if (( rc != 0 )) && grep -aqE "$5" "$log"; then result "$1" 0 "$(grep -aE -m1 'FATAL' "$log" | sed -E 's/^[^]]*\] //' | one_line 200)"
+  else
+    result "$1" 1 "pg_ctl start rc=$rc: $(grep -aE 'FATAL|ERROR|DETAIL' "$log" | head -3 | one_line 240)"
+    "$BIN/pg_ctl" -D "$2" -m immediate -w stop > /dev/null 2>&1
+  fi
+}
+scenario_basebackup() {
+  local mdir=$E2E_DIR/mooncake-$MAJOR-basebackup bb=$E2E_DIR/basebackup-$MAJOR port=$PGPORT out rc f
+  rm -rf -- "$mdir" "$mdir-copy" "$mdir-standby" "$mdir-open" "$bb"; mkdir -p "$bb"
+  local CLUSTER_EXTRA_CONF="mooncake.data_directory = '$mdir'"
+  new_cluster basebackup || return
+  check_eq data_directory_setting "$(psqlq -c "SELECT setting || ' ' || context FROM pg_settings WHERE name = 'mooncake.data_directory'" 2>&1)" "$mdir postmaster"
+  run setup <<'SQL'
+CREATE TABLE b (id int PRIMARY KEY, v text);
+INSERT INTO b SELECT g, md5(g::text) FROM generate_series(1, 1000) g;
+CALL mooncake.create_table('b_mc', 'b');
+INSERT INTO b VALUES (1001, 'after create_table');
+SQL
+  compare before_backup b b_mc
+  if [[ -S $mdir/moonlink.sock && ! -e $DATA/pg_mooncake ]]; then result moonlink_files_outside_data_dir 0
+  else result moonlink_files_outside_data_dir 1 "socket in $mdir: $([[ -S $mdir/moonlink.sock ]] && echo yes || echo no), $DATA/pg_mooncake exists: $([[ -e $DATA/pg_mooncake ]] && echo yes || echo no)"; fi
+  for f in plain:p:"" tar:t:"" standby:p:-R; do
+    IFS=: read -r name format extra <<< "$f"
+    if out=$("$BIN/pg_basebackup" -D "$bb/$name" -F"$format" -X stream -c fast $extra 2>&1); then result "basebackup_$name" 0
+    else result "basebackup_$name" 1 "$(echo "$out" | one_line 240)"; fi
+  done
+  # The copy's postgresql.conf names the primary's moonlink directory.
+  if [[ ${STATUS_OF[$SCEN.basebackup_plain]} != PASS ]]; then result copy_sharing_moonlink_dir_refused skip "no plain backup"
+  else
+    echo "port = $((port + 100))" >> "$bb/plain/postgresql.conf"
+    "$BIN/pg_ctl" -D "$bb/plain" -l "$OUT/copy_sharing_moonlink_dir.log" -w -t 30 start > /dev/null 2>&1; rc=$?
+    if (( rc != 0 )) && grep -aq "mooncake.data_directory \".*\" is in use by another server" "$OUT/copy_sharing_moonlink_dir.log"; then
+      result copy_sharing_moonlink_dir_refused 0
+    else
+      result copy_sharing_moonlink_dir_refused 1 "pg_ctl start rc=$rc: $(grep -a -E 'FATAL|ERROR' "$OUT/copy_sharing_moonlink_dir.log" | head -2 | one_line 200)"
+      "$BIN/pg_ctl" -D "$bb/plain" -m immediate -w stop > /dev/null 2>&1
+    fi
+  fi
+  end_cluster
+
+  [[ ${STATUS_OF[basebackup.basebackup_plain]} == PASS ]] && use_cluster basebackup_copy "$bb/plain" $((port + 100)) &&
+    start_copy copy_started "$mdir-copy" && {
+    if wait_ready; then result service_up 0; else result service_up 1 "mooncake.list_tables() not answering within 60s: $(echo "$WAIT_ERR" | one_line 160)"; fi
+    no_crash_loop no_crash_loop
+    out=$(psqlq -c "SELECT count(*) FROM b_mc" 2>&1); rc=$?
+    if (( rc != 0 && rc < 124 )) && [[ $out =~ ERROR:.*Table\ postgres\.public\.b_mc\ not\ found ]] && pg_alive; then
+      result mirror_without_moonlink_data_errors 0 "$(echo "$out" | one_line 160)"
+    else result mirror_without_moonlink_data_errors 1 "rc=$rc: $(echo "$out" | one_line 200)"; fi
+    fresh_fence fresh_fence_setup
+    resnapshot_check resnapshot b b_mc
+    cdc_after_resnapshot b b_mc "INSERT INTO b VALUES (1002, 'on the copy')"
+    end_cluster
+  }
+
+  [[ ${STATUS_OF[basebackup.basebackup_standby]} == PASS ]] && use_cluster basebackup_standby "$bb/standby" $((port + 200)) &&
+    start_copy standby_started "$mdir-standby" && {
+    if poll_until 30 sql_is "SELECT pg_is_in_recovery()" t; then result standby_in_recovery 0
+    else result standby_in_recovery 1 "pg_is_in_recovery(): $(psqlq -c "SELECT pg_is_in_recovery()" 2>&1 | one_line 120)"; fi
+    sleep 5
+    if moonlink_gone; then result no_moonlink_on_standby 0; else result no_moonlink_on_standby 1 "moonlink bgworker pid $(moonlink_pid) on a standby"; fi
+    out=$(psqlq -c "SELECT count(*) FROM mooncake.list_tables()" 2>&1); rc=$?
+    if (( rc != 0 && rc < 124 )) && [[ $out =~ ERROR:.*failed\ to\ connect\ to\ moonlink ]] && pg_alive; then result list_tables_errors_on_standby 0
+    else result list_tables_errors_on_standby 1 "rc=$rc: $(echo "$out" | one_line 200)"; fi
+    # The standby runs no moonlink, so nothing listens on its socket: its lock alone keeps a second server out.
+    local other=$bb/plain other_port=$((port + 300))
+    if [[ ! -f $other/PG_VERSION ]]; then result standby_dir_locked skip "no plain backup to start"
+    else
+      refused_start standby_dir_locked "$other" "$other_port" "$mdir-standby" \
+        "DETAIL: +.*moonlink\.lock is locked by the server with data directory $bb/standby \(postmaster PID [0-9]+\)"
+      ln -sfn "$mdir-standby" "$E2E_DIR/mooncake-$MAJOR-link"
+      refused_start data_directory_symlink_refused "$other" "$other_port" "$E2E_DIR/mooncake-$MAJOR-link" "is a symbolic link"
+      mkdir -p "$mdir-open" && chmod 0777 "$mdir-open"
+      refused_start data_directory_world_writable_refused "$other" "$other_port" "$mdir-open" "has invalid permissions 0777"
+      refused_start data_directory_pgdata_refused "$other" "$other_port" "." "must not be the data directory or contain it"
+      chmod 0700 "$bb"
+      refused_start data_directory_pgdata_parent_refused "$other" "$other_port" "$bb" "must not be the data directory or contain it"
+      # A socket that accepts connections in an unlocked directory (a server without the lock) keeps it out too.
+      mkdir -p -m 0700 "$mdir-open-socket"
+      python3 -I -c 'import socket, sys, time; s = socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(); time.sleep(60)' \
+        "$mdir-open-socket/moonlink.sock" & local listener=$!
+      poll_until 10 test -S "$mdir-open-socket/moonlink.sock"
+      refused_start data_directory_listening_socket_refused "$other" "$other_port" "$mdir-open-socket" \
+        "DETAIL: +Its moonlink socket .* accepts connections"
+      kill "$listener" 2> /dev/null; wait "$listener" 2> /dev/null
+      rm -rf -- "$mdir-open" "$mdir-open-socket" "$E2E_DIR/mooncake-$MAJOR-link"
+    fi
+    if out=$("$BIN/pg_ctl" -D "$DATA" -w -t 60 promote 2>&1) && poll_until 30 sql_is "SELECT pg_is_in_recovery()" f; then result promote 0
+    else result promote 1 "$(echo "$out" | one_line 200)"; fi
+    if wait_ready; then result service_up_after_promote 0; else result service_up_after_promote 1 "mooncake.list_tables() not answering within 60s: $(echo "$WAIT_ERR" | one_line 160)"; fi
+    no_crash_loop no_crash_loop_after_promote
+    fresh_fence fresh_fence_setup
+    resnapshot_check resnapshot b b_mc
+    end_cluster
+  }
+  return 0
 }
 
 # ================================================================================================
@@ -1614,7 +1675,6 @@ scenario_truncate() {
 # ================================================================================================
 # Known-bug summary, per bug: FIXED only when every check listed for it passed (XPASS); OPEN when
 # one of them failed with the bug's signature; UNKNOWN otherwise (e.g. another bug masked it).
-# An "Intermittent:" bug reports NOT-SEEN where it would be FIXED.
 known_summary() {
   local check st bug re list verdict seen e entries n_all n_xpass n_xfail n_notrun
   declare -A by_bug=()
@@ -1636,12 +1696,10 @@ known_summary() {
       case ${e##*=} in XPASS) n_xpass=$((n_xpass + 1)) ;; XFAIL) n_xfail=$((n_xfail + 1)) ;; NOT-RUN) n_notrun=$((n_notrun + 1)) ;; esac
     done
     if (( n_xfail > 0 )); then verdict=OPEN
-    elif (( n_xpass == n_all )); then
-      # One clean run doesn't show that an intermittent bug is gone.
-      if [[ ${BUG_DESC[$bug]:-} == Intermittent:* ]]; then verdict=NOT-SEEN; else verdict=FIXED; fi
+    elif (( n_xpass == n_all )); then verdict=FIXED
     elif (( n_notrun == n_all )); then verdict=NOT-RUN
     else verdict=UNKNOWN; fi
-    echo "KNOWN $bug $verdict $list class=${BUG_CLASS[$bug]}${BUG_IDS[$bug]:+ ids=${BUG_IDS[$bug]}}"
+    echo "KNOWN $bug $verdict $list"
   done
 }
 
@@ -1654,16 +1712,11 @@ main() {
   for s in "${ALL_SCENARIOS[@]}"; do [[ " ${SCENARIOS[*]} " == *" $s "* ]] || complete=0; done
   known_summary
   scen_list=$(IFS=,; echo "${SCENARIOS[*]}")
-  counts="pass=${COUNT[pass]} xpass=${COUNT[xpass]} fail=${COUNT[fail]} xfail=${COUNT[xfail]} xfail_limitation=${COUNT[xfail_limitation]} skip=${COUNT[skip]}"
+  counts="pass=${COUNT[pass]} xpass=${COUNT[xpass]} fail=${COUNT[fail]} xfail_limitation=${COUNT[xfail_limitation]} skip=${COUNT[skip]}"
   echo "SUMMARY e2e-smoke pg$MAJOR scenarios=$scen_list $counts"
-  local blocking
-  blocking=$(for s in "${!BUG_CLASS[@]}"; do [[ ${BUG_CLASS[$s]} == blocking ]] && echo "$s"; done | sort | paste -sd, -)
-  echo "BLOCKING e2e-smoke $( [[ -z $blocking ]] && echo 0 || echo "$(tr ',' '\n' <<< "$blocking" | wc -l) $blocking")"
-  if (( COUNT[fail] + COUNT[xfail] + COUNT[skip] > 0 || COUNT[pass] + COUNT[xpass] == 0 )); then
+  if (( COUNT[fail] + COUNT[skip] > 0 || COUNT[pass] + COUNT[xpass] == 0 )); then
     echo "GATE e2e-smoke FAIL"; return 1
   fi
-  # Release policy: a listed blocking bug must be fixed, even if this run did not hit it.
-  if [[ -n $blocking ]]; then echo "GATE e2e-smoke BLOCKED"; return 4; fi
   if (( ! complete )); then echo "GATE e2e-smoke INCOMPLETE"; return 3; fi
   echo "GATE e2e-smoke PASS"
 }

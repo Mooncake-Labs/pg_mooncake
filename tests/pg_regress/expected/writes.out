@@ -17,23 +17,9 @@ WITH d AS (DELETE FROM w_mc RETURNING *) SELECT count(*) FROM d;
 ERROR:  cannot modify mirror public.w_mc
 EXPLAIN (COSTS OFF) UPDATE w_mc SET b = 'z';
 ERROR:  cannot modify mirror public.w_mc
--- PostgreSQL 14 has no MERGE; elsewhere it is rejected like the other writes.
-SET client_min_messages = notice;
-DO $$
-BEGIN
-  EXECUTE 'MERGE INTO w_mc t USING w s ON t.a = s.a WHEN MATCHED THEN DELETE';
-EXCEPTION
-  WHEN wrong_object_type THEN
-    RAISE NOTICE 'MERGE: %', SQLERRM;
-  WHEN syntax_error THEN
-    IF current_setting('server_version_num')::int >= 150000 THEN
-      RAISE;
-    END IF;
-    RAISE NOTICE 'MERGE: cannot modify mirror public.w_mc';
-END
-$$;
-NOTICE:  MERGE: cannot modify mirror public.w_mc
-RESET client_min_messages;
+-- MERGE too (PostgreSQL 14 has no MERGE, see writes_1.out).
+MERGE INTO w_mc t USING w s ON t.a = s.a WHEN MATCHED THEN DELETE;
+ERROR:  cannot modify mirror public.w_mc
 -- So are TRUNCATE (alone or with other tables) and COPY FROM.
 TRUNCATE w_mc;
 ERROR:  cannot modify mirror public.w_mc
@@ -49,28 +35,15 @@ CREATE TABLE w_parent (a int NOT NULL, b text);
 ALTER TABLE w_mc INHERIT w_parent;
 ERROR:  cannot make mirror public.w_mc a partition or child of another table
 DROP TABLE w_parted, w_parent;
--- Nor can it become a regular table (PostgreSQL 15 and later have SET ACCESS METHOD).
-SET client_min_messages = notice;
-DO $$
-BEGIN
-  IF current_setting('server_version_num')::int >= 150000 THEN
-    EXECUTE 'ALTER TABLE w_mc SET ACCESS METHOD heap';
-  ELSE
-    RAISE wrong_object_type USING MESSAGE = 'cannot change the access method of mirror public.w_mc';
-  END IF;
-EXCEPTION
-  WHEN wrong_object_type THEN
-    RAISE NOTICE 'SET ACCESS METHOD: %', SQLERRM;
-END
-$$;
-NOTICE:  SET ACCESS METHOD: cannot change the access method of mirror public.w_mc
-RESET client_min_messages;
+-- Nor can it become a regular table (PostgreSQL 14 has no SET ACCESS METHOD, see writes_1.out).
+ALTER TABLE w_mc SET ACCESS METHOD heap;
+ERROR:  cannot change the access method of mirror public.w_mc
 -- COPY out of a mirror is a read.
 COPY (SELECT * FROM w_mc ORDER BY a) TO STDOUT;
 1	x
 -- Reads and writes to the source still work.
 UPDATE w SET b = 'y';
-SELECT * FROM w_mc;
+SELECT * FROM w_mc ORDER BY a;
  a | b 
 ---+---
  1 | y

@@ -6,7 +6,8 @@
 //! dropped objects, and the pre-commit transaction callback tells moonlink.
 
 use crate::functions::TableName;
-use crate::utils::{rpc, RpcError, DATABASE};
+use crate::utils::{is_mirror, rpc, RpcError, DATABASE};
+use pgrx::pg_sys::panic::ErrorReport;
 use pgrx::prelude::*;
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::{c_int, c_void, CStr};
@@ -105,7 +106,7 @@ fn drop_in_moonlink(mirrors: Vec<TableName>) {
     let deadline = Instant::now() + DROP_TABLE_TIMEOUT;
     // Set once moonlink is unreachable, so the remaining mirrors don't wait for it again.
     let mut unreachable: Option<String> = None;
-    for key in mirrors.iter().flat_map(TableName::moonlink_keys) {
+    for key in mirrors.iter().map(TableName::moonlink_name) {
         let reason = match &unreachable {
             Some(reason) => reason.clone(),
             None => {
@@ -128,12 +129,17 @@ fn drop_in_moonlink(mirrors: Vec<TableName>) {
                 reason
             }
         };
-        warning!(
-            "mirror {key} was dropped, but moonlink did not drop it: {reason}\n\
-             HINT: moonlink may still hold the mirror's files and replication (see mooncake.list_tables()). \
-             Once moonlink is reachable, clean up by re-creating the mirror with mooncake.create_table, or with: \
-             CREATE TABLE <same name> (id int) USING mooncake; DROP TABLE <same name>;"
-        );
+        ErrorReport::new(
+            PgSqlErrorCode::ERRCODE_WARNING,
+            format!("mirror {key} was dropped, but moonlink did not drop it: {reason}"),
+            function_name!(),
+        )
+        .set_hint(
+            "moonlink may still hold the mirror's files and replication (see mooncake.list_tables()). Once moonlink \
+             is reachable, clean up by re-creating the mirror with mooncake.create_table, or with: CREATE TABLE \
+             <same name> (id int) USING mooncake; DROP TABLE <same name>;",
+        )
+        .report(PgLogLevel::WARNING);
     }
 }
 
@@ -154,27 +160,17 @@ unsafe extern "C-unwind" fn mooncake_object_access(
     {
         return;
     }
-    let mooncake_am = pg_sys::get_table_am_oid(c"mooncake".as_ptr(), true);
-    if mooncake_am == pg_sys::InvalidOid {
+    if !is_mirror(object_id) {
         return;
     }
-    let rel = pg_sys::RelationIdGetRelation(object_id);
-    if rel.is_null() {
+    let schema = pg_sys::get_namespace_name(pg_sys::get_rel_namespace(object_id));
+    let table = pg_sys::get_rel_name(object_id);
+    if schema.is_null() || table.is_null() {
         return;
     }
-    let rd_rel = (*rel).rd_rel;
-    let name = if (*rd_rel).relam == mooncake_am {
-        let schema = pg_sys::get_namespace_name((*rd_rel).relnamespace);
-        let table = CStr::from_ptr((*rd_rel).relname.data.as_ptr());
-        (!schema.is_null()).then(|| TableName {
-            schema: CStr::from_ptr(schema).to_string_lossy().into_owned(),
-            table: table.to_string_lossy().into_owned(),
-        })
-    } else {
-        None
+    let name = TableName {
+        schema: CStr::from_ptr(schema).to_string_lossy().into_owned(),
+        table: CStr::from_ptr(table).to_string_lossy().into_owned(),
     };
-    pg_sys::RelationClose(rel);
-    if let Some(name) = name {
-        with_drops(|drops| drops.seen.insert(object_id.to_u32(), name));
-    }
+    with_drops(|drops| drops.seen.insert(object_id.to_u32(), name));
 }

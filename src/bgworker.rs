@@ -10,7 +10,9 @@ pub(crate) fn init() {
         .set_library("pg_mooncake")
         .set_function("moonlink_main")
         .enable_shmem_access(None)
-        .set_start_time(BgWorkerStartTime::ConsistentState)
+        // Not on a standby: moonlink can't replicate from a read-only server, and its attempts would error the
+        // mirrors. Postgres starts the worker once recovery ends, at startup or on promotion.
+        .set_start_time(BgWorkerStartTime::RecoveryFinished)
         .set_restart_time(Some(Duration::from_secs(15)))
         .load();
 }
@@ -28,8 +30,8 @@ extern "C-unwind" fn moonlink_main(_arg: pg_sys::Datum) {
     // on_thread_start also covers blocking-pool threads started later. SIGQUIT (immediate shutdown) stays deliverable
     // everywhere.
     //
-    // moonlink keeps running under block_on, as it did on this thread before, rather than as a runtime task: as a task,
-    // fast stops crashed the worker far more often (moonlink's shutdown races play out differently).
+    // moonlink runs under block_on on its own thread, not as a task on the runtime: as a task, its shutdown races make
+    // fast stops crash the worker far more often.
     let original_mask = block_shutdown_signals();
     let runtime = tokio::runtime::Builder::new_multi_thread()
         .enable_all()
@@ -47,14 +49,15 @@ extern "C-unwind" fn moonlink_main(_arg: pg_sys::Datum) {
         .expect("failed to start the moonlink thread");
     set_signal_mask(&original_mask);
     wait_for_moonlink(&moonlink);
-    // An error is raised here, under pg_guard, so it is reported like any other worker error, as before.
+    // An error is raised here, under pg_guard, so it is reported like any other worker error.
     match moonlink.join() {
         Ok(result) => result.unwrap(),
         Err(panic) => std::panic::resume_unwind(panic),
     }
     // moonlink returns only after SIGTERM. Postgres restarts a background worker only after a non-zero exit, so a
-    // SIGTERM outside a server shutdown (pg_terminate_backend, a stray kill) would otherwise leave every mirror
-    // without moonlink until the next server restart. A shutdown stays a clean exit.
+    // SIGTERM outside a server shutdown (a kill from outside Postgres: the worker isn't in the ProcArray, so
+    // pg_terminate_backend can't reach it) would otherwise leave every mirror without moonlink until the next server
+    // restart. A shutdown stays a clean exit.
     if !postmaster_stopping() {
         log!("moonlink stopped on SIGTERM outside a server shutdown; exiting with code 1 so that it is restarted");
         unsafe { pg_sys::proc_exit(1) };
@@ -123,6 +126,6 @@ fn set_signal_mask(mask: &libc::sigset_t) {
 
 fn service_config() -> ServiceConfig {
     ServiceConfig {
-        base_path: "pg_mooncake".to_owned(),
+        base_path: crate::data_directory::data_directory(),
     }
 }

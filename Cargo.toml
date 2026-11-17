@@ -14,6 +14,8 @@ path = "./src/bin/pgrx_embed.rs"
 
 [features]
 default = ["bgworker", "pg18"]
+# Runs moonlink in a background worker; without it, moonlink must run standalone and serve moonlink.sock in
+# mooncake.data_directory.
 bgworker = ["moonlink_service"]
 pg14 = ["pgrx/pg14"]
 pg15 = ["pgrx/pg15"]
@@ -22,7 +24,6 @@ pg17 = ["pgrx/pg17"]
 pg18 = ["pgrx/pg18"]
 
 [dependencies]
-bincode = "2"
 libc = "0.2"
 moonlink_rpc.path = "moonlink/src/moonlink_rpc"
 moonlink_service = { path = "moonlink/src/moonlink_service", optional = true }

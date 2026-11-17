@@ -17,7 +17,10 @@ extern "C" fn pgmooncake_get_init_query() -> *mut c_char {
     let database = unsafe { CStr::from_ptr(ptr).to_str().unwrap().to_owned() };
     unsafe { pfree(ptr as *mut c_void) };
 
-    let init_query = format!("ATTACH DATABASE 'mooncake' (TYPE mooncake, URI 'pg_mooncake/moonlink.sock', DATABASE '{database}')");
+    let socket = crate::data_directory::socket_path().replace('\'', "''");
+    let init_query = format!(
+        "ATTACH DATABASE 'mooncake' (TYPE mooncake, URI '{socket}', DATABASE '{database}')"
+    );
     CString::new(init_query)
         .expect("init_query should not contain an internal 0 byte")
         .into_raw()

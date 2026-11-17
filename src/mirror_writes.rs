@@ -12,6 +12,7 @@
 //! TRUNCATE, COPY FROM, renames (including ALTER INDEX ... RENAME, which Postgres applies to tables too), SET SCHEMA,
 //! SET ACCESS METHOD, ATTACH PARTITION and INHERIT.
 
+use crate::utils::is_mirror;
 use pgrx::pg_sys;
 use pgrx::pg_sys::panic::ErrorReport;
 use pgrx::prelude::*;
@@ -218,21 +219,7 @@ unsafe fn reject_writes_to_mirrors(query: *mut pg_sys::Query) {
     }
 }
 
-unsafe fn is_mirror(relid: pg_sys::Oid) -> bool {
-    let mooncake_am = pg_sys::get_table_am_oid(c"mooncake".as_ptr(), true);
-    if mooncake_am == pg_sys::InvalidOid {
-        return false;
-    }
-    let rel = pg_sys::RelationIdGetRelation(relid);
-    if rel.is_null() {
-        return false;
-    }
-    let relam = (*(*rel).rd_rel).relam;
-    pg_sys::RelationClose(rel);
-    relam == mooncake_am
-}
-
-pub(crate) unsafe fn mirror_name(relid: pg_sys::Oid) -> String {
+unsafe fn mirror_name(relid: pg_sys::Oid) -> String {
     let name = |ptr: *const c_char| {
         if ptr.is_null() {
             "?".to_owned()

@@ -15,18 +15,18 @@ DROP TABLE "Mixed Schema"."Src Table", src$1;
 DROP SCHEMA "Mixed Schema";
 -- Long names are truncated, as Postgres does.
 SET client_min_messages = notice;
-CREATE TABLE r268 (id int PRIMARY KEY);
-CALL mooncake.create_table(repeat('m', 70), 'r268');
-INSERT INTO r268 VALUES (1);
+CREATE TABLE long_name_src (id int PRIMARY KEY);
+CALL mooncake.create_table(repeat('m', 70), 'long_name_src');
+INSERT INTO long_name_src VALUES (1);
 SELECT * FROM mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm;
 SELECT "table" FROM mooncake.list_tables() WHERE "table" LIKE 'public.mmm%';
 RESET client_min_messages;
 -- Postgres downcases only ASCII letters of unquoted names.
-CREATE TABLE r268b (id int PRIMARY KEY);
-CALL mooncake.create_table('Ämirror', 'r268b');
-INSERT INTO r268b VALUES (2);
+CREATE TABLE non_ascii_name_src (id int PRIMARY KEY);
+CALL mooncake.create_table('Ämirror', 'non_ascii_name_src');
+INSERT INTO non_ascii_name_src VALUES (2);
 SELECT * FROM Ämirror;
 SELECT "table" FROM mooncake.list_tables() WHERE "table" LIKE 'public.%mirror';
 DROP TABLE mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm, Ämirror;
 SELECT count(*) FROM mooncake.list_tables();
-DROP TABLE r268, r268b;
+DROP TABLE long_name_src, non_ascii_name_src;

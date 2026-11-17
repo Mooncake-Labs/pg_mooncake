@@ -3,6 +3,7 @@ use crate::utils::{rpc, DATABASE};
 use core::ffi::CStr;
 use native_tls::TlsConnector;
 use pgrx::{direct_function_call, prelude::*};
+use postgres::config::Host;
 use postgres::Client;
 use postgres_native_tls::MakeTlsConnector;
 
@@ -254,15 +255,16 @@ fn create_mooncake_table(dst: &str, dst_uri: &str, src: &str, src_uri: &str) -> 
     let tls_connector = TlsConnector::new()
         .unwrap_or_else(|e| error!("mooncake.create_table failed: could not set up TLS: {e}"));
     let make_tls_connector = MakeTlsConnector::new(tls_connector);
-    let connect = |uri: &str| {
+    let connect = |uri: &str, server: &str| {
         Client::connect(uri, make_tls_connector.clone()).unwrap_or_else(|e| {
             error!(
-                "mooncake.create_table failed: could not connect to {uri}: {}",
+                "mooncake.create_table failed: could not connect to {}: {}",
+                describe_server(uri, server),
                 libpq_cause(&e)
             )
         })
     };
-    let mut client = connect(src_uri);
+    let mut client = connect(src_uri, "the source server");
 
     let get_columns_query = format!(
         "SELECT string_agg(
@@ -289,7 +291,7 @@ fn create_mooncake_table(dst: &str, dst_uri: &str, src: &str, src_uri: &str) -> 
         .get(0);
 
     if dst_uri != src_uri {
-        client = connect(dst_uri);
+        client = connect(dst_uri, "this server");
     }
 
     let create_table_query = format!("CREATE TABLE {dst} ({columns}) USING mooncake");
@@ -309,5 +311,45 @@ fn libpq_cause(e: &postgres::Error) -> String {
     match e.as_db_error() {
         Some(db) => db.message().to_owned(),
         None => e.to_string(),
+    }
+}
+
+/// `server`, with the host, port, database and user that `uri` names. The connection string itself is never shown: it
+/// may contain a password.
+fn describe_server(uri: &str, server: &str) -> String {
+    let Ok(config) = uri.parse::<postgres::Config>() else {
+        return server.to_owned();
+    };
+    let join = |parts: Vec<String>| parts.join(",");
+    let mut fields = Vec::new();
+    let hosts = config
+        .get_hosts()
+        .iter()
+        .map(|host| match host {
+            Host::Tcp(host) => host.clone(),
+            Host::Unix(path) => path.display().to_string(),
+        })
+        .collect::<Vec<_>>();
+    if !hosts.is_empty() {
+        fields.push(format!("host={}", join(hosts)));
+    }
+    let ports = config
+        .get_ports()
+        .iter()
+        .map(u16::to_string)
+        .collect::<Vec<_>>();
+    if !ports.is_empty() {
+        fields.push(format!("port={}", join(ports)));
+    }
+    if let Some(dbname) = config.get_dbname() {
+        fields.push(format!("dbname={dbname}"));
+    }
+    if let Some(user) = config.get_user() {
+        fields.push(format!("user={user}"));
+    }
+    if fields.is_empty() {
+        server.to_owned()
+    } else {
+        format!("{server} ({})", fields.join(" "))
     }
 }

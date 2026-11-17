@@ -5,7 +5,7 @@
 #   scenarios: build main schema restart_after_drop persist moonlink_down ddl ddl_drop truncate
 #              source_drop_restart config_reload mirror_writes roles big_txn_restart crash basebackup
 #              (default: all; each on a fresh cluster)
-# Requires Linux, bash >= 4, GNU coreutils (timeout, date), procps (pgrep, ps), diff and GNU find; checked
+# Requires Linux, bash >= 4, GNU coreutils (timeout, date), procps (pgrep, ps), diff, GNU find and python3; checked
 # before anything else runs.
 #
 # Output (one line each, machine-readable; <check> never contains spaces):
@@ -46,7 +46,7 @@ set -uo pipefail
 preflight() {
   local missing=() c
   (( BASH_VERSINFO[0] >= 4 )) || missing+=("bash >= 4 (this is $BASH_VERSION)")
-  for c in timeout pgrep ps diff find sed awk; do command -v "$c" > /dev/null || missing+=("$c"); done
+  for c in timeout pgrep ps diff find sed awk python3; do command -v "$c" > /dev/null || missing+=("$c"); done
   [[ $(date +%N 2>/dev/null) =~ ^[0-9]+$ ]] || missing+=("GNU date (date +%N)")
   [[ $(find / -maxdepth 0 -printf '%y' 2>/dev/null) == d ]] || missing+=("GNU find (find -printf)")
   [[ $(uname -s) == Linux ]] || missing+=("Linux (the moonlink bgworker is found by its process title)")
@@ -848,14 +848,14 @@ files_matching() {
 }
 no_files_matching() { [[ -z $(files_matching "$1" | head -1) ]]; }
 # leftover_files: "<type> pg_mooncake/<path>" (find's %y: d directory, f file, ...) for everything
-# under pg_mooncake at any depth, except moonlink's own files at their place and the cache roots.
+# under pg_mooncake at any depth, except moonlink's own files at their place, the server's lock file and the cache roots.
 leftover_files() {
   local p=$DATA/pg_mooncake
   [[ -d $p ]] || { echo "? pg_mooncake (missing: the data directory has no pg_mooncake)"; return; }
   local all
   all=$(find "$p" -mindepth 1 -printf '%y %P\n' 2>&1) || { echo "? find failed: $(echo "$all" | one_line 120)"; return; }
   echo "$all" |
-    grep -vE '^(s moonlink\.sock|f moonlink_metadata_store\.sqlite(-wal|-shm|-journal)?|d (temp|read_through_cache|_wal|postgres|\.moonlink_atomic_tmp|source_fingerprints)|f [^/]+/indicator\.text)$' |
+    grep -vE '^(s moonlink\.sock|f moonlink\.lock|f moonlink_metadata_store\.sqlite(-wal|-shm|-journal)?|d (temp|read_through_cache|_wal|postgres|\.moonlink_atomic_tmp|source_fingerprints)|f [^/]+/indicator\.text)$' |
     sed 's#^\(.\) #\1 pg_mooncake/#' | sort -k2
 }
 no_leftover_files() { [[ -z $(leftover_files | head -1) ]]; }
@@ -1499,9 +1499,21 @@ start_copy() {
   printf "port = %s\nmooncake.data_directory = '%s'\n" "$PGPORT" "$2" >> "$DATA/postgresql.conf"
   if start; then result "$1" 0; else result "$1" 1 "$(grep -a -E 'FATAL|PANIC' "$OUT/postgres.log" | head -2 | one_line 240)"; return 1; fi
 }
+# refused_start <check> <cluster> <port> <mooncake.data_directory> <regex>: starting the stopped cluster with that
+# setting fails, and its log matches the regex.
+refused_start() {
+  local log=$OUT/$1.log rc
+  printf "port = %s\nmooncake.data_directory = '%s'\n" "$3" "$4" >> "$2/postgresql.conf"
+  "$BIN/pg_ctl" -D "$2" -l "$log" -w -t 30 start > /dev/null 2>&1; rc=$?
+  if (( rc != 0 )) && grep -aqE "$5" "$log"; then result "$1" 0 "$(grep -aE -m1 'FATAL' "$log" | sed -E 's/^[^]]*\] //' | one_line 200)"
+  else
+    result "$1" 1 "pg_ctl start rc=$rc: $(grep -aE 'FATAL|ERROR|DETAIL' "$log" | head -3 | one_line 240)"
+    "$BIN/pg_ctl" -D "$2" -m immediate -w stop > /dev/null 2>&1
+  fi
+}
 scenario_basebackup() {
   local mdir=$E2E_DIR/mooncake-$MAJOR-basebackup bb=$E2E_DIR/basebackup-$MAJOR port=$PGPORT out rc f
-  rm -rf -- "$mdir" "$mdir-copy" "$mdir-standby" "$bb"; mkdir -p "$bb"
+  rm -rf -- "$mdir" "$mdir-copy" "$mdir-standby" "$mdir-open" "$bb"; mkdir -p "$bb"
   local CLUSTER_EXTRA_CONF="mooncake.data_directory = '$mdir'"
   new_cluster basebackup || return
   check_eq data_directory_setting "$(psqlq -c "SELECT setting || ' ' || context FROM pg_settings WHERE name = 'mooncake.data_directory'" 2>&1)" "$mdir postmaster"
@@ -1556,6 +1568,29 @@ SQL
     out=$(psqlq -c "SELECT count(*) FROM mooncake.list_tables()" 2>&1); rc=$?
     if (( rc != 0 && rc < 124 )) && [[ $out =~ ERROR:.*failed\ to\ connect\ to\ moonlink ]] && pg_alive; then result list_tables_errors_on_standby 0
     else result list_tables_errors_on_standby 1 "rc=$rc: $(echo "$out" | one_line 200)"; fi
+    # The standby runs no moonlink, so nothing listens on its socket: its lock alone keeps a second server out.
+    local other=$bb/plain other_port=$((port + 300))
+    if [[ ! -f $other/PG_VERSION ]]; then result standby_dir_locked skip "no plain backup to start"
+    else
+      refused_start standby_dir_locked "$other" "$other_port" "$mdir-standby" \
+        "DETAIL: +.*moonlink\.lock is locked by the server with data directory $bb/standby \(postmaster PID [0-9]+\)"
+      ln -sfn "$mdir-standby" "$E2E_DIR/mooncake-$MAJOR-link"
+      refused_start data_directory_symlink_refused "$other" "$other_port" "$E2E_DIR/mooncake-$MAJOR-link" "is a symbolic link"
+      mkdir -p "$mdir-open" && chmod 0777 "$mdir-open"
+      refused_start data_directory_world_writable_refused "$other" "$other_port" "$mdir-open" "has invalid permissions 0777"
+      refused_start data_directory_pgdata_refused "$other" "$other_port" "." "must not be the data directory or contain it"
+      chmod 0700 "$bb"
+      refused_start data_directory_pgdata_parent_refused "$other" "$other_port" "$bb" "must not be the data directory or contain it"
+      # A socket that accepts connections in an unlocked directory (a server without the lock) keeps it out too.
+      mkdir -p -m 0700 "$mdir-open-socket"
+      python3 -I -c 'import socket, sys, time; s = socket.socket(socket.AF_UNIX); s.bind(sys.argv[1]); s.listen(); time.sleep(60)' \
+        "$mdir-open-socket/moonlink.sock" & local listener=$!
+      poll_until 10 test -S "$mdir-open-socket/moonlink.sock"
+      refused_start data_directory_listening_socket_refused "$other" "$other_port" "$mdir-open-socket" \
+        "DETAIL: +Its moonlink socket .* accepts connections"
+      kill "$listener" 2> /dev/null; wait "$listener" 2> /dev/null
+      rm -rf -- "$mdir-open" "$mdir-open-socket" "$E2E_DIR/mooncake-$MAJOR-link"
+    fi
     if out=$("$BIN/pg_ctl" -D "$DATA" -w -t 60 promote 2>&1) && poll_until 30 sql_is "SELECT pg_is_in_recovery()" f; then result promote 0
     else result promote 1 "$(echo "$out" | one_line 200)"; fi
     if wait_ready; then result service_up_after_promote 0; else result service_up_after_promote 1 "mooncake.list_tables() not answering within 60s: $(echo "$WAIT_ERR" | one_line 160)"; fi

@@ -7,6 +7,7 @@
 
 use crate::functions::TableName;
 use crate::utils::{is_mirror, rpc, RpcError, DATABASE};
+use pgrx::pg_sys::panic::ErrorReport;
 use pgrx::prelude::*;
 use std::collections::{BTreeMap, HashMap};
 use std::ffi::{c_int, c_void, CStr};
@@ -128,12 +129,17 @@ fn drop_in_moonlink(mirrors: Vec<TableName>) {
                 reason
             }
         };
-        warning!(
-            "mirror {key} was dropped, but moonlink did not drop it: {reason}\n\
-             HINT: moonlink may still hold the mirror's files and replication (see mooncake.list_tables()). \
-             Once moonlink is reachable, clean up by re-creating the mirror with mooncake.create_table, or with: \
-             CREATE TABLE <same name> (id int) USING mooncake; DROP TABLE <same name>;"
-        );
+        ErrorReport::new(
+            PgSqlErrorCode::ERRCODE_WARNING,
+            format!("mirror {key} was dropped, but moonlink did not drop it: {reason}"),
+            function_name!(),
+        )
+        .set_hint(
+            "moonlink may still hold the mirror's files and replication (see mooncake.list_tables()). Once moonlink \
+             is reachable, clean up by re-creating the mirror with mooncake.create_table, or with: CREATE TABLE \
+             <same name> (id int) USING mooncake; DROP TABLE <same name>;",
+        )
+        .report(PgLogLevel::WARNING);
     }
 }
 

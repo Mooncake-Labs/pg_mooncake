@@ -8,6 +8,7 @@ compared as far as the statement's top-level ORDER BY determines it.
 
 import json
 import re
+from decimal import Decimal, InvalidOperation
 
 from psqlsession import NULL_TOKEN
 
@@ -474,6 +475,62 @@ def struct_to_row(cell):
     return None
 
 
+_NUMERIC_SPECIALS = ("NaN", "Infinity", "-Infinity")
+# How a mirror prints an unconstrained numeric, which it stores as decimal(38, 10).
+_DECIMAL_38_10 = re.compile(r"-?\d+\.\d{10}")
+
+
+def _numeric(text):
+    """The exact value of a numeric literal as (sign, digits, exponent) without trailing zeros. No
+    rounding: Decimal's arithmetic context has 28 digits, more than enough to hide a difference."""
+    if text in _NUMERIC_SPECIALS:
+        return text
+    sign, digits, exponent = Decimal(text).as_tuple()
+    digits = list(digits)
+    while len(digits) > 1 and digits[-1] == 0:
+        digits.pop()
+        exponent += 1
+    if digits == [0]:
+        exponent = 0  # the sign is kept: 0 and -0.0000000000 differ
+    return sign, tuple(digits), exponent
+
+
+def numeric_key(v, array, mirror):
+    """A cell of an unconstrained numeric column (or a one-dimensional array of them) as exact
+    numbers, so that 1 and 1.0000000000 compare equal. A mirror's value must be printed the way
+    decimal(38, 10) prints it. None if the cell isn't such a value."""
+    if v is None or v == NULL_TOKEN:
+        return v
+    s = str(v)
+    try:
+        elems = _parse_pg_array(s) if array else [s]
+        if elems is None or any(e is not None and e.startswith("{") for e in elems):
+            return None
+        if mirror and any(e is not None and not _DECIMAL_38_10.fullmatch(e) for e in elems):
+            return None
+        key = tuple(None if e is None else _numeric(e) for e in elems)
+        return key if array else key[0]
+    except (InvalidOperation, IndexError):
+        return None
+
+
+def _unpadded(v, array):
+    """A char(n) cell (or array of them) without the trailing blanks of each value."""
+    if v is None or v == NULL_TOKEN:
+        return v
+    if not array:
+        return str(v).rstrip(" ")
+    elems = _parse_pg_array(str(v))
+    return None if elems is None else tuple(None if e is None else e.rstrip(" ") for e in elems)
+
+
+def _as_cells(v, array):
+    if not array or v is None or v == NULL_TOKEN:
+        return v
+    elems = _parse_pg_array(str(v))
+    return None if elems is None else tuple(elems)
+
+
 def divergence_events(cols, heap_rows, mirror_rows, sample=3):
     """Events describing how a mirror's rows differ from the heap's. cols: [(name, type), ...].
     Each event: {"kind": row-count|value|rows, "detail": text, ["col", "type"]}."""
@@ -503,6 +560,36 @@ def divergence_events(cols, heap_rows, mirror_rows, sample=3):
                                   f"value(s) equal the heap's after STRUCT-to-row conversion, e.g. heap "
                                   f"{str(h_only[0])[:60]} mirror {str(m_only[0])[:60]}"})
             continue
+        # The values that differ, with their surplus counts on each side.
+        dh = {v: hv[v] - mv.get(v, 0) for v in h_only}
+        dm = {v: mv[v] - hv.get(v, 0) for v in m_only}
+        if typ in ("numeric", "numeric[]"):
+            hn, mn = {}, {}
+            for src, dst, mirror in ((dh, hn, False), (dm, mn, True)):
+                for v, k in src.items():
+                    key = numeric_key(v, typ == "numeric[]", mirror)
+                    dst[key] = dst.get(key, 0) + k
+            if None not in hn and None not in mn and hn == mn:
+                # Only the text form differs: the mirror prints the values with another scale.
+                out.append({"kind": "numeric-scale", "col": name, "type": typ,
+                            "detail": f"numeric-scale col={name} type={typ}: {sum(dm.values())} "
+                                      f"value(s) equal the heap's as numbers, e.g. heap {str(h_only[0])[:60]} "
+                                      f"mirror {str(m_only[0])[:60]}"})
+                continue
+        if re.fullmatch(r"character\(\d+\)(\[\])?", typ):
+            array = typ.endswith("[]")
+            hp, mp = {}, {}
+            for src, dst, conv in ((dh, hp, _unpadded), (dm, mp, _as_cells)):
+                for v, k in src.items():
+                    key = conv(v, array)
+                    dst[key] = dst.get(key, 0) + k
+            if None not in hp and None not in mp and hp == mp:
+                # Only the trailing blanks of the heap's values are missing.
+                out.append({"kind": "char-padding", "col": name, "type": typ,
+                            "detail": f"char-padding col={name} type={typ}: {sum(dm.values())} "
+                                      f"value(s) equal the heap's without trailing blanks, e.g. heap "
+                                      f"{str(h_only[0])[:60]!r} mirror {str(m_only[0])[:60]!r}"})
+                continue
         out.append({"kind": "value", "col": name, "type": typ,
                     "detail": f"value col={name} type={typ} heap-only: {'; '.join(str(v)[:80] for v in h_only[:sample])} "
                               f"|| mirror-only: {'; '.join(str(v)[:80] for v in m_only[:sample])}"})

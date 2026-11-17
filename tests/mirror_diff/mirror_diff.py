@@ -167,11 +167,10 @@ class Expectations:
     line without a regex, or by a line naming it exactly, reports XPASS. "engine" names the bug
     the classifier attaches to DuckDB-semantics differences of query checks."""
 
-    def __init__(self, path, ids_path=None):
+    def __init__(self, path):
         self.rules = []
         self.bugs = {}       # key -> (class, description)
         self.engine = []
-        self.ids = {}        # key -> tracker ids, from a private file outside the repository
         if path and os.path.exists(path):
             with open(path) as f:
                 lines = f.readlines()
@@ -204,13 +203,6 @@ class Expectations:
             for k in self.engine:
                 if k not in self.bugs:
                     sys.exit(f"{path}: engine refers to undeclared bug {k}")
-        if ids_path and os.path.exists(ids_path):
-            with open(ids_path) as f:
-                id_lines = f.readlines()
-            for raw in id_lines:
-                p = raw.split()
-                if len(p) >= 2 and not raw.startswith("#"):
-                    self.ids[p[0]] = p[1]
 
     @staticmethod
     def _names(check):
@@ -343,9 +335,7 @@ class Reporter:
             kn = self.known.get(key, {"XFAIL": 0, "XPASS": 0, "checks": []})
             state = "OPEN" if kn["XFAIL"] else ("FIXED" if kn["XPASS"] else "NOT-SEEN")
             cls = self.exp.bugs.get(key, ("blocking", ""))[0]
-            ids = self.exp.ids.get(key)
-            print(f"KNOWN {key} {state} {','.join(kn['checks']) or '-'} class={cls}" + (f" ids={ids}" if ids else ""),
-                  flush=True)
+            print(f"KNOWN {key} {state} {','.join(kn['checks']) or '-'} class={cls}", flush=True)
         c = self.counts
         print(f"SUMMARY mirror_diff pg{major} layers={layers} pass={c['PASS']} xpass={c['XPASS']} "
               f"fail={c['FAIL']} xfail={c['XFAIL']} xfail_limitation={c['XFAIL_LIMITATION']} skip={c['SKIP']} "
@@ -1382,7 +1372,7 @@ class Harness:
         self.srv = Server(args)
         if args.host and args.server_log:
             self.srv.logfile = args.server_log
-        self.exp = Expectations(args.expected, args.bug_ids)
+        self.exp = Expectations(args.expected)
         os.makedirs(args.workdir, exist_ok=True)
         os.makedirs(os.path.join(args.workdir, "results"), exist_ok=True)
         self.done_path = os.path.join(args.workdir, "done.txt")
@@ -1868,8 +1858,6 @@ def parse_args(argv):
     p.add_argument("--layers", default="data,cdc,query")
     p.add_argument("--files", help="comma-separated subset of file names (regress or extra_*)")
     p.add_argument("--expected", default=os.path.join(HERE, "expected.txt"), help="known-failure list")
-    p.add_argument("--bug-ids", default=os.environ.get("MIRROR_DIFF_BUG_IDS"),
-                   help='optional bug-id map: a file of "<bug> <ids>" lines, shown on KNOWN lines')
     p.add_argument("--build-info", help="file of k=v lines to echo as BUILD lines")
     p.add_argument("--stmt-timeout", type=float, default=120)
     p.add_argument("--ddl-timeout", type=float, default=60)
@@ -1913,7 +1901,7 @@ def rescore(results_path, expected_path, major="?", exit_regression=False):
     """Re-apply the known-failure list to a finished run's results.jsonl (no database needed).
     The raw outcome of each check is its status with XFAIL/XPASS undone; engine-semantics XFAILs
     (from the classifier, not from the list) are kept."""
-    exp = Expectations(expected_path, os.environ.get("MIRROR_DIFF_BUG_IDS"))
+    exp = Expectations(expected_path)
     out_path = results_path.replace(".jsonl", ".rescored.jsonl")
     rep = Reporter(exp, out_path)
     with open(results_path) as f:
